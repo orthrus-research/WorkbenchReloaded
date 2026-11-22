@@ -111,7 +111,9 @@ every clean clone:
   (`python = [...]`). Jobs name no interpreter paths and no `.local` environments.
 - **Third-party files outside the build tool are pinned by SHA-256** and fetched (`toolchain.pins`), never found by
   scanning a cache. Every job gets `WB_PIN_CACHE`, a folder of files named by their SHA-256: a tool that builds or
-  downloads a pinned file looks there first and stores what it made, so each is made once per machine.
+  downloads a pinned file looks there first and stores what it made, so each is made once per machine. A pin cache
+  or records folder configured inside an rw root is given to Workbench's user each time the container starts, so a
+  folder made on the host or by root still takes writes.
 - **Outputs go under `{run_dir}`**, never into the tree. A file a job writes into the tree changes the tree the run
   vouches for. What a build tool writes inside the tree on its own (`build/libs`) is kept by listing it in the
   job's `artifacts`: the records then hold each file by SHA-256 beside the run that passed it, where the host can

@@ -14,5 +14,7 @@
   and `WbRun` tasks that keep a receipt), PowerShell.
 - The image: Ubuntu 26.04 by digest, apt from a pinned snapshot, Temurin 8, 17, 25, 26, 27 and 28 EA by SHA-256;
   optional toolchains (Node, Zig), each pinned by SHA-256 and built in only for a machine that names them.
+  The entrypoint gives Workbench's user the pin caches and records folder configured inside an rw root
+  (`WB_OWNED_DIRS` from `wb up`), as it does the state volume.
 - The drive agent: a client mod for 1.12.2 on Cleanroom that captures views once they settle and answers
   `drive.send`.
