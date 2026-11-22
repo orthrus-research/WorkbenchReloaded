@@ -167,6 +167,23 @@ class Store(unittest.TestCase):
         self.assertFalse(again.data.prepared_template)  # the same packs: the same template
         self.assertTrue((self.instances / "eta" / shaders / "light-shaders.zip").is_file())
 
+    def test_8_fractional_and_whole_scales(self):
+        half = self.ensure("theta", scale=0.5)
+        self.assertEqual(half.outcome, "ok", half.summary)
+        manifest = json.loads((self.instances / "theta" / "standalone.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["scaleArgument"], "0.5")
+        self.assertEqual(manifest["generator"]["layoutScale"], 0.5)
+        whole = self.ensure("iota", scale=4)
+        self.assertEqual(whole.outcome, "ok", whole.summary)
+        manifest = json.loads((self.instances / "iota" / "standalone.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["scaleArgument"], "4")  # a whole scale reaches the launcher as an integer
+        template = json.loads((self.lab / "store" / "templates" / whole.data.recipe / "template.json")
+                              .read_text(encoding="utf-8"))
+        self.assertIs(type(template["inputs"]["scale"]), int)  # the recipe integer scales always had
+        same = self.ensure("kappa", scale=4.0)
+        self.assertEqual(same.data.recipe, whole.data.recipe)
+        self.assertFalse(same.data.prepared_template)
+
 
 if __name__ == "__main__":
     unittest.main()
