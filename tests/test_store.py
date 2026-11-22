@@ -40,6 +40,9 @@ class Store(unittest.TestCase):
             coordination_dir = '{cls.lab / "coordination"}'
             [modules.lab]
             launcher = '{cls.riven}'
+            [modules.lab.profiles.tours-only]
+            from = ""
+            play_open = []
             """
         files = {"modules/lab/profile.toml": fake_riven.PROFILE_TOML}
         probe = Daemon(config, files=files)
@@ -59,6 +62,10 @@ class Store(unittest.TestCase):
 
     def ensure(self, name, **params):
         return self.c.submit("lab.ensure", dict({"name": name, "seed": 2485331}, **params)).result(timeout=120)
+
+    @staticmethod
+    def output(envelope, name):
+        return next(item["host_path"] for item in envelope.outputs if item["name"] == name)
 
     def test_1_one_prepare_per_recipe_and_linked_instances(self):
         first = self.ensure("alpha")
@@ -183,6 +190,26 @@ class Store(unittest.TestCase):
         same = self.ensure("kappa", scale=4.0)
         self.assertEqual(same.data.recipe, whole.data.recipe)
         self.assertFalse(same.data.prepared_template)
+
+    def test_9_a_tour_or_an_open_session(self):
+        self.assertEqual(self.ensure("lambda").outcome, "ok")
+        tour = self.d.data / "views.json"  # under the daemon's data root
+        tour.write_text("[]", encoding="utf-8")
+        toured = self.c.submit("lab.play", {"name": "lambda", "tour": str(tour)}).result(timeout=120)
+        self.assertEqual(toured.outcome, "ok", toured.summary)
+        self.assertTrue(toured.data.tour)
+        log = Path(self.output(toured, "play-client-log")).read_text(encoding="utf-8")
+        self.assertIn("tour views.json in 1920x1080", log)
+        opened = self.c.submit("lab.play", {"name": "lambda", "label": "open", "window": "1280x720",
+                                            "options": "-Dquadrature.distant=own"}).result(timeout=120)
+        self.assertEqual(opened.outcome, "ok", opened.summary)
+        self.assertFalse(opened.data.tour)
+        self.assertIn("open session on lambda ended", opened.summary)
+        log = Path(self.output(opened, "open-client-log")).read_text(encoding="utf-8")
+        self.assertIn("open session in 1280x720 with -Dquadrature.distant=own", log)
+        refused = self.c.submit("lab.play", {"name": "lambda", "profile": "tours-only"}).result(timeout=120)
+        self.assertEqual(refused.outcome, "usage")  # that harness has no open session
+        self.assertIn("play_open", refused.summary)
 
 
 if __name__ == "__main__":

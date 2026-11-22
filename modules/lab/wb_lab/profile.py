@@ -25,6 +25,8 @@ DEFAULTS = {
     "instances": None,           # the folder instances live in, relative to the checkout
     "prepare": None,             # command template that prepares an instance named {name}
     "play": None,                # command template that plays {tour} on {name} in a {window}
+    "play_open": None,           # command template for an open session on {name} in a {window}: no tour, it ends
+                                 # when the person playing closes the client; unset: every play needs a tour
     "seed_flag": None,           # how prepare takes a seed; a seed is refused when this is unset
     "scale_flag": None,          # how prepare takes a scale; a scale is refused when this is unset
     "options_env": None,         # the variable play's JVM options go in
