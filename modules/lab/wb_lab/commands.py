@@ -168,7 +168,7 @@ def explain(patterns: list[str], texts: list[str]) -> str | None:
             for line in text.splitlines():
                 if regex.search(line):
                     line = line.strip()
-                    return line if len(line) <= 240 else line[:239] + "…"
+                    return line if len(line) <= 240 else line[:237] + "..."
     return None
 
 
