@@ -1,0 +1,112 @@
+[module]
+name = "drive"
+version = "0.1.0"
+summary = "Workload drivers: what a game session is made to do and see. Tours checked before a session plays them, camera paths made from keyframes and checked against the frames captured along them, and block galleries laid out for review."
+
+[config]
+rules = { type = "object", default = {}, summary = "rule sets by name, each a table of what a world and its runner allow (keys: wb_drive/rules.py): height band and border, dimensions, allowed commands, the settle table, capture spacing, names, time limit, path limits" }
+
+[[command]]
+name = "tour-lint"
+summary = "Check a tour before a session plays it: required fields, positions inside the height band and border, unique labels, settle times long enough for the view distance, allowed commands, consistently named captures, and how long it takes."
+handler = "wb_drive.commands:tour_lint"
+deterministic = true
+params.tour = { type = "path.in", summary = "the tour: a JSON or TOML list of views, or a table with views (format: wb_drive/tour.py)" }
+params.rules = { type = "string", default = "", summary = "a rule set from [modules.drive.rules]; empty: the built-in rules, the game's own limits" }
+params.view_distance = { type = "int", default = 0, min = 0, summary = "the session's view distance in chunks; 0: the tour's (the largest it names), else the rule set's" }
+params.band = { type = "list", items = "float", optional = true, summary = "min_y,max_y: the height band views stand in, over the rule set's" }
+params.border = { type = "float", optional = true, min = 0, summary = "half the width of the square world border, over the rule set's" }
+params.allow = { type = "list", items = "string", optional = true, summary = "the commands a view may run, over the rule set's: names (fill) or shell patterns over the whole command (gamerule doDaylightCycle *)" }
+params.settle = { type = "list", items = "object", optional = true, summary = "the settle table, over the rule set's: rows {view_distance, settle, arrive}, times in seconds or as 5s, 100t" }
+params.max_seconds = { type = "duration", optional = true, min = 0, summary = "the longest the tour may take (a turn's limit), over the rule set's" }
+result.views = { type = "int" }
+result.captures = { type = "int" }
+result.findings = { type = "int" }
+result.rules = { type = "list", summary = "the rules broken" }
+result.seconds = { type = "float", unit = "s", summary = "about how long the tour takes" }
+
+[[command]]
+name = "path"
+summary = "Make a camera path from keyframes: poses at a frame rate, interpolated and paced (eased or constant speed, holds and cuts), written as a route or a tour, its speeds, turn rates and acceleration checked against limits."
+handler = "wb_drive.commands:path"
+deterministic = true
+params.keyframes = { type = "path.in", summary = "a JSON or TOML list of keyframes, or a table with keyframes; a tour's views serve too (format: wb_drive/path.py)" }
+params.fps = { type = "float", default = 20, min = 1, max = 1000, summary = "poses a second (20: one a game tick)" }
+params.interpolation = { type = "enum", values = ["catmull-rom", "linear"], default = "catmull-rom", summary = "catmull-rom: a smooth curve through the keyframes; linear: straight lines" }
+params.pacing = { type = "enum", values = ["ease", "constant"], default = "ease", summary = "ease: from rest and back to rest at each stop over the ramp; constant: at full speed at once" }
+params.speed = { type = "float", default = 4, min = 0.01, unit = "blocks/s", summary = "the pace along a segment without its own seconds" }
+params.turn_speed = { type = "float", default = 30, min = 0.01, unit = "deg/s", summary = "a segment lasts at least its turn at this rate" }
+params.ramp = { type = "duration", default = "1s", min = 0, summary = "ease: the time from rest to full pace, and back" }
+params.output = { type = "enum", values = ["route", "tour", "both"], default = "route", summary = "route.json (wb/route/v1, a pose a frame), tour.json (a view a step), or both" }
+params.every = { type = "int", default = 1, min = 1, summary = "tour: a view every this many frames, and at the last; none closer to the one before than the rule set's least move" }
+params.settle = { type = "duration", default = 0, min = 0, summary = "tour: each view's settle; 0: what the rule set's settle table asks, else the runner's own" }
+params.name = { type = "string", default = "path", pattern = "^[A-Za-z0-9_-]+$", summary = "tour: the views' label prefix" }
+params.rules = { type = "string", default = "", summary = "a rule set from [modules.drive.rules]: its path limits, and its rules for the tour" }
+params.max_speed = { type = "float", optional = true, min = 0, unit = "blocks/s", summary = "over the rule set's; 0: not checked" }
+params.max_turn = { type = "float", optional = true, min = 0, unit = "deg/s", summary = "yaw or pitch, over the rule set's; 0: not checked" }
+params.max_accel = { type = "float", optional = true, min = 0, unit = "blocks/s2", summary = "over the rule set's; 0: not checked" }
+params.max_seconds = { type = "duration", optional = true, min = 0, summary = "the longest the path may take, over the rule set's; 0: not checked" }
+result.frames = { type = "int" }
+result.seconds = { type = "float", unit = "s" }
+result.length = { type = "float", unit = "blocks" }
+result.segments = { type = "int" }
+result.max_speed = { type = "float", unit = "blocks/s" }
+result.max_turn = { type = "float", unit = "deg/s" }
+result.max_accel = { type = "float", unit = "blocks/s2" }
+
+[[command]]
+name = "path-check"
+summary = "Check frames captured along a path, without the game: frame count and pace against the path, missing frames and pictures repeated while the camera moves (by image data and names), and motion continuity (jumps in the frame-to-frame difference), by segment."
+handler = "wb_drive.commands:path_check"
+deterministic = true
+resources = { cpu = 2, mem_gb = 2 }
+params.frames = { type = "path.in", summary = "the folder of captured frames (PNG or JPEG)" }
+params.route = { type = "path.in", optional = true, summary = "the route the frames were captured along (wb/route/v1, from drive.path); without it, every frame is taken to move" }
+params.naming = { type = "enum", values = ["index", "ms", "timestamp", "order"], default = "index", summary = "what a frame's name says: index, the last number is its path frame; ms, the last number is a time in milliseconds; timestamp, a date and time (2026-11-21_12.30.05_2); order, nothing (sorted names are the capture order)" }
+params.pattern = { type = "string", default = "", summary = "a regular expression over the file name instead, with named groups index, ms or seconds" }
+params.offset = { type = "int", default = 0, summary = "the number of the path's first frame in the names" }
+params.fps = { type = "float", default = 0, min = 0, summary = "the path's frames a second; 0: the route's, else 20" }
+params.spike = { type = "float", default = 4, min = 1, summary = "a frame jumps when it changes this many times more than its neighbours usually do" }
+params.floor = { type = "float", default = 2, min = 0, summary = "a change (mean absolute difference, 0-255) at or below this never counts as a jump" }
+params.tolerance = { type = "float", default = 0.1, min = 0, summary = "how far the capture's pace may stray from the path's, as a fraction" }
+params.continuity = { type = "bool", default = true, summary = "compare each frame with the one before (needs NumPy and Pillow; without them, noted and skipped)" }
+params.scale = { type = "int", default = 160, min = 8, max = 4096, summary = "the thumbnails' width in pixels for continuity" }
+result.frames = { type = "int" }
+result.expected = { type = "int" }
+result.missing = { type = "int" }
+result.repeats = { type = "int" }
+result.spikes = { type = "int" }
+result.segments = { type = "int" }
+result.continuity = { type = "bool" }
+
+[[command]]
+name = "gallery"
+summary = "Lay out blocks for review: the commands that clear a platform and place the blocks on it in rows, and the views that capture each row and an overview, as a tour; with a spacing check for the capture distance and field of view."
+handler = "wb_drive.commands:gallery"
+deterministic = true
+params.blocks = { type = "list", items = "string", default = [], summary = "blocks as id, id state or id[state], optionally after label=: minecraft:stone 1, minecraft:log axis=y,variant=oak" }
+params.catalog = { type = "path.in", optional = true, summary = "a JSON or TOML list of blocks (strings or {id, state, label}), or a table with blocks; added after blocks" }
+params.origin = { type = "list", items = "int", summary = "x,y,z: where row 0 stands, centred on it; the platform is one below" }
+params.facing = { type = "enum", values = ["south", "west", "north", "east"], default = "south", summary = "the way the cameras look; rows step away from them" }
+params.columns = { type = "int", default = 8, min = 1, summary = "blocks to a row" }
+params.spacing = { type = "int", default = 3, min = 1, summary = "blocks from one block of a row to the next" }
+params.row_spacing = { type = "int", default = 0, min = 0, summary = "blocks from one row to the next; 0: clear of the cameras (and past the rule set's least move)" }
+params.distance = { type = "float", default = 10, min = 0.5, summary = "the capture distance: blocks from a row's camera to the row, measured flat" }
+params.pitch = { type = "float", default = 20, min = -89, max = 89, summary = "degrees the cameras look down at their rows" }
+params.fov = { type = "float", default = 70, min = 10, max = 170, summary = "the cameras' vertical field of view in degrees, as the game sets it" }
+params.window = { type = "string", default = "1920x1080", pattern = "^[0-9]+x[0-9]+$", summary = "the capture's size in pixels" }
+params.min_gap_px = { type = "int", default = 8, min = 0, summary = "the least gap between two blocks of a row in the capture, in pixels" }
+params.min_block_px = { type = "int", default = 16, min = 0, summary = "the least width of a block in the capture, in pixels" }
+params.platform = { type = "string", default = "minecraft:stone", summary = "the block the platform is made of; empty: no platform" }
+params.clear = { type = "int", default = 8, min = 0, summary = "blocks of air cleared above the platform before the gallery is built; 0: none" }
+params.syntax = { type = "enum", values = ["legacy", "flattened"], default = "legacy", summary = "how commands name a block's state: legacy, id then a data value or key=value pairs (1.12); flattened, id[key=value] (1.13 and later)" }
+params.setup = { type = "list", items = "string", default = [], summary = "commands run before the tour arrives (time, weather, game rules)" }
+params.settle = { type = "duration", default = 0, min = 0, summary = "each view's settle; 0: what the rule set's settle table asks, else the runner's own" }
+params.overview = { type = "bool", default = true, summary = "end with a view of the whole gallery" }
+params.name = { type = "string", default = "gallery", pattern = "^[A-Za-z0-9_-]+$", summary = "the views' label prefix" }
+params.rules = { type = "string", default = "", summary = "a rule set from [modules.drive.rules] the tour must keep (its fill limit splits the fills)" }
+result.blocks = { type = "int" }
+result.rows = { type = "int" }
+result.views = { type = "int" }
+result.commands = { type = "int" }
+result.findings = { type = "int" }
