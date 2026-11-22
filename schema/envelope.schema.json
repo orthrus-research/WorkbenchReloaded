@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orthrus.cc/schemas/wb/result/v1",
+  "title": "Envelope",
+  "description": "wb/result/v1: the one shape of every job, at every state. code equals the CLI exit code once settled.",
+  "type": "object",
+  "required": ["schema", "job", "command", "state", "params", "outputs", "data", "measurements", "timings"],
+  "properties": {
+    "schema": { "const": "wb/result/v1" },
+    "job": { "type": "string", "pattern": "^j_[0-9A-Z]{22}$" },
+    "command": { "type": "string" },
+    "command_version": { "type": ["string", "null"] },
+    "module": { "type": "string" },
+    "module_version": { "type": ["string", "null"] },
+    "params": { "type": "object" },
+    "params_hash": { "type": ["string", "null"] },
+    "state": { "enum": ["new", "queued", "awaiting_approval", "running", "settled", "cancelled", "interrupted"] },
+    "phase": { "type": ["string", "null"], "description": "quoting while a spends command's quote is being made" },
+    "outcome": { "enum": ["ok", "finding", "usage", "environment", null] },
+    "code": { "enum": [0, 1, 2, 3, null] },
+    "summary": { "type": ["string", "null"] },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "name", "detail"],
+        "properties": {
+          "kind": { "type": "string" },
+          "name": { "type": "string" },
+          "detail": { "type": "string" },
+          "fix": { "type": "string" }
+        }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "host_path", "sha256"],
+        "properties": {
+          "name": { "type": "string" },
+          "host_path": { "type": "string" },
+          "sha256": { "type": "string" },
+          "files": { "type": "integer" }
+        }
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "host_path", "sha256", "bytes"],
+        "properties": {
+          "name": { "type": "string" },
+          "host_path": { "type": "string" },
+          "sha256": { "type": "string" },
+          "bytes": { "type": "integer" },
+          "media_type": { "type": ["string", "null"] },
+          "url": { "type": "string" }
+        }
+      }
+    },
+    "data": { "type": "object", "description": "checked against the command's declared result schema" },
+    "measurements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "value"],
+        "properties": {
+          "name": { "type": "string" },
+          "value": {},
+          "unit": { "type": ["string", "null"] },
+          "labels": { "type": ["object", "null"] }
+        }
+      }
+    },
+    "findings": { "type": "array", "items": { "type": "string" } },
+    "machine": { "type": "object", "properties": { "id": { "type": "string" } } },
+    "toolchain": { "type": "object" },
+    "timings": {
+      "type": "object",
+      "properties": {
+        "submitted": { "type": ["string", "null"] },
+        "started": { "type": ["string", "null"] },
+        "settled": { "type": ["string", "null"] },
+        "phases": { "type": "object", "additionalProperties": { "type": "number" } }
+      }
+    },
+    "cost": {
+      "type": ["object", "null"],
+      "properties": { "amount": { "type": "number" }, "currency": { "type": "string" } }
+    },
+    "cache": {
+      "type": "object",
+      "properties": {
+        "hit": { "type": "boolean" },
+        "from": { "type": ["string", "null"] },
+        "key": { "type": ["string", "null"] }
+      }
+    },
+    "approval": {
+      "type": ["object", "null"],
+      "properties": {
+        "quote": { "type": "object", "properties": { "id": { "type": "string" }, "expires_at": { "type": "string" } } },
+        "prompt": {
+          "type": "object",
+          "properties": {
+            "question": { "type": "string" },
+            "options": { "type": "array", "items": { "type": "object", "properties": { "label": { "type": "string" }, "description": { "type": "string" } } } }
+          }
+        },
+        "status": { "type": "string" },
+        "approved": { "type": ["object", "null"] }
+      }
+    },
+    "children": { "type": "array", "items": { "type": "string" } },
+    "parent": { "type": ["string", "null"], "description": "the job that submitted this one, if any" },
+    "logs": { "type": "object" }
+  }
+}

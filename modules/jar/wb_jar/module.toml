@@ -1,0 +1,78 @@
+[module]
+name = "jar"
+version = "0.2.0"
+summary = "Static analysis of compiled mods: class files, references and what each JAR patches."
+
+[[command]]
+name = "audit"
+summary = "Check every class in JARs for its class file version, names and forbidden references."
+handler = "wb_tools.adapter:run_tool"
+aliases = ["tools.jar-audit"]
+params.argv = { type = "list", items = "string", default = [], summary = "the tool's own arguments; absolute host paths are translated" }
+params.cwd = { type = "path.in", optional = true, digest = "git", summary = "run in this folder (a project checkout)" }
+
+[[command]]
+name = "survey"
+summary = "List the GL calls and rendering-class patches each Minecraft mod JAR refers to."
+handler = "wb_tools.adapter:run_tool"
+aliases = ["tools.mod-survey"]
+params.argv = { type = "list", items = "string", default = [], summary = "the tool's own arguments; absolute host paths are translated" }
+params.cwd = { type = "path.in", optional = true, digest = "git", summary = "run in this folder (a project checkout)" }
+
+[[command]]
+name = "index"
+summary = "Index what each JAR patches and declares (Mixin configs, targets and handlers, engine systems, event subscriptions, threads, required mods), with a target -> patchers table across the JARs."
+handler = "wb_jar.commands:index"
+deterministic = true
+resources = { cpu = 1, mem_gb = 2 }
+params.jars = { type = "path.in", summary = "a JAR, or a folder searched for JARs (a mods folder); nested JARs are indexed too" }
+params.systems = { type = "object", optional = true, summary = "engine systems by target package prefix, the longest prefix winning: { \"net/minecraft/world/\" = \"world\" } (default: each target's package)" }
+params.subscribers = { type = "list", items = "string", default = ["Lnet/minecraftforge/fml/common/eventhandler/SubscribeEvent;", "Lnet/minecraftforge/eventbus/api/SubscribeEvent;", "Lnet/neoforged/bus/api/SubscribeEvent;"], summary = "annotation descriptors that mark an event subscriber; its first parameter is the event" }
+params.require_complete = { type = "bool", default = false, summary = "a finding when a JAR requires a mod that no indexed JAR declares" }
+params.platform = { type = "list", items = "string", default = ["minecraft", "forge", "fml", "mcp", "neoforge", "fabricloader", "java"], summary = "mod ids the platform provides: never missing" }
+result.jars = { type = "list" }
+result.targets = { type = "object" }
+result.shared = { type = "object" }
+result.collisions = { type = "list" }
+result.missing = { type = "list" }
+result.report = { type = "string" }
+
+[[command]]
+name = "references"
+summary = "Find the classes that subclass, override or call given classes and methods, across JARs, without loading them."
+handler = "wb_jar.commands:references"
+deterministic = true
+resources = { cpu = 1, mem_gb = 2 }
+params.jars = { type = "path.in", summary = "a JAR, or a folder searched for JARs: the code searched" }
+params.targets = { type = "list", items = "string", summary = "a.b.C (a class), a.b.C::method (any descriptor) or a.b.C::method(I)V" }
+params.kinds = { type = "list", items = { type = "enum", values = ["subclass", "override", "call"] }, default = ["subclass", "override", "call"] }
+params.hierarchy = { type = "path.in", optional = true, summary = "a JAR or folder whose classes complete the class hierarchy (the game's, a library's); not searched" }
+params.fail_if = { type = "enum", values = ["never", "found", "missing"], default = "never", summary = "found: a finding when anything refers to a target (a gate); missing: when nothing does" }
+result.targets = { type = "list" }
+result.classes = { type = "int" }
+result.report = { type = "string" }
+
+[[command]]
+name = "hook-targets"
+summary = "Check that named Class::method(desc) and Class#field hook targets still exist in JARs, and digest packaged resources by pattern."
+handler = "wb_jar.commands:hook_targets"
+deterministic = true
+params.jars = { type = "path.in", summary = "a JAR, or a folder searched for JARs" }
+params.targets = { type = "list", items = "string", default = [], summary = "a.b.C, a.b.C::method, a.b.C::method(desc), a.b.C#field or a.b.C#field:desc; each must exist" }
+params.resources = { type = "list", items = "string", default = [], summary = "glob patterns over entry names (* within a folder, ** across); each must match, and every match is digested" }
+params.expect = { type = "object", default = {}, summary = "pinned entries: { \"assets/x/shader.vsh\" = \"<sha256>\" }; a missing or different entry is a finding" }
+result.passed = { type = "bool" }
+result.targets = { type = "list" }
+result.resources = { type = "object" }
+result.report = { type = "string" }
+
+[[command]]
+name = "diff"
+summary = "Why two archives of one build differ, entry by entry: entries, order, metadata, content (line endings, JSON order, line order) or only compression."
+handler = "wb_jar.commands:diff"
+deterministic = true
+params.a = { type = "path.in", summary = "an archive (JAR or ZIP)" }
+params.b = { type = "path.in", summary = "the other build of it" }
+result.identical = { type = "bool" }
+result.kinds = { type = "object" }
+result.entries = { type = "list" }

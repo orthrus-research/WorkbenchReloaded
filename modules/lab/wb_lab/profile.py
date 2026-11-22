@@ -1,0 +1,124 @@
+"""Instance profiles: what the lab needs to know about a launcher, so the lab names no project.
+
+A profile says how a launcher checkout prepares, plays and checks instances, and how its instances are laid out
+(which parts are worlds, which files name the instance, which files the game only reads). It comes from config
+only — ``[modules.lab.profile]``, for example the file ``modules/lab/profile.toml`` in the config folder. Workbench
+ships no launcher's profile: a launcher is supported by writing one, never by changing code.
+
+Command templates take ``{python}``, ``{name}``, ``{name_repr}``, ``{tour}`` and ``{window}``. A path in
+``recipe_files``, ``default_artifact`` or an ``env`` value may start with ``{<checkout>}``, a name from
+``checkouts`` (other checkouts the launcher reads, relative to the launcher checkout or absolute).
+"""
+
+from __future__ import annotations
+
+import copy
+from dataclasses import dataclass, field
+
+REQUIRED = ("launcher", "instances", "prepare", "play")
+DEFAULTS = {
+    "launcher": None,            # the launcher script, relative to the checkout; it must exist there
+    "instances": None,           # the folder instances live in, relative to the checkout
+    "prepare": None,             # command template that prepares an instance named {name}
+    "play": None,                # command template that plays {tour} on {name} in a {window}
+    "seed_flag": None,           # how prepare takes a seed; a seed is refused when this is unset
+    "scale_flag": None,          # how prepare takes a scale; a scale is refused when this is unset
+    "options_env": None,         # the variable play's JVM options go in
+    "env": {},                   # environment for every launcher command
+    "load": [],                  # command template that checks {name} loads; empty: no check
+    "load_ok": None,             # a line load prints when the instance is sound
+    "collect": [],               # [file in the instance, name to keep it as] after a play
+    "captures_pattern": None,    # a regular expression on play's output; group 1 is a folder of captures
+    "recipe_files": [],          # files whose content is part of every recipe
+    "default_artifact": {},      # {flag, path}: a file prepare reads unless the flag is given
+    "file_flags": [],            # prepare flags whose next argument is a file, hashed into the recipe
+    "checkouts": {},             # other checkouts by name, for {name} in paths
+    "manifest": None,            # the instance's JSON manifest, read for the world key
+    "world_key": {},             # name -> dotted path in the manifest; a leading # keeps only its SHA-256
+    "world_writer": None,        # dotted path in the manifest naming the build that writes worlds
+    "world_parts": [],           # the instance's world folders, kept and restored by snapshots
+    "rewrite": [],               # JSON files that hold the instance's own folder and name
+    "linkable_dirs": [],         # folders the game only reads: shared by hard link
+    "linkable_suffixes": [],     # file suffixes the game only reads: shared by hard link
+    "lab_root": None,            # the checkout's folder of lab items, for lab.migrate
+    "lab_items": [],             # [item, what it is] in lab_root, moved by lab.migrate
+    "stays": [],                 # lab items that must never move
+}
+
+
+class ProfileError(ValueError):
+    pass
+
+
+@dataclass
+class Layout:
+    """The parts of an instance the store treats differently."""
+    world_parts: list[str] = field(default_factory=list)
+    rewrite: list[str] = field(default_factory=list)
+    linkable_dirs: list[str] = field(default_factory=list)
+    linkable_suffixes: list[str] = field(default_factory=list)
+
+    def linkable(self, relative: str) -> bool:
+        """Files the game only reads: shared by hard link. Everything else is a private copy."""
+        rel = relative.replace("\\", "/")
+        if any(rel == part or rel.startswith(part + "/") for part in self.world_parts):
+            return False
+        if any(rel.startswith(part + "/") for part in self.linkable_dirs):
+            return True
+        return any(rel.endswith(suffix) for suffix in self.linkable_suffixes)
+
+
+def merged(config: dict) -> dict:
+    """``[modules.lab] profile`` over the neutral defaults, checked: unknown keys and missing required ones are
+    refused with the key's name."""
+    given = config.get("profile") or {}
+    unknown = sorted(set(given) - set(DEFAULTS))
+    if unknown:
+        raise ProfileError(f"unknown instance profile key(s) {', '.join(unknown)} (known: {', '.join(DEFAULTS)})")
+    profile = copy.deepcopy(DEFAULTS)
+    profile.update(given)
+    missing = [key for key in REQUIRED if not profile.get(key)]
+    if missing:
+        raise ProfileError(f"the instance profile needs {', '.join(missing)} (set [modules.lab.profile]; see "
+                           "config.example/modules/lab.toml)")
+    return profile
+
+
+def layout(profile: dict) -> Layout:
+    return Layout(list(profile["world_parts"]), list(profile["rewrite"]), list(profile["linkable_dirs"]),
+                  list(profile["linkable_suffixes"]))
+
+
+def checkout_of(relative: str) -> tuple[str | None, str]:
+    """``{name}/rest`` -> (name, rest); a plain path -> (None, path)."""
+    if relative.startswith("{") and "}" in relative:
+        name, _, rest = relative[1:].partition("}")
+        return name, rest.lstrip("/\\")
+    return None, relative
+
+
+def dotted(data, path: str):
+    for part in path.split("."):
+        data = data.get(part) if isinstance(data, dict) else None
+    return data
+
+
+def world_key(manifest: dict, profile: dict) -> tuple[dict, str | None]:
+    """What a world depends on, read from the instance manifest by the profile's dotted paths (a leading # keeps
+    only the SHA-256 of the value), and the build that wrote it."""
+    import hashlib
+    import json
+    key = {}
+    for name, path in profile["world_key"].items():
+        if path.startswith("#"):
+            value = json.dumps(dotted(manifest, path[1:]) or {}, sort_keys=True)
+            key[name] = hashlib.sha256(value.encode()).hexdigest()
+        else:
+            key[name] = dotted(manifest, path)
+    writer = profile.get("world_writer")
+    return key, dotted(manifest, writer) if writer else None
+
+
+def command(template: list[str], **values) -> list[str]:
+    values.setdefault("name_repr", repr(values.get("name")))
+    return [str(part).format(**values) for part in template]

@@ -1,0 +1,268 @@
+"""The API a module's handlers see. A handler is ``def name(ctx: Context, **params) -> dict``.
+
+Returning means ``ok``; ``ctx.finding(...)`` makes the outcome ``finding``; raising ``ParamError`` means
+``usage``; any other exception means ``environment`` (traceback in the job log, not the envelope).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import mimetypes
+import os
+import subprocess
+import threading
+import time
+from pathlib import Path
+
+
+class ParamError(Exception):
+    """The request's parameters are wrong in a way the schema could not catch: outcome ``usage``."""
+
+
+class EnvironmentProblem(Exception):
+    """Something outside the request is missing or broken: outcome ``environment``."""
+
+
+class QuoteChanged(Exception):
+    """The approved quote no longer holds (the price rose, the offer went): the job returns to
+    ``awaiting_approval`` with ``quote``, and the earlier yes no longer counts."""
+
+    def __init__(self, quote: dict, reason: str):
+        super().__init__(reason)
+        self.quote, self.reason = quote, reason
+
+
+class Cancelled(Exception):
+    pass
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def sha256_tree(path: Path, known: dict | None = None) -> tuple[str, int]:
+    """A directory's digest: SHA-256 over its sorted relative paths and file digests; with file count.
+
+    ``known`` (a path's ``(size, mtime_ns, digest)``, kept by the caller) lets one that hashes the same files again
+    skip those whose size and modification time are unchanged."""
+    path = Path(path)
+    if path.is_file():
+        return _file_digest(path, known), 1
+    digest = hashlib.sha256()
+    count = 0
+    for file in sorted(p for p in path.rglob("*") if p.is_file()):
+        relative = file.relative_to(path).as_posix()
+        digest.update(f"{relative}\0{_file_digest(file, known)}\n".encode())
+        count += 1
+    return digest.hexdigest(), count
+
+
+RACY_SECONDS = 2.0  # a file changed this recently may change again within the same clock tick, unseen by its stat
+
+
+def _file_digest(file: Path, known: dict | None) -> str:
+    if known is None:
+        return sha256_file(file)
+    stat = file.stat()
+    key = str(file)
+    hit = known.get(key)
+    if hit and hit[0] == stat.st_size and hit[1] == stat.st_mtime_ns:
+        return hit[2]
+    digest = sha256_file(file)
+    if time.time() - stat.st_mtime > RACY_SECONDS:
+        known[key] = (stat.st_size, stat.st_mtime_ns, digest)
+    return digest
+
+
+class _Log:
+    def __init__(self, ctx: "Context"):
+        self.ctx = ctx
+
+    def _emit(self, level, msg, **fields):
+        self.ctx.emit("log", level=level, msg=str(msg), fields=fields or None)
+
+    def debug(self, msg, **f):
+        self._emit("DEBUG", msg, **f)
+
+    def info(self, msg, **f):
+        self._emit("INFO", msg, **f)
+
+    def warning(self, msg, **f):
+        self._emit("WARNING", msg, **f)
+
+    def error(self, msg, **f):
+        self._emit("ERROR", msg, **f)
+
+
+class Context:
+    def __init__(self, spec: dict, emit):
+        self.spec = spec
+        self._emit = emit
+        self.job: str = spec["job"]
+        self.command: str = spec["command"]
+        self.module: str = spec["module"]
+        self.params: dict = spec.get("params", {})
+        self.config: dict = spec.get("module_config", {})
+        self.machine: str = spec.get("machine", "container")
+        self.work = Path(spec["work"])
+        self.out = Path(spec["out"])
+        self.quote: dict | None = spec.get("quote")
+        self.log = _Log(self)
+        self.cancelled = threading.Event()
+        self.outcome = "ok"
+        self.summary_text: str | None = None
+        self.findings: list[str] = []
+        self._secrets: dict = spec.get("secrets", {})
+        self._jdks: dict = spec.get("jdks", {})
+        self.work.mkdir(parents=True, exist_ok=True)
+        self.out.mkdir(parents=True, exist_ok=True)
+
+    # -- events ----------------------------------------------------------------------------------
+    def emit(self, kind: str, **data):
+        self._emit({"kind": kind, "ts": time.time(), **data})
+
+    def progress(self, phase: str, fraction: float | None = None, msg: str | None = None):
+        self.emit("progress", phase=phase, fraction=fraction, msg=msg)
+
+    def measure(self, name: str, value, unit: str | None = None, **labels):
+        self.emit("measurement", name=name, value=value, unit=unit, labels=labels)
+
+    def output(self, name: str, path, media_type: str | None = None) -> str:
+        path = Path(path)
+        digest, count = sha256_tree(path)
+        size = path.stat().st_size if path.is_file() else sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+        kind = media_type or (mimetypes.guess_type(path.name)[0] if path.is_file() else "inode/directory") \
+            or "application/octet-stream"
+        self.emit("artifact", name=name, path=str(path), sha256=digest, bytes=size, media_type=kind,
+                  files=count)
+        return digest
+
+    def finding(self, summary: str):
+        self.outcome = "finding"
+        self.findings.append(summary)
+        self.summary_text = summary if len(self.findings) == 1 else f"{len(self.findings)} findings: {self.findings[0]}"
+        self.emit("finding", summary=summary)
+
+    def summary(self, text: str):
+        self.summary_text = text
+
+    def cost(self, amount: float, currency: str = "USD", **details):
+        """Records money this job spent (a rental's charge); it appears as the envelope's ``cost``."""
+        self.emit("cost", amount=round(float(amount), 6), currency=currency, **details)
+
+    def machine_info(self, **info):
+        """Describes the machine the work ran on (card, driver, host); merged into the envelope."""
+        self.emit("machine", **info)
+
+    # -- resources -------------------------------------------------------------------------------
+    def jdk(self, version: str | int) -> Path:
+        key = str(version)
+        if key not in self._jdks:
+            raise EnvironmentProblem(f"JDK {key} is not available (have: {', '.join(sorted(self._jdks)) or 'none'})")
+        home = Path(self._jdks[key])
+        release = home / "release"
+        build = key
+        if release.is_file():
+            for line in release.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("JAVA_RUNTIME_VERSION="):
+                    build = line.split("=", 1)[1].strip().strip('"')
+        self.emit("toolchain", jdk=build)
+        return home
+
+    def java(self, version: str | int) -> Path:
+        home = self.jdk(version)
+        exe = home / "bin" / ("java.exe" if os.name == "nt" else "java")
+        return exe
+
+    def secret(self, name: str) -> str:
+        path = self._secrets.get(name)
+        if not path or not Path(path).is_file():
+            raise EnvironmentProblem(f"secret {name} is not mounted")
+        return Path(path).read_text(encoding="utf-8").strip()
+
+    def secret_path(self, name: str) -> Path:
+        path = self._secrets.get(name)
+        if not path or not Path(path).exists():
+            raise EnvironmentProblem(f"secret {name} is not mounted")
+        return Path(path)
+
+    def host_path(self, container_path) -> str:
+        """The caller-facing host path of a container path (for messages and data)."""
+        from .paths import PathMap
+        from .settings import Root
+        roots = [Root(**r) for r in self.spec.get("roots", [])]
+        return PathMap(roots).to_host(str(container_path), self.spec.get("path_style", "windows"))
+
+    def requote(self, quote: dict, reason: str):
+        raise QuoteChanged(quote, reason)
+
+    def check_cancel(self):
+        if self.cancelled.is_set():
+            raise Cancelled()
+
+    def sleep(self, seconds: float):
+        if self.cancelled.wait(seconds):
+            raise Cancelled()
+
+    # -- running tools ---------------------------------------------------------------------------
+    def run(self, args: list, *, cwd=None, env: dict | None = None, timeout: float | None = None,
+            check: bool = False, log_output: bool = True, phase: str | None = None,
+            capture: bool = True) -> subprocess.CompletedProcess:
+        """Runs a tool; its output lines go to the job log; cancelling the job kills it."""
+        args = [str(a) for a in args]
+        self.log.debug("$ " + " ".join(args))
+        merged_env = dict(os.environ, **(env or {}))
+        process = subprocess.Popen(args, cwd=cwd, env=merged_env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True,
+                                   encoding="utf-8", errors="replace")
+        lines: list[str] = []
+        watcher = threading.Thread(target=self._kill_on_cancel, args=(process,), daemon=True)
+        watcher.start()
+        deadline = time.monotonic() + timeout if timeout else None
+        for line in process.stdout:
+            line = line.rstrip("\n")
+            if capture:
+                lines.append(line)
+            if log_output:
+                self.log.debug(line)
+            if deadline and time.monotonic() > deadline:
+                process.kill()
+                raise EnvironmentProblem(f"{args[0]} exceeded {timeout:.0f} s")
+        code = process.wait()
+        if self.cancelled.is_set():
+            raise Cancelled()
+        result = subprocess.CompletedProcess(args, code, "\n".join(lines), "")
+        if check and code != 0:
+            raise EnvironmentProblem(f"{Path(args[0]).name} exited {code}: " + "\n".join(lines[-5:]))
+        return result
+
+    def _kill_on_cancel(self, process):
+        while process.poll() is None:
+            if self.cancelled.wait(0.5):
+                process.kill()
+                return
+
+    # -- calling other commands (plans) ----------------------------------------------------------
+    def call(self, command: str, out: str | None = None, fresh: bool = False, **params) -> dict:
+        """Submits another command to the daemon and waits for its envelope (used by plans)."""
+        from wb.client import Client
+        client = Client(os.environ.get("WB_URL"), os.environ.get("WB_TOKEN"))
+        client.path_style = "posix"
+        job = client.submit(command, params, out=out, fresh=fresh)
+        self.emit("child", job=job.id, command=command)
+        while True:
+            envelope = job.wait(timeout=30)
+            if envelope.get("state") in ("settled", "cancelled", "interrupted", "awaiting_approval"):
+                return dict(envelope)
+            if self.cancelled.is_set():
+                job.cancel()
+                raise Cancelled()
+
+
+def canonical(value) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)

@@ -1,0 +1,7 @@
+# generated from image/pins.toml by `python image/pins.py lock`: key sha256 url
+8 27eda854481d20806d918b30cdd417c6bed4fd15882e24f3595dc8ae7fb5d095 https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u514-b01/OpenJDK8U-jdk_x64_linux_hotspot_8u514b01.tar.gz
+17 0b0ac5eab6db6abaec68c9913bcddb31321e5da411c45073d520d9c125e6f7b4 https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.21.1%2B2/OpenJDK17U-jdk_x64_linux_hotspot_17.0.21.1_2.tar.gz
+25 760f91b22c3efc9bd1b64ff950598231be82928cc807e30691a0e7a2995a62c0 https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz
+26 451c12e68747bcfa2fb5a2c16b00483fedb9fa6d77bc962d30957f76ac17044d https://github.com/adoptium/temurin26-binaries/releases/download/jdk-26.0.2.1%2B1/OpenJDK26U-jdk_x64_linux_hotspot_26.0.2.1_1.tar.gz
+27 005e57ee860978acfeeff1be2b30f770664fe2b941e9b803c61c76992086d107 https://github.com/adoptium/temurin27-binaries/releases/download/jdk-27.0.1.1%2B4/OpenJDK27U-jdk_x64_linux_hotspot_27.0.1.1_4.tar.gz
+28-ea cc1bf0bb2055818fced61cce28e599ab77a56027bae18f63a7f613dc2543e826 https://github.com/adoptium/temurin28-binaries/releases/download/jdk-28%2B25-ea-beta/OpenJDK-jdk_x64_linux_hotspot_28_25-ea.tar.gz

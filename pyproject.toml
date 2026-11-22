@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "workbench-reloaded"
+version = "0.1.0"
+description = "Workbench Reloaded: the daemon, the host runner and the first-party modules."
+license = { file = "LICENSE" }
+requires-python = ">=3.13"
+dependencies = ["wb"]
+
+[project.optional-dependencies]
+frames = ["numpy", "pillow"]
+assets = ["numpy", "pillow"]
+
+[project.scripts]
+wb-core = "wb_core.daemon:main"
+wb-host = "wb_host.cli:main"
+
+[project.entry-points."wb.modules"]
+selftest = "wb_selftest"
+ledger = "wb_ledger"
+vast = "wb_vast"
+lab = "wb_lab"
+tools = "wb_tools"
+frames = "wb_frames"
+runs = "wb_runs"
+plan = "wb_plan"
+toolchain = "wb_toolchain"
+build = "wb_build"
+jar = "wb_jar"
+source = "wb_source"
+ci = "wb_ci"
+world = "wb_world"
+render = "wb_render"
+assets = "wb_assets"
+profile = "wb_profile"
+mixin = "wb_mixin"
+probe = "wb_probe"
+
+[tool.setuptools]
+package-dir = { "wb_core" = "core/wb_core", "wb_host" = "host/wb_host", "wb_selftest" = "modules/selftest/wb_selftest", "wb_ledger" = "modules/ledger/wb_ledger", "wb_vast" = "modules/vast/wb_vast", "wb_lab" = "modules/lab/wb_lab", "wb_tools" = "modules/tools/wb_tools", "wb_frames" = "modules/frames/wb_frames", "wb_runs" = "modules/runs/wb_runs", "wb_plan" = "modules/plan/wb_plan", "wb_toolchain" = "modules/toolchain/wb_toolchain", "wb_build" = "modules/build/wb_build", "wb_jar" = "modules/jar/wb_jar", "wb_source" = "modules/source/wb_source", "wb_ci" = "modules/ci/wb_ci", "wb_world" = "modules/world/wb_world", "wb_render" = "modules/render/wb_render", "wb_assets" = "modules/assets/wb_assets", "wb_profile" = "modules/profile/wb_profile", "wb_mixin" = "modules/mixin/wb_mixin", "wb_probe" = "modules/probe/wb_probe" }
+packages = ["wb_core", "wb_host", "wb_selftest", "wb_ledger", "wb_vast", "wb_lab", "wb_tools", "wb_frames", "wb_runs", "wb_plan", "wb_toolchain", "wb_build", "wb_jar", "wb_source", "wb_ci", "wb_world", "wb_render", "wb_assets", "wb_profile", "wb_mixin", "wb_probe"]
+
+[tool.setuptools.package-data]
+"*" = ["module.toml", "migrations/*.sql", "profiles/*.json", "templates/**/*", "java/*.java"]

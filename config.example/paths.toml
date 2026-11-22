@@ -1,0 +1,12 @@
+# [paths]: the folders the container may read (ro) or write (rw). Commands' path parameters must lie under a
+# root; results report host paths. `wb up` mounts exactly these.
+
+[roots.projects]
+host = 'D:\'  # scrub: allow
+container = "/mnt/projects"
+mode = "ro"
+
+[roots.out]
+host = 'D:\work\out'  # scrub: allow
+container = "/mnt/out"
+mode = "rw"

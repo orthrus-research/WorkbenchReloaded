@@ -1,0 +1,88 @@
+[module]
+name = "profile"
+version = "0.1.0"
+summary = "Profiling and diagnostics of Java game processes: JFR recordings over time windows, cost charged to the code that incurred it, native memory by owner, and the JFR settings that feed them."
+
+[[command]]
+name = "jfr"
+summary = "A JFR recording window by window: execution samples by package-prefix group, allocation, GC pauses, file I/O, lock waits and tick stages, with a Chrome trace of the windows."
+handler = "wb_profile.commands:jfr"
+deterministic = true
+requires = { jdk = ["26"] }
+resources = { cpu = 2, mem_gb = 2 }
+timeout = "2h"
+params.recording = { type = "path.in", summary = "a .jfr recording" }
+params.windows = { type = "path.in", optional = true, summary = "a JSON list of windows: name, and start/end (ISO-8601 with a zone, or epoch ns) or from/to (offsets from the recording's start, e.g. 30 or \"90s\")" }
+params.split = { type = "duration", optional = true, min = 0.001, summary = "fixed windows of this length instead of a windows file" }
+params.skip = { type = "duration", default = 0, summary = "leave the recording's first seconds (startup) out of the whole or split windows" }
+params.groups = { type = "object", default = {}, summary = "package prefix -> group (null or \"\" makes a prefix transparent); unmapped code groups by package root" }
+params.groups_file = { type = "path.in", optional = true, summary = "a JSON file of groups, under the groups param" }
+params.stages = { type = "object", default = {}, summary = "a tick stage map: {tick, thread, stages = {method = stage}} (see wb_profile/stages.py)" }
+params.stages_file = { type = "path.in", optional = true, summary = "a JSON file of the stage map, under the stages param" }
+params.top = { type = "int", default = 20, min = 1, max = 500, summary = "rows kept in each table" }
+result.windows = { type = "int" }
+result.seconds = { type = "float" }
+result.samples = { type = "int" }
+result.groups = { type = "list" }
+result.allocationBytes = { type = "int" }
+result.gcPauseMs = { type = "float" }
+result.notes = { type = "list" }
+
+[[command]]
+name = "attribute"
+summary = "Charge a recording's thread CPU, samples, allocation, compilation and waits to the owner whose code incurred them, by a package-prefix -> owner map."
+handler = "wb_profile.commands:attribute"
+deterministic = true
+requires = { jdk = ["26"] }
+resources = { cpu = 2, mem_gb = 2 }
+timeout = "2h"
+params.recording = { type = "path.in", summary = "a .jfr recording" }
+params.windows = { type = "path.in", optional = true, summary = "a JSON list of windows (as profile.jfr reads them)" }
+params.split = { type = "duration", optional = true, min = 0.001, summary = "fixed windows of this length instead" }
+params.skip = { type = "duration", default = 0, summary = "leave the recording's first seconds out of the whole or split windows" }
+params.owners = { type = "object", default = {}, summary = "prefix -> owner, or {owners, engine, tokens, wrappers, waits} (see wb_profile/owners.py)" }
+params.owners_file = { type = "path.in", optional = true, summary = "a JSON file of the owner map, under the owners param" }
+params.cores = { type = "int", optional = true, min = 1, summary = "logical processors of the recorded machine; default: from the recording" }
+params.threads = { type = "list", items = "string", default = [], summary = "thread groups (names with digits as #) to break out in the ranking" }
+params.top = { type = "int", default = 12, min = 1, max = 500, summary = "rows kept in each table" }
+result.windows = { type = "int" }
+result.cores = { type = "int" }
+result.ranking = { type = "object" }
+result.notes = { type = "list" }
+
+[[command]]
+name = "memory"
+summary = "A JVM's memory by owner class (heap, JVM internals, code cache, native libraries and drivers, thread stacks, direct buffers, unaccounted) from its NMT summary and memory map, live or from saved files."
+handler = "wb_profile.commands:memory"
+resources = { cpu = 0.5 }
+params.pid = { type = "int", optional = true, min = 1, summary = "a running JVM started with -XX:NativeMemoryTracking=summary, asked with jcmd" }
+params.nmt = { type = "path.in", optional = true, summary = "a saved `jcmd PID VM.native_memory summary`" }
+params.system_map = { type = "path.in", optional = true, summary = "a saved `jcmd PID System.map` (Linux or Windows, JDK 21+)" }
+params.jdk = { type = "string", default = "26", summary = "the JDK whose jcmd asks the JVM (with pid)" }
+params.top = { type = "int", default = 8, min = 1, max = 100, summary = "largest mapped files listed" }
+result.basis = { type = "string" }
+result.classes = { type = "object" }
+result.processTotal = { type = "int", optional = true }
+result.notes = { type = "list" }
+
+[[command]]
+name = "settings"
+summary = "Write JFR settings (a .jfc) that record what profile.jfr and profile.attribute read, tracing a stage map's methods, and give the JVM options to use them."
+handler = "wb_profile.commands:settings"
+deterministic = true
+resources = { cpu = 0.2 }
+params.stages = { type = "object", default = {}, summary = "a tick stage map whose tick and stage methods are traced" }
+params.stages_file = { type = "path.in", optional = true, summary = "a JSON file of the stage map" }
+params.methods = { type = "list", items = "string", default = [], summary = "more methods to trace: package.Class.method or package.Class::method" }
+params.sample_period = { type = "duration", default = "10ms", min = 0.001, summary = "execution and native sampling period" }
+params.threshold = { type = "duration", default = "1ms", summary = "waits, file I/O and safepoints recorded from this long" }
+params.method_threshold = { type = "duration", default = 0, summary = "traced calls recorded from this long" }
+params.allocation_rate = { type = "string", default = "150/s", pattern = "^\\d+/(ms|s|m|h)$", summary = "allocation samples kept, at most" }
+params.cpu_period = { type = "duration", default = "1s", min = 0.01, summary = "thread and process CPU load period" }
+params.compilation_threshold = { type = "duration", default = "100ms", summary = "compilations recorded from this long" }
+params.tlab = { type = "bool", default = false, summary = "also record TLAB allocation events, the only allocation record before JDK 16" }
+params.name = { type = "string", default = "profile", pattern = "^[A-Za-z0-9._-]+$", summary = "the settings file's name" }
+result.settings = { type = "string" }
+result.options = { type = "list" }
+result.traced = { type = "list" }
+result.events = { type = "list" }

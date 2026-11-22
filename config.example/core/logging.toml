@@ -1,0 +1,4 @@
+# [core.logging]: Minecraft-style logs (logs/latest.log rolled to logs/<date>-<n>.log.gz) with a JSONL sidecar.
+stdout_level = "INFO"
+file_level = "DEBUG"
+rotate_mb = 64

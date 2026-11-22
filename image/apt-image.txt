@@ -1,0 +1,27 @@
+# generated from image/pins.toml
+ca-certificates
+curl
+wget
+git
+openssh-client
+xz-utils
+zip
+unzip
+procps
+python3
+python3-venv
+python3-numpy
+python3-scipy
+python3-pil
+ffmpeg
+xvfb
+xauth
+mesa-utils
+libegl1
+libegl-mesa0
+libgl1
+libgl1-mesa-dri
+libglu1-mesa
+libvulkan1
+glslang-tools
+fonts-dejavu-core

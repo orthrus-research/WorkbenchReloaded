@@ -1,0 +1,16 @@
+# Local plans, scratch and evidence
+.local/
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+!/modules/build/
+dist/
+.venv/
+# Java and Gradle
+.gradle/
+out/
+*.class
+# Node
+node_modules/

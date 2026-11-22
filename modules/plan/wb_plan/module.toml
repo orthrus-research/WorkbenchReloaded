@@ -1,0 +1,25 @@
+[module]
+name = "plan"
+version = "0.1.0"
+summary = "Declarative turns and campaigns: pinned inputs, a declared protocol, steps that are Workbench commands; checked first, then run on the host or a rented GPU."
+
+[[command]]
+name = "check"
+summary = "Check a plan without running anything: commands active, parameters known, inputs present and pinned, references sound."
+handler = "wb_plan.commands:check"
+resources = { cpu = 0.2 }
+params.plan = { type = "path.in", summary = "a plan TOML file" }
+params.machine = { type = "enum", values = ["host", "rental"], optional = true }
+result.problems = { type = "list" }
+result.warnings = { type = "list" }
+
+[[command]]
+name = "run"
+summary = "Check, then run a plan step by step (consecutive host steps under one GPU lease); stops at the first step its protocol does not accept."
+handler = "wb_plan.commands:run"
+resources = { cpu = 0.2 }
+timeout = "12h"
+cancel_grace = "4m"
+params.plan = { type = "path.in" }
+params.machine = { type = "enum", values = ["host", "rental"], optional = true, summary = "overrides plan.machine" }
+result.ran = { type = "list" }

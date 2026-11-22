@@ -1,0 +1,51 @@
+[module]
+name = "probe"
+version = "0.1.0"
+summary = "Probes and harnesses: JVM runs without the game. Small Java programs compiled against an artifact and run in throwaway JVMs on known JDKs."
+
+[[command]]
+name = "jdk-matrix"
+summary = "Compile probe sources with javac --release N against an artifact's class path, run each in throwaway JVMs on several JDKs, and pass each on exit 0 plus a marker line."
+handler = "wb_probe.commands:jdk_matrix"
+resources = { cpu = 1, mem_gb = 2 }
+timeout = "2h"
+params.sources = { type = "list", items = "path.in", summary = "probe sources: .java files or folders of them; each that declares main is a probe" }
+params.classpath = { type = "list", items = "path.in", default = [], summary = "the artifact under test and what it needs: JARs or class folders" }
+params.release = { type = "int", default = 8, min = 8, summary = "javac --release" }
+params.jdks = { type = "list", items = "string", default = [], summary = "the JDKs to run on, as Workbench names them (8, 17, 26); default: every JDK that runs the release" }
+params.compiler = { type = "string", default = "", summary = "the JDK whose javac compiles (default: the newest)" }
+params.marker = { type = "string", default = "PROBE_OK", summary = "a passing run prints a line starting with this; empty: the exit status alone" }
+params.args = { type = "list", items = "string", default = [], summary = "program arguments; {work} is a fresh folder for each run" }
+params.jvm_args = { type = "list", items = "string", default = [], summary = "JVM options for every run" }
+params.timeout = { type = "duration", default = "60s", summary = "each run is killed after this" }
+result.passed = { type = "bool" }
+result.compiled = { type = "bool" }
+result.jdks = { type = "object" }
+result.runs = { type = "list" }
+result.report = { type = "string" }
+
+[[command]]
+name = "api-consumer"
+summary = "Prove an API JAR stands alone: compile a consumer against it and its declared libraries only with javac --release N, run it phase by phase in fresh JVMs, and check what the JAR links."
+handler = "wb_probe.commands:api_consumer"
+resources = { cpu = 1, mem_gb = 2 }
+timeout = "1h"
+params.api = { type = "path.in", summary = "the built API JAR" }
+params.consumer = { type = "list", items = "path.in", summary = "the consumer's sources: .java files or folders of them" }
+params.libraries = { type = "list", items = "path.in", default = [], summary = "the API's declared dependencies: the only other entries on the class paths" }
+params.main = { type = "string", optional = true, summary = "the consumer's main class (default: the one source that declares main)" }
+params.release = { type = "int", default = 8, min = 8, summary = "javac --release" }
+params.jdk = { type = "string", default = "26", summary = "the JDK that compiles and runs the consumer" }
+params.phases = { type = "list", items = "string", default = ["prepare", "resume"], summary = "one fresh JVM per phase, in order; a failing phase stops the rest" }
+params.args = { type = "list", items = "string", default = ["{phase}", "{state}"], summary = "program arguments: {phase}, {state} (a folder the phases share), {api}, {work}" }
+params.marker = { type = "string", default = "PROBE_OK", summary = "a passing phase prints a line starting with this; empty: the exit status alone" }
+params.jvm_args = { type = "list", items = "string", default = [], summary = "JVM options for every phase" }
+params.forbid = { type = "list", items = "string", default = [], summary = "packages the API JAR must not refer to, such as net.minecraft" }
+params.links = { type = "bool", default = true, summary = "check with jdeps that every class the API JAR refers to is in it, a library or the JDK" }
+params.timeout = { type = "duration", default = "60s", summary = "each phase is killed after this" }
+result.passed = { type = "bool" }
+result.compiled = { type = "bool" }
+result.phases = { type = "list" }
+result.missing = { type = "list" }
+result.forbidden = { type = "list" }
+result.report = { type = "string" }

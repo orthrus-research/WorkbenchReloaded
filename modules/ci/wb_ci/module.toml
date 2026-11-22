@@ -1,0 +1,78 @@
+[module]
+name = "ci"
+version = "0.1.0"
+summary = "Run a project's jobs, gate pushes on them, and keep commits clean."
+
+[config]
+projects = { type = "object", default = {}, summary = "the projects ci runs, by name: repo, config, jdk, env, python (see wb_ci/commands.py)" }
+projects_root = { type = "string", default = "", summary = "the host folder relative project repos are under (a shared config names repos relatively)" }
+jdk = { type = "string", default = "26", summary = "the JDK major a project's jobs get as JAVA_HOME unless the project names another" }
+excludes = { type = "list", items = "string", default = [], summary = "ignore patterns a working-tree run applies, standing in for the host's own excludes file" }
+tool_env = { type = "object", default = {}, summary = "environment for ci.scrub and ci.actions, the absorbed tools: e.g. ORTHRUS_SCRUB_TERMS_FILE and ORTHRUS_SCRUB_RULES_FILE, a private terms file and rules file kept in the machine's config folder (in the container under /etc/wb), never in a repository" }
+git_config = { type = "object", default = {}, summary = "the host's system and global git settings a working-tree run applies, by key (core.autocrlf, ...), for a container that cannot read them; the repository's own config still wins. Empty: git's own config" }
+workdir = { type = "string", default = "", summary = "where clean trees are built; empty: <state>/ci/trees" }
+records = { type = "string", default = "", summary = "where run records are kept, one folder per project; empty: <state>/ci/records" }
+gradle_home = { type = "string", default = "", summary = "a Gradle home that survives the container, whose init.d serves toolchain's rescue repository and substitutions to every build (written each run); empty: <state>/cache/gradle" }
+pin_cache = { type = "string", default = "", summary = "the shared cache of pinned files by SHA-256 (WB_PIN_CACHE in every job); empty: <state>/cache/pins" }
+python_cache = { type = "string", default = "", summary = "where projects' Python environments are cached by requirements; empty: <state>/cache/python" }
+
+[[command]]
+name = "run"
+summary = "Run a project's jobs from a clean clone (pinned repositories at their pins), keeping the records in Workbench; their Gradle builds get toolchain's rescue repository."
+handler = "wb_ci.commands:run"
+requires = { binary = ["git"], module = ["toolchain"] }
+resources = { cpu = 4, mem_gb = 8 }
+timeout = "3h"
+params.project = { type = "string", summary = "a name under [modules.ci.projects]" }
+params.commit = { type = "string", default = "HEAD", summary = "the commit to run; worktree: the checkout's working tree as it would be committed" }
+params.workflow = { type = "string", default = "", summary = "a workflow or job of the jobs file (default: its workflow)" }
+params.jobs = { type = "list", items = "string", default = [], summary = "more workflows or jobs" }
+params.if_needed = { type = "bool", default = true, summary = "skip jobs that already passed for these trees" }
+params.keep_going = { type = "bool", default = false }
+params.keep = { type = "bool", default = false, summary = "keep the clean trees after the run" }
+params.checkout = { type = "path.in", optional = true, digest = "git", summary = "with commit=worktree: another checkout of the project's repository (a linked worktree) whose working tree to run" }
+params.dry_run = { type = "bool", default = false }
+result.commit = { type = "string" }
+result.passed = { type = "list" }
+result.failed = { type = "list" }
+
+[[command]]
+name = "gate"
+summary = "The push gate: refuse pushed commits whose trees have not passed every required job in Workbench's records."
+handler = "wb_ci.commands:gate"
+requires = { binary = ["git"] }
+params.project = { type = "string" }
+params.refs = { type = "list", items = "string", default = [], summary = "git's pre-push lines" }
+params.refs_file = { type = "path.in", optional = true, summary = "a file of git's pre-push lines (what the hook passes)" }
+
+[[command]]
+name = "status"
+summary = "What a project's commit has passed, and what it still needs before the gate lets it through."
+handler = "wb_ci.commands:status"
+requires = { binary = ["git"] }
+params.project = { type = "string" }
+params.commit = { type = "string", default = "HEAD" }
+
+[[command]]
+name = "hook"
+summary = "Install (or remove) the pre-push hook that asks ci.gate, in the project's own checkout on the host."
+handler = "wb_ci.commands:hook"
+runs_on = ["host"]
+params.project = { type = "string" }
+params.install = { type = "bool", default = true, summary = "false: remove it, restoring any hook it replaced" }
+
+[[command]]
+name = "actions"
+summary = "Run a project's build and test jobs in its own checkout, like a small CI (ci.run builds from clean trees instead)."
+handler = "wb_tools.adapter:run_tool"
+aliases = ["tools.actions"]
+params.argv = { type = "list", items = "string", default = [], summary = "the tool's own arguments; absolute host paths are translated" }
+params.cwd = { type = "path.in", optional = true, digest = "git", summary = "run in this folder (a project checkout)" }
+
+[[command]]
+name = "scrub"
+summary = "Refuse commits carrying attribution trailers, tooling files, local paths or personal data."
+handler = "wb_tools.adapter:run_tool"
+aliases = ["tools.scrub"]
+params.argv = { type = "list", items = "string", default = [], summary = "the tool's own arguments; absolute host paths are translated" }
+params.cwd = { type = "path.in", optional = true, digest = "git", summary = "run in this folder (a project checkout)" }

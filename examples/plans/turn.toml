@@ -1,0 +1,55 @@
+# An example turn: prepare an instance, settle, draw a reference, and measure the capture noise.
+#   wb run plan.check plan=D:\work\plans\quadrature-phase2-r1.toml  # scrub: allow
+#   wb run plan.run   plan=D:\work\plans\quadrature-phase2-r1.toml --out D:\work\out\phase2-r1  # scrub: allow
+# The three game steps run as one lab.turn under one GPU lease, exactly as the queued turn did.
+
+[plan]
+name = "example-turn"
+summary = "A settle run and a reference run of one fresh instance, textures held still."
+protocol = """
+R1 settles a fresh instance and draws the reference with the game's terrain; both runs hold textures still.
+An instance's first run differs in light from every later one: never score against it. Stop at the first failed step.
+"""
+machine = "host"
+turn = true
+
+[inputs.quadrature]
+path = 'D:\work\build\quadrature-0.1.0-dev.jar'  # scrub: allow
+sha256 = "9a3f3b3e1bcdd0cafb7fd6aaa8d60659eedd6b392faf88235a1c4c2717be7ca0"
+
+[inputs.cubature]
+path = 'D:\work\pins\Cubature-1.12.2-0.1.4.0-19f9961a-cleanroom.jar'  # scrub: allow
+sha256 = "37da448876803e0c01283ef89ec95993b909345b55f1e41335558f3b946dbf9f"
+
+[inputs.riven]
+path = 'D:\work\frozen\riven-cleanroom.jar'  # scrub: allow
+sha256 = "0e9e9b0b2c981b9494bd0a3be8c61a238e31b41fbb19cf850fad88343eb96ba5"
+
+[[step]]
+id = "prepare"
+command = "lab.prepare"
+params = { name = "quadrature-river-01", seed = 2485331, scale = 4, args = ["--no-distant-horizons", "--cubic-artifact", "{inputs.cubature}", "--client-mod", "{inputs.quadrature}", "--artifact", "{inputs.riven}"] }
+
+[[step]]
+id = "settle"
+command = "lab.play"
+params = { name = "quadrature-river-01", tour = 'D:\work\tours\forests-2485331.json', label = "r1-settle-game", options = "-Dquadrature.terrain=game -Dquadrature.reversedDepth=false -Dquadrature.textures.still=true -Dquadrature.frameLog=true -Dquadrature.exitOnOutOfMemory=true" }  # scrub: allow
+
+[[step]]
+id = "reference"
+command = "lab.play"
+params = { name = "quadrature-river-01", tour = 'D:\work\tours\forests-2485331.json', label = "r2-reference-game", options = "-Dquadrature.terrain=game -Dquadrature.reversedDepth=false -Dquadrature.textures.still=true -Dquadrature.frameLog=true -Dquadrature.exitOnOutOfMemory=true" }  # scrub: allow
+
+[[step]]
+id = "noise"
+command = "frames.measure"
+params = { runs = ["{steps.settle.outputs.r1-settle-game-captures}", "{steps.reference.outputs.r2-reference-game-captures}"] }
+accept = ["ok", "finding"]
+
+[rental]
+# For `plan.run machine=rental`: the same game steps on a rented RTX 3060 (calibration 01's shape).
+offer = "REPLACE-WITH-AN-OFFER-FROM-vast.offers"
+max_dph = 0.10
+cap = "90m"
+lab = 'D:\work\linux-lab'  # scrub: allow
+window = "1280x720"

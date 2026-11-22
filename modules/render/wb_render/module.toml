@@ -1,0 +1,65 @@
+[module]
+name = "render"
+version = "0.1.0"
+summary = "Rendering: shader pack checks (the pack contract, every stage compiled and linked per profile, driver hazards), whether a pack really loaded, and GL qualification of a card."
+
+[config]
+loaders = { type = "object", default = {}, summary = "log pattern sets for load-verdict by name, each laid over the built-in optifine set (keys: wb_render/verdict.py)" }
+gates = { type = "object", default = {}, summary = "GL gates for gl-gate by name (keys: wb_render/gl.py)" }
+
+[[command]]
+name = "validate"
+summary = "Check an OptiFine-format shader pack: its contract (includes, paired stages, #version, properties, option references), every stage compiled and every program linked per profile with glslangValidator, and loop shapes some drivers mishandle."
+handler = "wb_render.commands:validate"
+requires = { binary = ["glslangValidator"] }
+deterministic = true
+resources = { cpu = 1, mem_gb = 1 }
+timeout = "1h"
+params.pack = { type = "path.in", summary = "the pack: a folder holding shaders/, the shaders folder itself, or a .zip" }
+params.profiles = { type = "path.in", optional = true, summary = "a TOML or JSON file of named macro sets and option values (keys: wb_render/profiles.py); without it, one profile with no macros" }
+params.version = { type = "string", default = "", summary = "the #version every stage must declare (e.g. '460 compatibility'); empty: every stage declares one and they agree; any: only that each declares one" }
+params.required = { type = "list", items = "string", default = [], summary = "programs the pack must have (vertex and fragment stage), e.g. gbuffers_terrain" }
+params.hazards = { type = "enum", values = ["error", "review", "off"], default = "error", summary = "error: a borrowed loop counter is a finding and review-level shapes are listed; review: those are findings too; off: no lint" }
+params.reviewed = { type = "list", items = "string", default = [], summary = "file:function pairs whose review-level shapes were reviewed as sound" }
+result.passed = { type = "bool" }
+result.stages = { type = "int" }
+result.programs = { type = "int" }
+result.profiles = { type = "list" }
+result.contract = { type = "list" }
+result.hazards = { type = "list" }
+
+[[command]]
+name = "load-verdict"
+summary = "Decide from a game log whether a shader pack really loaded: no fallback, load, compile, link or option errors, the pack active (and its profile, per dimension), captures only after it loaded."
+handler = "wb_render.commands:load_verdict"
+# Not cached: the pattern sets in [modules.render.loaders] are config, which a cache key does not cover.
+resources = { cpu = 0.5 }
+params.log = { type = "path.in", summary = "the game log (latest.log, a console capture, or a .log.gz)" }
+params.pack = { type = "string", default = "", summary = "the pack's folder or zip name as the loader names it; empty: any pack" }
+params.profile = { type = "string", default = "", summary = "the profile the loader must log as selected; empty: not checked" }
+params.dimensions = { type = "list", items = "string", default = [], summary = "dimensions the pack must finish loading in, as the loader names them" }
+params.min_captures = { type = "int", default = 0, min = 0, summary = "the fewest captures the run must save" }
+params.loader = { type = "string", default = "optifine", summary = "the pattern set: optifine (built in) or a name under [modules.render.loaders]" }
+params.patterns = { type = "path.in", optional = true, summary = "a TOML or JSON file of patterns laid over the loader's (keys: wb_render/verdict.py)" }
+params.screenshots = { type = "path.in", optional = true, summary = "the folder the captures were saved in: each logged capture must be there, a well-formed PNG" }
+result.passed = { type = "bool" }
+result.reasons = { type = "list" }
+
+[[command]]
+name = "gl-gate"
+summary = "Check a GL probe report (wb/gl-probe/v1 JSON, or a glxinfo dump) against a gate: GL version, profile, vendor, memory and required extensions, to qualify a local or rented card."
+handler = "wb_render.commands:gl_gate"
+# Not cached: the gates in [modules.render.gates] are config, which a cache key does not cover.
+resources = { cpu = 0.2 }
+params.report = { type = "path.in", summary = "the card's probe report (keys: wb_render/gl.py) or glxinfo output" }
+params.gate = { type = "string", default = "", summary = "a gate under [modules.render.gates]" }
+params.gate_file = { type = "path.in", optional = true, summary = "a TOML or JSON gate, laid over the named gate" }
+params.reference = { type = "path.in", optional = true, summary = "a reference card's probe report: list the extensions and limits that differ" }
+params.min_version = { type = "string", optional = true, pattern = "^[0-9]+[.][0-9]+$", summary = "the lowest GL version accepted, e.g. 4.6" }
+params.profile = { type = "enum", values = ["compatibility", "core", "any"], optional = true }
+params.vendors = { type = "list", items = "string", optional = true, summary = "GL_VENDOR must contain one of these" }
+params.min_memory_mib = { type = "int", optional = true, min = 0 }
+params.extensions = { type = "list", items = "string", optional = true, summary = "extensions the card must have; A|B accepts either" }
+params.os_specific = { type = "list", items = "string", optional = true, summary = "extensions never required (on one operating system only); default: the interop handles" }
+result.accepted = { type = "bool" }
+result.checks = { type = "list" }

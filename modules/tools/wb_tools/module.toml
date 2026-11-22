@@ -1,0 +1,4 @@
+[module]
+name = "tools"
+version = "0.6.0"
+summary = "The engine of the former standalone tools. Its tools are commands of the taxonomy's modules: toolchain, build, jar, source, runs and ci."

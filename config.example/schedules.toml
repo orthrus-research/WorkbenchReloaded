@@ -1,0 +1,5 @@
+# [schedules]: timed jobs. A schedule may never run a command that spends money.
+[market]
+command = "vast.market"
+every = "30m"
+enabled = false

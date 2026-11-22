@@ -1,0 +1,26 @@
+# Workbench Reloaded config: copy this folder to ~/.config/wb (Windows: %USERPROFILE%\.config\wb) and edit.
+#
+# This root file may hold everything. Files in subfolders are layered over it, and the deeper file wins: a file's
+# path is its namespace, so core/logging.toml fills [core.logging] and modules/vast.toml fills [modules.vast].
+# Unknown keys and wrong types stop the daemon with the file and line that set them.
+# `wb config show --origin` prints every value with the file that set it.
+
+[core.config]
+# layers = ['../team-config']   # shared config folders this one lies over, merged first (relative to this folder)
+
+[core.api]
+port = 7377            # published on 127.0.0.1 only; `wb up` refuses anything wider
+
+[core.budget]
+# cpu_cores = 8        # CPU jobs share this budget (default: every core the container sees)
+# mem_gb = 12
+
+[core.retention]
+days = 30              # rolled logs, job folders and unreferenced artifacts; results and the ledger are kept
+
+[runner]
+# The Windows host runner (`wb host serve`): local GPU game sessions on this PC's card.
+lab_home = '../Lab'    # relative to the Workbench checkout
+# To share a GPU lease and lanes with another tool on this PC:
+# lease_file = 'D:\work\locks\native-measurement.lock'  # scrub: allow
+# coordination_dir = 'D:\work\coordination'  # scrub: allow

@@ -1,0 +1,25 @@
+# [modules.lab.profile]: an example instance profile for a launcher script `bin/launch.py` that keeps instances in
+# `instances/<name>`, each with a `server/` and a `client/` side and a manifest `instance.json`.
+# Required: launcher, instances, prepare, play. Every key: modules/lab/wb_lab/profile.py.
+launcher = "bin/launch.py"
+instances = "instances"
+prepare = ["{python}", "bin/launch.py", "new", "{name}"]
+seed_flag = "--seed"
+play = ["{python}", "bin/launch.py", "run", "{name}", "--route", "{tour}", "--size", "{window}"]
+options_env = "JAVA_TOOL_OPTIONS"
+load = ["{python}", "bin/launch.py", "check", "{name}"]     # optional: refuse an instance that would not load
+load_ok = "OK"
+collect = [["client/logs/latest.log", "client-log"]]         # copied out after every play
+captures_pattern = "captures in (.+)"                       # play prints where its screenshots went
+recipe_files = ["bin/launch.py", "launch.lock", "{engine}/build.lock"]
+file_flags = ["--mod"]                                      # prepare arguments that name files
+manifest = "instance.json"
+world_key = { seed = "seed", rules = "#world.rules" }       # what a world snapshot must match
+world_writer = "engine.sha256"                              # the build that writes worlds
+world_parts = ["server/world"]
+rewrite = ["instance.json"]                                 # files that hold the instance's own path and name
+linkable_dirs = ["server/libraries"]                        # read-only: shared by hard link
+linkable_suffixes = [".jar"]
+
+[checkouts]                                                 # other checkouts, named in paths as {name}
+engine = "../Engine"

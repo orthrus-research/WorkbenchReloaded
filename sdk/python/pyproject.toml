@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wb"
+version = "0.1.0"
+description = "Workbench Reloaded client SDK and the wb command."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+wb = "wb.cli:main"
+
+[tool.setuptools]
+packages = ["wb"]

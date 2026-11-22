@@ -1,0 +1,9 @@
+# [modules.ci]: the projects ci.run builds and ci.gate guards. Each project's jobs live in its own actions.toml.
+# jdk = "26"          # JAVA_HOME for jobs, unless a project names another ("" for none)
+# excludes = []       # ignore patterns a working-tree run applies, standing in for the host's own excludes file
+
+# [projects.mymod]
+# repo = 'D:\code\mymod'            # its checkout, under a configured root  # scrub: allow
+# config = "tools/actions.toml"     # default: what orthrus.toml names, else actions.toml
+# env = { GRADLE_OPTS = "-Xmx3g" }
+# python = ["tools/requirements.txt"]   # the jobs' {python}: an environment built once per set of requirements

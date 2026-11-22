@@ -1,0 +1,20 @@
+[module]
+name = "source"
+version = "0.1.0"
+summary = "Formatting, lint and determinism of source code."
+
+[[command]]
+name = "format"
+summary = "Format Java sources with a pinned google-java-format, or check that they are formatted."
+handler = "wb_tools.adapter:run_tool"
+aliases = ["tools.java-format"]
+params.argv = { type = "list", items = "string", default = [], summary = "the tool's own arguments; absolute host paths are translated" }
+params.cwd = { type = "path.in", optional = true, digest = "git", summary = "run in this folder (a project checkout)" }
+
+[[command]]
+name = "strict-math"
+summary = "Ratchet inexact java.lang.Math calls toward StrictMath in deterministic Java code."
+handler = "wb_tools.adapter:run_tool"
+aliases = ["tools.strict-math"]
+params.argv = { type = "list", items = "string", default = [], summary = "the tool's own arguments; absolute host paths are translated" }
+params.cwd = { type = "path.in", optional = true, digest = "git", summary = "run in this folder (a project checkout)" }

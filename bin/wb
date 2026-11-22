@@ -1,0 +1,5 @@
+#!/bin/sh
+# Runs the wb CLI from this checkout without installing it.
+WB_REPO="$(cd "$(dirname "$0")/.." && pwd)"
+export WB_REPO
+PYTHONPATH="$WB_REPO/sdk/python:$WB_REPO/core:$WB_REPO/host${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m wb "$@"

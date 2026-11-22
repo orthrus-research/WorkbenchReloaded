@@ -1,0 +1,196 @@
+[module]
+name = "lab"
+version = "0.1.0"
+summary = "Native game sessions on the host through wb-host: instances, the GPU lease, and the lab home."
+
+[config]
+launcher = { type = "string", default = "", summary = "the checkout whose launcher (the profile's launcher script) prepares and plays instances" }
+python = { type = "string", default = "", summary = "the interpreter for the launcher; empty means the one running wb-host" }
+profile = { type = "object", default = {}, summary = "the instance profile: how the launcher prepares, plays and checks instances and how they are laid out (keys: wb_lab/profile.py)" }
+keep_worlds = { type = "list", items = "string", default = [], summary = "glob patterns of world snapshots lab.store-gc never removes" }
+keep_instances = { type = "list", items = "string", default = [], summary = "glob patterns of instances lab.prune-instances never removes" }
+scripts = { type = "list", items = "string", default = [], summary = "folders whose scripts lab.script may run" }
+environments = { type = "object", default = {}, summary = "by allow-listed folder: the pip requirements files (relative to it, or absolute) whose environment, made once, runs its Python scripts; other folders' scripts get the lab's interpreter" }
+python_cache = { type = "string", default = "", summary = "where those environments are kept; empty: the user's cache folder (XDG_CACHE_HOME or ~/.cache)/wb/python" }
+
+[[command]]
+name = "gpu"
+turn = true
+summary = "The host's GPU, driver and lease, as wb-host sees them."
+handler = "wb_lab.commands:gpu"
+runs_on = ["host"]
+
+[[command]]
+name = "queue"
+summary = "The GPU lease and every lane in the coordination folder."
+handler = "wb_lab.commands:queue"
+runs_on = ["host"]
+
+[[command]]
+name = "prepare"
+requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
+turn = true
+role = "prepare"
+summary = "Prepare an instance with the launcher's own prepare (the instance profile's command)."
+handler = "wb_lab.commands:prepare"
+runs_on = ["host"]
+timeout = "40m"
+params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
+params.seed = { type = "int", optional = true }
+params.scale = { type = "int", optional = true }
+params.args = { type = "list", items = "string", default = [], summary = "further prepare arguments" }
+
+[[command]]
+name = "play"
+requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
+turn = true
+role = "play"
+summary = "Play one tour on an instance on the host's GPU, under the GPU lease; keeps logs and captures."
+handler = "wb_lab.commands:play"
+runs_on = ["host"]
+resources = { gpu = true, quiet = true }
+timeout = "90m"
+cancel_grace = "2m"
+params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
+params.tour = { type = "path.in" }
+params.window = { type = "string", default = "1920x1080", pattern = "^[0-9]+x[0-9]+$" }
+params.options = { type = "string", default = "", summary = "JVM options for the client, in the profile's options_env" }
+params.label = { type = "string", default = "play" }
+params.args = { type = "list", items = "string", default = [] }
+
+[[command]]
+name = "migrate-plan"
+requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
+summary = "List what moving the launcher's lab items (the profile's lab_root) into the lab home would move (a dry run)."
+handler = "wb_lab.commands:migrate_plan"
+runs_on = ["host"]
+
+[[command]]
+name = "script"
+turn = true
+summary = "Run a campaign script (Python or PowerShell) from a folder allow-listed in modules.lab.scripts, under the GPU lease."
+handler = "wb_lab.commands:script"
+runs_on = ["host"]
+resources = { gpu = true, quiet = true }
+timeout = "4h"
+params.script = { type = "string", summary = "a .py or .ps1 path under an allow-listed folder" }
+params.args = { type = "list", items = "string", default = [] }
+
+[[command]]
+name = "turn"
+summary = "Run host routines in order under ONE GPU lease; stop at the first failure."
+handler = "wb_lab.commands:turn"
+runs_on = ["host"]
+resources = { gpu = true, quiet = true }
+timeout = "6h"
+cancel_grace = "2m"
+params.steps = { type = "list", items = "object", summary = "[{id, command, params}] of lab host routines" }
+params.continue_on_finding = { type = "bool", default = false }
+
+[[command]]
+name = "migrate"
+requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
+summary = "Move the launcher's lab items into the lab home (renames on one volume, a link left at each old path); undo reverses it."
+handler = "wb_lab.commands:migrate"
+runs_on = ["host"]
+resources = { gpu = true, quiet = true }
+timeout = "1h"
+params.execute = { type = "bool", default = false, summary = "false: show the plan only" }
+params.items = { type = "list", items = "string", default = [], summary = "a subset of the plan's items; all by default" }
+params.undo = { type = "bool", default = false, summary = "reverse the last migration from its manifest" }
+
+[[command]]
+name = "prune-instances"
+requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
+summary = "Remove game instances unused for N days (keep patterns honoured); a dry run unless execute=true."
+handler = "wb_lab.commands:prune_instances"
+runs_on = ["host"]
+resources = { gpu = true, quiet = true }
+timeout = "2h"
+params.days = { type = "int", default = 30, min = 1 }
+params.execute = { type = "bool", default = false }
+params.keep = { type = "list", items = "string", default = [], summary = "glob patterns of instance names never pruned" }
+params.names = { type = "list", items = "string", default = [], summary = "delete only these (the approved list)" }
+params.expect = { type = "int", optional = true, summary = "refuse unless exactly this many match (the approved count)" }
+
+[[command]]
+name = "ensure"
+requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
+turn = true
+role = "prepare"
+summary = "An instance for a recipe: reused if it exists, else built from the recipe's template by hard links (prepared once per recipe), optionally on a world snapshot."
+handler = "wb_lab.commands:ensure"
+runs_on = ["host"]
+timeout = "40m"
+params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
+params.seed = { type = "int", optional = true }
+params.scale = { type = "int", optional = true }
+params.args = { type = "list", items = "string", default = [], summary = "prepare arguments" }
+params.world = { type = "string", default = "", summary = "a world snapshot label to start from; empty: the prepared (empty) world" }
+params.replace = { type = "bool", default = false, summary = "replace an instance of the same name built from another recipe" }
+params.allow_writer_change = { type = "bool", default = false, summary = "accept a world written by another build of the profile's world_writer" }
+params.verify = { type = "bool", default = true, summary = "check the instance with the profile's load command, as play would" }
+result.recipe = { type = "string" }
+result.reused = { type = "bool" }
+
+[[command]]
+name = "snapshot"
+requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
+turn = true
+summary = "Keep an instance's generated world (the profile's world parts) as a labelled snapshot."
+handler = "wb_lab.commands:snapshot"
+runs_on = ["host"]
+resources = { gpu = true }
+timeout = "30m"
+params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
+params.label = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
+
+[[command]]
+name = "reset"
+requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
+turn = true
+summary = "Put an instance's world back to a snapshot (a private copy), so every run starts from the same state."
+handler = "wb_lab.commands:reset"
+runs_on = ["host"]
+resources = { gpu = true }
+timeout = "30m"
+params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
+params.world = { type = "string" }
+params.allow_writer_change = { type = "bool", default = false, summary = "accept a world written by another build of the profile's world_writer" }
+
+[[command]]
+name = "instances"
+requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
+summary = "The instances: built from the store (recipe, world) or legacy full copies; and the store's templates and snapshots."
+handler = "wb_lab.commands:instances"
+runs_on = ["host"]
+
+[[command]]
+name = "remove"
+requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
+summary = "Remove one instance; the store's shared files are untouched."
+handler = "wb_lab.commands:remove"
+runs_on = ["host"]
+resources = { gpu = true }
+params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
+
+[[command]]
+name = "dedupe"
+requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
+summary = "Turn existing full-copy instances into store-linked ones: their identical read-only files become hard links to one copy. A dry run unless execute=true."
+handler = "wb_lab.commands:dedupe"
+runs_on = ["host"]
+resources = { gpu = true, quiet = true }
+timeout = "6h"
+params.execute = { type = "bool", default = false }
+params.limit = { type = "int", default = 0, min = 0, summary = "at most this many instances (0: all)" }
+
+[[command]]
+name = "store-gc"
+requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
+summary = "Remove templates and world snapshots unused for N days (kept patterns honoured) and blobs nothing uses. A dry run unless execute=true."
+handler = "wb_lab.commands:store_gc"
+runs_on = ["host"]
+resources = { gpu = true }
+params.days = { type = "int", default = 30, min = 1 }
+params.execute = { type = "bool", default = false }

@@ -1,0 +1,58 @@
+# Every third-party input of the image and of a rental's bootstrap, pinned by SHA-256 (spec S17, D20, D21).
+# `python image/pins.py lock` regenerates image/jdks.lock from this file; a test checks the two agree.
+
+[base]
+image = "ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db"
+# apt reads the archive as it was at this instant (snapshot.ubuntu.com), so a rebuild installs the same packages.
+apt_snapshot = "20261120T000000Z"
+
+# Temurin builds (Adoptium publishes a SHA-256 for each). Keys are what commands ask for: jdk = "26".
+[jdk.8]
+version = "1.8.0_514-b01"
+url = "https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u514-b01/OpenJDK8U-jdk_x64_linux_hotspot_8u514b01.tar.gz"
+sha256 = "27eda854481d20806d918b30cdd417c6bed4fd15882e24f3595dc8ae7fb5d095"
+
+[jdk.17]
+version = "17.0.21.1+2"
+url = "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.21.1%2B2/OpenJDK17U-jdk_x64_linux_hotspot_17.0.21.1_2.tar.gz"
+sha256 = "0b0ac5eab6db6abaec68c9913bcddb31321e5da411c45073d520d9c125e6f7b4"
+
+[jdk.25]
+version = "25.0.5.1+2-LTS"
+url = "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5.1_2.tar.gz"
+sha256 = "760f91b22c3efc9bd1b64ff950598231be82928cc807e30691a0e7a2995a62c0"
+
+[jdk.26]
+version = "26.0.2.1+1"
+url = "https://github.com/adoptium/temurin26-binaries/releases/download/jdk-26.0.2.1%2B1/OpenJDK26U-jdk_x64_linux_hotspot_26.0.2.1_1.tar.gz"
+sha256 = "451c12e68747bcfa2fb5a2c16b00483fedb9fa6d77bc962d30957f76ac17044d"
+
+[jdk.27]
+version = "27.0.1.1+4"
+url = "https://github.com/adoptium/temurin27-binaries/releases/download/jdk-27.0.1.1%2B4/OpenJDK27U-jdk_x64_linux_hotspot_27.0.1.1_4.tar.gz"
+sha256 = "005e57ee860978acfeeff1be2b30f770664fe2b941e9b803c61c76992086d107"
+
+[jdk."28-ea"]
+version = "28-beta+25-ea"
+url = "https://github.com/adoptium/temurin28-binaries/releases/download/jdk-28%2B25-ea-beta/OpenJDK-jdk_x64_linux_hotspot_28_25-ea.tar.gz"
+sha256 = "cc1bf0bb2055818fced61cce28e599ab77a56027bae18f63a7f613dc2543e826"
+
+[virtualgl]
+# For rentals only (the local container never draws on the GPU, S16).
+version = "3.1.1"
+url = "https://github.com/VirtualGL/virtualgl/releases/download/3.1.1/virtualgl_3.1.1_amd64.deb"
+sha256 = "796866b5a84dc47e57e9d45f5ea621c9dbc49a26344b89111a63d39ec8fc2184"  # computed 2026-11-21 from the release asset
+
+[apt]
+# System packages of the image, from the snapshot above.
+image = [
+  "ca-certificates", "curl", "wget", "git", "openssh-client", "xz-utils", "zip", "unzip", "procps",
+  "python3", "python3-venv", "python3-numpy", "python3-scipy", "python3-pil",
+  "ffmpeg", "xvfb", "xauth", "mesa-utils", "libegl1", "libegl-mesa0", "libgl1", "libgl1-mesa-dri",
+  "libglu1-mesa", "libvulkan1", "glslang-tools", "fonts-dejavu-core",
+]
+# What a rented machine's bootstrap may install, by need.
+rental_base = ["ca-certificates", "wget", "python3", "procps", "xz-utils"]
+rental_gpu = ["xvfb", "xauth", "mesa-utils", "libegl1", "libgl1", "libglx0", "libglu1-mesa", "libxrandr2",
+              "libxcursor1", "libxi6", "libxinerama1", "libxxf86vm1", "libxtst6", "libxrender1", "libxext6",
+              "libx11-6", "libasound2t64", "libfreetype6", "libfontconfig1"]

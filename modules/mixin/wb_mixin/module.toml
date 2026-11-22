@@ -1,0 +1,78 @@
+[module]
+name = "mixin"
+version = "0.2.0"
+summary = "Mixin and patches: verifying Mixin and patch application without the game."
+
+[config]
+loaders = { type = "object", default = {}, summary = "loader policies for doctor by name, each a table of policy keys (keys: wb_mixin/policy.py)" }
+
+[[command]]
+name = "remap-proof"
+summary = "Prove a production (reobfuscated) JAR's Mixins were remapped: no refmap entry, renamed member, shadow, overwrite or reference left under a development name."
+handler = "wb_mixin.commands:remap_proof"
+requires = { module = ["jar"] }
+params.jar = { type = "path.in", summary = "the production JAR" }
+params.mappings = { type = "list", items = "path.in", default = [], summary = "development -> production mapping files (TSRG, TSRG v2, CSRG or SRG): the annotation processor's mapping of the Mixins' own members, the game's names" }
+params.reverse_mappings = { type = "list", items = "path.in", default = [], summary = "mapping files that map production to development names (such as a build cache's srg2mcp), read the other way" }
+params.refmap = { type = "string", optional = true, summary = "the refmap entry to read (default: those the JAR's Mixin configurations name)" }
+params.environment = { type = "string", optional = true, summary = "read this refmap environment (searge, notch, ...) instead of its default mappings" }
+params.owners = { type = "list", items = "string", default = [], summary = "packages whose renamed classes must all be in the JAR, such as com/example/mixins/" }
+params.expect = { type = "object", default = {}, summary = "pinned refmap entries: { \"com/example/mixins/MixinX\" = { \"<selector>\" = \"<mapped>\" } }; \"\" means no entry (the native name is kept)" }
+params.native = { type = "list", items = "string", default = [], summary = "members that keep their native name and must have no refmap entry: name, or a.b.C::name" }
+result.proved = { type = "bool" }
+result.checked = { type = "object" }
+result.failures = { type = "list" }
+result.report = { type = "string" }
+
+[[command]]
+name = "apply"
+summary = "Apply Mixin configurations offline through the project's own harness JAR and report its targets, hooks and failures (strict: an injector that hooks nothing fails)."
+handler = "wb_mixin.commands:apply"
+requires = { module = ["probe"] }
+resources = { cpu = 2, mem_gb = 4 }
+timeout = "1h"
+params.tool = { type = "list", items = "path.in", summary = "the harness JAR first, then its runtime libraries (Mixin, ASM, Gson, ...)" }
+params.main = { type = "string", optional = true, summary = "the harness's main class (default: the first JAR's Main-Class)" }
+params.configs = { type = "list", items = "string", summary = "Mixin configuration resource names, in registration order" }
+params.classpath = { type = "list", items = "path.in", summary = "the Mixins with their configurations and refmaps, the target classes and their supertypes: JARs or folders" }
+params.production = { type = "bool", default = false, summary = "production names: every reference resolves through its configuration's refmap" }
+params.side = { type = "enum", values = ["client", "server"], default = "client" }
+params.strict = { type = "bool", default = true, summary = "an injector that hooks nothing fails" }
+params.baseline = { type = "path.in", optional = true, summary = "a kept report; a difference from it is a finding" }
+params.by_target = { type = "bool", default = false, summary = "compare per target class (a development run against a production run)" }
+params.removed = { type = "list", items = "string", default = [], summary = "handlers removed on purpose, as handler@mixin" }
+params.jdk = { type = "string", default = "26", summary = "the JDK that runs the harness" }
+params.jvm_args = { type = "list", items = "string", default = [], summary = "JVM options, such as --enable-final-field-mutation=ALL-UNNAMED" }
+params.timeout = { type = "duration", default = "10m", summary = "the harness is killed after this" }
+result.applied = { type = "bool" }
+result.counts = { type = "object" }
+result.failures = { type = "list" }
+result.report = { type = "string" }
+
+[[command]]
+name = "doctor"
+summary = "Check JARs' Mixin configurations against a loader policy without the game: each parses and lists Mixins that are in the JAR and its package; its refmap, plugin and @Mixin targets exist; its compatibilityLevel, minVersion and injection points are ones the loader supports, the level covering its classes' class-file version; none is duplicated across JARs or left unregistered."
+handler = "wb_mixin.commands:doctor"
+requires = { module = ["jar"] }
+# Not cached: a list of paths is recorded by its paths, not by their content, so a cached result could outlive a changed JAR.
+resources = { cpu = 1, mem_gb = 2 }
+params.jars = { type = "list", items = "path.in", summary = "the JARs to check, or folders searched for JARs (a mods folder)" }
+params.classpath = { type = "list", items = "path.in", default = [], summary = "the game's and libraries' JARs, or folders of them, under the names the Mixins use at runtime: each @Mixin target must be there or in jars (default: targets are not checked)" }
+params.nested = { type = "bool", default = true, summary = "also check the JARs packed inside them (jar-in-jar)" }
+params.loader = { type = "string", default = "", summary = "a loader policy under [modules.mixin.loaders]" }
+params.policy = { type = "path.in", optional = true, summary = "a TOML or JSON policy file, laid over the named one (keys: wb_mixin/policy.py)" }
+params.compatibility_levels = { type = "list", items = "string", optional = true, summary = "the compatibility levels the loader's Mixin defines: JAVA_17, or a range JAVA_8..JAVA_25" }
+params.mixin_version = { type = "string", optional = true, summary = "the loader's Mixin version: no minVersion may be above it" }
+params.max_class_version = { type = "int", optional = true, min = 45, summary = "the highest class-file version the runtime reads (69 is Java 25, 70 Java 26)" }
+params.required_fields = { type = "list", items = "string", optional = true, summary = "configuration keys every configuration must set, such as compatibilityLevel or minVersion" }
+params.required_may_target_missing = { type = "bool", optional = true, summary = "the loader skips a required configuration's Mixin whose target is missing instead of stopping, so such a target is a warning (default false: the targets check's severity)" }
+params.injection_namespaces = { type = "list", items = "string", optional = true, summary = "the injection-point namespaces the loader provides, such as MIXINEXTRAS (default: namespaced points are not checked)" }
+params.remapped_packages = { type = "list", items = "string", optional = true, summary = "packages whose names the runtime remaps, such as net/minecraft/: a Mixin reaching one needs a refmap (default: every target)" }
+params.severity = { type = "object", optional = true, summary = "check = error, warning or off, laid over the policy's: { coverage = \"warning\", registration = \"error\" }" }
+result.passed = { type = "bool" }
+result.counts = { type = "object" }
+result.policy = { type = "object" }
+result.jars = { type = "list" }
+result.configs = { type = "list" }
+result.problems = { type = "list" }
+result.report = { type = "string" }

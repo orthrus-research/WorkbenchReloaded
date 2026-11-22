@@ -1,0 +1,110 @@
+[module]
+name = "toolchain"
+version = "0.1.0"
+summary = "JDKs, pinned inputs, pinned rebuilds, dependency repair and the rescue repository."
+
+[config]
+pin_cache = { type = "string", default = "", summary = "the folder of pinned files by SHA-256 rebuild reads first and fills after, when WB_PIN_CACHE is unset; empty: <state>/cache/pins, as ci" }
+repository = { type = "string", default = "", summary = "the rescue repository, a Maven layout folder of coordinates public repositories no longer serve: a host path under a configured root (the out root), so builds on the host can read it too, or a folder only the container has; empty: <state>/toolchain/repository" }
+substitutions = { type = "object", default = {}, summary = "vanished coordinates and the coordinates every build gets instead, \"group:artifact:version\" = \"group:artifact:version\"; a plugin marker's coordinates (<id>:<id>.gradle.plugin:<version>) name the plugin request id '<id>' version '<version>' (see wb_toolchain/repository.py)" }
+
+[[command]]
+name = "jdk"
+summary = "Find an installed JDK by major or exact version and vendor."
+handler = "wb_tools.adapter:run_tool"
+aliases = ["tools.jdk"]
+params.argv = { type = "list", items = "string", default = [], summary = "the tool's own arguments; absolute host paths are translated" }
+params.cwd = { type = "path.in", optional = true, digest = "git", summary = "run in this folder (a project checkout)" }
+
+[[command]]
+name = "pins"
+summary = "Download third-party inputs pinned by SHA-256 and verify them offline."
+handler = "wb_tools.adapter:run_tool"
+aliases = ["tools.pins"]
+params.argv = { type = "list", items = "string", default = [], summary = "the tool's own arguments; absolute host paths are translated" }
+params.cwd = { type = "path.in", optional = true, digest = "git", summary = "run in this folder (a project checkout)" }
+
+[[command]]
+name = "patch"
+summary = "Repair a JAR without forking it: rebuild named classes from sources against its own classpath and swap only those entries, checked against its SHA-256 and recorded in a receipt."
+handler = "wb_toolchain.commands:patch"
+resources = { cpu = 1, mem_gb = 1 }
+timeout = "30m"
+params.jar = { type = "path.in", summary = "the JAR to repair" }
+params.sha256 = { type = "sha256", summary = "the JAR's SHA-256: other bytes are refused" }
+params.sources = { type = "path.in", summary = "a folder of .java sources, in package folders, compiling to exactly the classes named" }
+params.classes = { type = "list", items = "string", summary = "the entries to replace: pkg.Name, pkg.Name$Inner or pkg/Name.class" }
+params.classpath = { type = "list", items = "path.in", default = [], summary = "more JARs or class folders they compile against (the JAR itself always is)" }
+params.jdk = { type = "string", summary = "the JDK whose javac compiles them (its version is in the receipt)" }
+params.release = { type = "int", optional = true, min = 6, summary = "javac --release; default: the bytecode level of the classes replaced" }
+params.options = { type = "list", items = "string", default = [], summary = "more javac options (-g, -parameters, ...)" }
+params.name = { type = "string", default = "", summary = "the repaired JAR's file name; default <stem>-patched.jar" }
+params.expect = { type = "sha256", optional = true, summary = "the repaired JAR's qualified SHA-256: other bytes are a finding" }
+result.sha256 = { type = "string" }
+result.replaced = { type = "list" }
+
+[[command]]
+name = "rebuild"
+summary = "Rebuild a pinned dependency at its commit in a throwaway clean tree by a recipe; keep the artifact only if it is the pinned SHA-256, reading the pin cache first and filling it after."
+handler = "wb_toolchain.commands:rebuild"
+requires = { binary = ["git"] }
+resources = { cpu = 2, mem_gb = 4 }
+timeout = "2h"
+params.repo = { type = "path.in", digest = "git", summary = "the dependency's checkout (only read: the tree is a shared clone)" }
+params.commit = { type = "string", pattern = "^[0-9a-fA-F]{7,64}$", summary = "the pinned commit" }
+params.steps = { type = "list", items = "string", default = [], summary = "the recipe's build commands, in order in the tree ({python}, {tree}); the first failure stops" }
+params.artifact = { type = "string", summary = "the file the steps make, relative to the tree (a glob matching one file)" }
+params.sha256 = { type = "sha256", summary = "the pin: other bytes are refused" }
+params.jdk = { type = "string", default = "", summary = "the JDK major the steps get as JAVA_HOME (every JDK is JAVA_HOME_<major>_X64)" }
+params.name = { type = "string", default = "", summary = "the kept file's name; default: the artifact's file name" }
+params.env = { type = "object", default = {}, summary = "more environment for the steps" }
+params.cached = { type = "bool", default = true, summary = "take the pinned file from the pin cache when it has it; false: rebuild to check the pin still reproduces" }
+params.keep = { type = "bool", default = false, summary = "keep the tree after the run" }
+result.sha256 = { type = "string" }
+result.commit = { type = "string" }
+result.cached = { type = "bool" }
+
+[[command]]
+name = "repo-add"
+summary = "Rescue a file into the repository under its Maven coordinates, from a path or a URL: bytes other than the expected SHA-256 are refused, bytes already held are never replaced, and a minimal POM, plugin markers, metadata and a receipt go with it."
+handler = "wb_toolchain.repository:add"
+resources = { cpu = 0.5 }
+timeout = "30m"
+params.coordinates = { type = "string", pattern = '^[^:@\s]+:[^:@\s]+:[^:@\s]+(:[^:@\s]+)?(@[^:@\s]+)?$', summary = "group:artifact:version[:classifier][@ext], ext jar unless given; @pom: the file is the version's original POM" }
+params.file = { type = "path.in", optional = true, summary = "the file to rescue" }
+params.url = { type = "string", optional = true, pattern = '^https?://\S+$', summary = "or where to download it" }
+params.sha256 = { type = "sha256", summary = "its SHA-256: other bytes are refused" }
+params.reason = { type = "string", pattern = '\S', summary = "why it is rescued (where it vanished from, where these bytes come from), for its receipt" }
+params.dependencies = { type = "list", items = "string", default = [], summary = "the dependencies of the POM Workbench writes when the original is lost: group:artifact:version[:classifier][@ext]" }
+params.plugins = { type = "list", items = "string", default = [], summary = "the Gradle plugin ids this JAR implements: each gets a marker (<id>:<id>.gradle.plugin:<version>), so plugins { id '<id>' version '<version>' } finds it" }
+params.patch = { type = "path.in", optional = true, summary = "the toolchain.patch receipt of a patched JAR (its output must be these bytes): what was patched goes into the receipt" }
+result.coordinates = { type = "string" }
+result.state = { type = "string" }
+result.written = { type = "list" }
+
+[[command]]
+name = "repo-list"
+summary = "List the repository's coordinates with their digests and receipts, and the substitutions builds get."
+handler = "wb_toolchain.repository:listing"
+resources = { cpu = 0.2 }
+params.match = { type = "string", default = "", summary = "only coordinates matching this glob (com.example:*)" }
+result.coordinates = { type = "list" }
+result.substitutions = { type = "list" }
+
+[[command]]
+name = "repo-verify"
+summary = "Hash every file the repository holds again against its receipt and digest files, check each version has a POM and each artifact its metadata, and name any file without a receipt."
+handler = "wb_toolchain.repository:verify"
+resources = { cpu = 1 }
+timeout = "30m"
+result.files = { type = "int" }
+result.problems = { type = "list" }
+
+[[command]]
+name = "repo-init"
+summary = "Make the Gradle init script that serves the repository read-only (asked only for what it holds) and applies the substitutions; written into a Gradle home's init.d when one is given."
+handler = "wb_toolchain.repository:init"
+resources = { cpu = 0.2 }
+params.machine = { type = "enum", values = ["host", "container"], default = "host", summary = "where the builds that read it run: host (the repository named by its host path, under a configured root) or container (the builds ci runs)" }
+params.gradle_home = { type = "path.out", optional = true, summary = "a Gradle user home (GRADLE_USER_HOME) whose init.d gets the script; without it the script is only returned" }
+result.script = { type = "string" }

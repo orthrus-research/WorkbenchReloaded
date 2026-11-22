@@ -1,0 +1,42 @@
+[module]
+name = "assets"
+version = "0.1.0"
+summary = "Assets and resource packs: content JSON generated from one manifest, reference blockstates copied from the client JAR into a pack complete but for its textures, and texture readability metrics."
+
+[[command]]
+name = "generate"
+summary = "Write blockstates, block and item models and lang entries from one manifest of blocks, items and families; check=true writes nothing and fails on stale, missing or orphaned files."
+handler = "wb_assets.commands:generate"
+resources = { cpu = 0.5 }
+params.manifest = { type = "path.in", summary = "a TOML or JSON manifest (keys: wb_assets/content.py)" }
+params.check = { type = "bool", default = false, summary = "compare with resources instead of writing" }
+params.resources = { type = "path.in", optional = true, summary = "with check: the folder holding the assets/ to compare (e.g. src/main/resources)" }
+result.namespace = { type = "string" }
+result.files = { type = "int" }
+
+[[command]]
+name = "blockstates"
+summary = "Copy reference blocks' blockstates and models from the 1.12.2 client JAR into a pack complete but for its textures, naming every texture slot; sort a mod's blocks by blockstate shape."
+handler = "wb_assets.commands:blockstates"
+deterministic = true
+resources = { cpu = 0.5, mem_gb = 1 }
+params.client_jar = { type = "path.in", summary = "the Minecraft 1.12.2 client JAR" }
+params.blocks = { type = "list", items = "string", default = [], summary = "reference blocks: ref, name=ref or name=ref[property=value,...]; a ref is a vanilla block or namespace:block of the mod" }
+params.catalog = { type = "path.in", optional = true, summary = "a TOML or JSON catalog of block types and their reference blocks (keys: wb_assets/blockstates.py)" }
+params.namespace = { type = "string", default = "example", pattern = "^[a-z0-9_.-]+$", summary = "the pack's namespace" }
+params.description = { type = "string", default = "Reference blocks, complete but for their textures" }
+params.mod = { type = "path.in", optional = true, summary = "a mod's resources (a folder holding assets/, or the mod JAR): its blocks are sorted by shape, and its references copied" }
+result.namespace = { type = "string" }
+
+[[command]]
+name = "texture-metrics"
+summary = "Measure how 16 x 16 textures read when tiled (lightness spread, edges, balance, banding, alternates' repetition) and judge them against per-kind limits."
+handler = "wb_assets.commands:texture_metrics"
+deterministic = true
+resources = { cpu = 1, mem_gb = 1 }
+params.textures = { type = "path.in", summary = "a PNG, or a folder of them" }
+params.limits = { type = "path.in", optional = true, summary = "a TOML or JSON file of limits per kind and which textures are which kind (keys: wb_assets/metrics.py)" }
+params.kind = { type = "string", default = "", summary = "the kind of every texture the limits do not assign" }
+params.alternate_suffix = { type = "string", default = "-alt", summary = "a texture named <stem><suffix>.png is the alternate of <stem>.png" }
+result.measured = { type = "int" }
+result.failed = { type = "int" }

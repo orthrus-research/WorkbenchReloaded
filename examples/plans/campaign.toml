@@ -1,0 +1,56 @@
+# An example campaign: scripts in order under one lease, stopping at the first failure.
+# Needs [modules.lab] scripts = ['D:\work\campaign'] in the config.  # scrub: allow
+# Every step is one lab.script inside one lab.turn: the lease is held from the first to the last, and the
+# plan stops at the first failure, as the campaign did.
+
+[plan]
+name = "example-campaign"
+summary = "A release qualification campaign's native phases."
+protocol = "Declared in PROTOCOL.md beside the scripts. Stop at the first failure; a launch or exit code alone is never a pass."
+machine = "host"
+turn = true
+
+[[step]]
+id = "final-matrix"
+command = "lab.script"
+params = { script = 'D:\work\campaign\final_matrix.py' }  # scrub: allow
+
+[[step]]
+id = "final-evidence"
+command = "lab.script"
+params = { script = 'D:\work\campaign\prepare_final_evidence.py' }  # scrub: allow
+
+[[step]]
+id = "final-followup"
+command = "lab.script"
+params = { script = 'D:\work\campaign\final_followup.py' }  # scrub: allow
+
+[[step]]
+id = "final-remote"
+command = "lab.script"
+params = { script = 'D:\work\campaign\final_remote.py' }  # scrub: allow
+
+[[step]]
+id = "focused-fixture"
+command = "lab.script"
+params = { script = 'D:\work\campaign\prepare_focused.py' }  # scrub: allow
+
+[[step]]
+id = "focused-build"
+command = "lab.script"
+params = { script = 'D:\work\campaign\build_focused.ps1' }  # scrub: allow
+
+[[step]]
+id = "focused-cost"
+command = "lab.script"
+params = { script = 'D:\work\campaign\bench-focused.py' }  # scrub: allow
+
+[[step]]
+id = "focused-analysis"
+command = "lab.script"
+params = { script = 'D:\work\campaign\analyze_focused.py' }  # scrub: allow
+
+[[step]]
+id = "focused-stability"
+command = "lab.script"
+params = { script = 'D:\work\campaign\check_focused_stability.py' }  # scrub: allow

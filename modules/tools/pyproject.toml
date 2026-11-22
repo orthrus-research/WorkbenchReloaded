@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orthrus-tools"
+version = "0.6.0"
+description = "Testing and verification tools shared across Orthrus Research projects (vendored in Workbench)"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+]
+
+[project.optional-dependencies]
+# Frame comparison reads PNG files; every other tool uses the standard library only.
+frames = ["numpy>=2", "pillow>=11"]
+dev = ["numpy>=2", "pillow>=11", "ruff>=0.15", "mypy>=1.18", "pyyaml>=6"]
+
+[project.scripts]
+orthrus-tools = "orthrus_tools.main:main"
+orthrus-frames = "orthrus_tools.frames:main"
+orthrus-mod-survey = "orthrus_tools.mod_survey:main"
+orthrus-strict-math = "orthrus_tools.strict_math:main"
+orthrus-pins = "orthrus_tools.pins:main"
+orthrus-jdk = "orthrus_tools.jdk:main"
+orthrus-scrub = "orthrus_tools.scrub:main"
+orthrus-stats = "orthrus_tools.stats:main"
+orthrus-workload-guard = "orthrus_tools.workload_guard:main"
+orthrus-actions = "orthrus_tools.actions:main"
+orthrus-receipt = "orthrus_tools.receipt:main"
+orthrus-jar-audit = "orthrus_tools.jar_audit:main"
+orthrus-java-format = "orthrus_tools.java_format:main"
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+orthrus_tools = ["profiles/*.json"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [".local", "build"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*", "PIL", "PIL.*"]
+ignore_missing_imports = true
+

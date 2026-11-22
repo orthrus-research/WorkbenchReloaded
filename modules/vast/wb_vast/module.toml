@@ -1,0 +1,109 @@
+[module]
+name = "vast"
+version = "0.1.0"
+summary = "Rent GPU machines on Vast.ai, run bundles on them, and record market prices and charges."
+startup = "wb_vast.commands:reconcile"
+
+[config]
+api = { type = "string", default = "https://console.vast.ai/api/v0" }
+image = { type = "string", default = "ubuntu:26.04", summary = "stock image a rental starts from (D21)" }
+min_cores = { type = "float", default = 8, summary = "offers with fewer effective cores are refused (cal-01)" }
+poll_seconds = { type = "float", default = 20, min = 0.01 }
+search_limit = { type = "int", default = 100, min = 10, max = 500, summary = "rows per search; every row counts against Vast's daily quota of 20,000" }
+daily_rows = { type = "int", default = 20000, summary = "Vast's daily search-row quota (seen 2026-11-21)" }
+market_share = { type = "float", default = 0.3, min = 0.0, max = 1.0, summary = "the market's share of the daily quota, paced over the UTC day; the rest is reserved for work" }
+market_limit = { type = "int", default = 25, min = 5, max = 500, summary = "rows per card per snapshot; cards rotate across snapshots" }
+ssh_retry_seconds = { type = "float", default = 10, min = 0.01 }
+# The reference cards and their stand-ins (Quadrature's PLAN, Steam survey Oct 2026) plus the Turing floor.
+cards = { type = "list", items = "string", default = ["RTX 3050", "RTX 3060", "RTX 4060", "RTX 4060 Ti", "RTX 5060", "RTX 5060 Ti", "RTX 5070", "RTX 2060S", "RTX 2070S", "RTX 2070", "RTX 2060", "RTX 2080"] }
+
+[requires]
+secrets = ["vast_api_key"]
+module = ["ledger"]
+
+[[command]]
+name = "offers"
+summary = "List rentable offers for a card (or the reference cards); rents nothing."
+handler = "wb_vast.commands:offers"
+requires = { network = ["console.vast.ai:443"] }
+params.gpu = { type = "string", default = "RTX 3060" }
+params.max_dph = { type = "money", unit = "USD/h", default = 0.30 }
+params.driver_branch = { type = "string", pattern = "^R[0-9]{3}$", optional = true, summary = "e.g. R580" }
+params.min_cores = { type = "float", default = 0 }
+result.offers = { type = "list" }
+
+[[command]]
+name = "market"
+summary = "Record a market snapshot: every listed offer of the reference cards, asked three times."
+handler = "wb_vast.commands:market_snapshot"
+requires = { network = ["console.vast.ai:443"] }
+params.max_dph = { type = "money", unit = "USD/h", default = 2.0 }
+params.gpus = { type = "list", items = "string", default = [] }
+
+[[command]]
+name = "charges"
+summary = "Record the account's billed charges of the last days."
+handler = "wb_vast.commands:charges"
+requires = { network = ["console.vast.ai:443"] }
+params.days = { type = "int", default = 7, min = 1, max = 90 }
+
+[[command]]
+name = "instances"
+summary = "List the account's instances."
+handler = "wb_vast.commands:instances"
+requires = { network = ["console.vast.ai:443"] }
+
+[[command]]
+name = "destroy"
+summary = "Destroy one instance (stops its billing)."
+handler = "wb_vast.commands:destroy"
+requires = { network = ["console.vast.ai:443"] }
+params.instance = { type = "string", pattern = "^[0-9]+$" }
+
+[[command]]
+name = "keys"
+summary = "List the account's SSH keys."
+handler = "wb_vast.commands:keys"
+requires = { network = ["console.vast.ai:443"] }
+
+[[command]]
+name = "rent"
+summary = "Rent one offer, run a bundle on it, fetch the results, destroy it."
+handler = "wb_vast.commands:rent"
+quote = "wb_vast.commands:quote_rent"
+spends = true
+cancel_grace = "3m"
+requires = { secrets = ["vast_ssh_key"], network = ["console.vast.ai:443"], binary = ["ssh", "scp", "ssh-keygen"] }
+resources = { cpu = 0.5 }
+params.offer = { type = "string", pattern = "^[0-9]+$" }
+params.bundle = { type = "path.in", summary = "a folder holding bundle.toml" }
+params.max_dph = { type = "money", unit = "USD/h", max = 5.0 }
+params.cap = { type = "duration", default = "90m", min = "10m", max = "8h" }
+params.min_cores = { type = "float", optional = true }
+params.disk = { type = "int", optional = true, min = 16, max = 500 }
+result.instance = { type = "string" }
+result.outcome = { type = "enum", values = ["completed", "partial", "failed"] }
+
+[[command]]
+name = "probe"
+summary = "Rent one offer briefly to check it gives OpenGL 4.6 through VirtualGL, then destroy it."
+handler = "wb_vast.commands:probe"
+quote = "wb_vast.commands:quote_probe"
+spends = true
+requires = { network = ["console.vast.ai:443"] }
+params.offer = { type = "string", pattern = "^[0-9]+$" }
+params.max_dph = { type = "money", unit = "USD/h", max = 2.0 }
+
+[[command]]
+name = "bundle-check"
+summary = "Check a bundle (manifest, pinned files, size) and show the bootstrap it would get; rents nothing."
+handler = "wb_vast.commands:bundle_check"
+params.bundle = { type = "path.in" }
+
+[[command]]
+name = "bundle-riven"
+summary = "Make a riven-tours bundle (calibration 01's shape) from a plan folder and the linux-lab tars."
+handler = "wb_vast.commands:bundle_riven"
+params.plan = { type = "path.in", summary = "folder with plan.env, jars/ and tours" }
+params.lab = { type = "path.in", summary = "folder with riven.tar, cubature.tar, pins.tar, cache.tar" }
+params.name = { type = "string", optional = true }

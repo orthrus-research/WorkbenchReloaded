@@ -1,0 +1,47 @@
+[module]
+name = "frames"
+version = "0.1.0"
+summary = "Score captured frames: pass or fail against references, capture noise, wrong-view checks, and PSNR/SSIM quality (from Quadrature's frames.py)."
+profiles = ["exact", "near", "repeat"]
+
+[[command]]
+name = "compare"
+summary = "Pass or fail a candidate folder of PNGs against a reference folder under a tolerance profile."
+handler = "wb_frames.commands:compare"
+deterministic = true
+resources = { cpu = 2, mem_gb = 2 }
+params.reference = { type = "path.in" }
+params.candidate = { type = "path.in" }
+params.profile = { type = "string", default = "near", summary = "exact, near, repeat, or a profile JSON path" }
+result.passed = { type = "bool" }
+result.frames = { type = "int" }
+result.failed = { type = "list" }
+
+[[command]]
+name = "measure"
+summary = "The differences between repeated captures of the same views (how a profile's limits are chosen)."
+handler = "wb_frames.commands:measure"
+deterministic = true
+resources = { cpu = 2, mem_gb = 2 }
+params.runs = { type = "list", items = "path.in" }
+params.channel_threshold = { type = "int", default = 8, min = 0, max = 255 }
+
+[[command]]
+name = "check"
+summary = "Name the frames of a run that another capture of the same instance shows were taken facing elsewhere."
+handler = "wb_frames.commands:check"
+deterministic = true
+params.run = { type = "path.in" }
+params.other = { type = "path.in" }
+params.channel_threshold = { type = "int", default = 8 }
+params.fraction = { type = "float", default = 0.2, min = 0, max = 1 }
+
+[[command]]
+name = "quality"
+summary = "Score frames meant to differ from a reference: PSNR, SSIM, edge detail."
+handler = "wb_frames.commands:quality"
+deterministic = true
+resources = { cpu = 2, mem_gb = 2 }
+params.reference = { type = "path.in" }
+params.candidate = { type = "path.in" }
+params.channel_threshold = { type = "int", default = 8 }

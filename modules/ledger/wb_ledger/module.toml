@@ -1,0 +1,76 @@
+[module]
+name = "ledger"
+version = "0.1.0"
+summary = "Formal results, costs and market prices in one queryable database."
+
+[[command]]
+name = "query"
+summary = "Run a read-only SQL query (median() and inflate() available)."
+handler = "wb_ledger.commands:query"
+params.sql = { type = "string" }
+params.limit = { type = "int", default = 1000, min = 1, max = 100000 }
+result.columns = { type = "list" }
+result.rows = { type = "list" }
+
+[[command]]
+name = "runs"
+summary = "List recorded runs, optionally by label pattern."
+handler = "wb_ledger.commands:runs"
+params.like = { type = "string", default = "%" }
+result.runs = { type = "list" }
+
+[[command]]
+name = "findings"
+summary = "List findings, optionally by status."
+handler = "wb_ledger.commands:findings"
+params.status = { type = "enum", values = ["any", "established", "hypothesis", "refuted", "superseded"], default = "any" }
+result.findings = { type = "list" }
+
+[[command]]
+name = "show"
+summary = "Show one run (by label or id) or finding (by id) with its measurements."
+handler = "wb_ledger.commands:show"
+params.ref = { type = "string" }
+
+[[command]]
+name = "costs"
+summary = "Rental costs: estimated and billed, with phases and hosts."
+handler = "wb_ledger.commands:costs"
+params.limit = { type = "int", default = 50 }
+result.rentals = { type = "list" }
+result.total_billed = { type = "float", optional = true }
+
+[[command]]
+name = "calls"
+summary = "Requests made to providers, newest first."
+handler = "wb_ledger.commands:calls"
+params.since = { type = "string", default = "" }
+params.limit = { type = "int", default = 100 }
+result.calls = { type = "list" }
+
+[[command]]
+name = "add-run"
+summary = "Record a run and, optionally, measurements (a list of {metric, value, ...})."
+handler = "wb_ledger.commands:add_run"
+params.label = { type = "string" }
+params.fields = { type = "object", default = {} }
+params.measurements = { type = "list", default = [] }
+
+[[command]]
+name = "add-finding"
+summary = "Record a finding resting on runs and jobs; the jobs' evidence is pinned (never pruned)."
+handler = "wb_ledger.commands:add_finding"
+params.id = { type = "string", pattern = "^[a-z0-9][a-z0-9-]*$" }
+params.title = { type = "string" }
+params.statement = { type = "string" }
+params.status = { type = "enum", values = ["established", "hypothesis", "refuted", "superseded"] }
+params.runs = { type = "list", default = [] }
+params.jobs = { type = "list", default = [] }
+params.evidence = { type = "string", optional = true }
+
+[[command]]
+name = "import"
+summary = "Import a results database, mapping ids so references hold (idempotent; repairs earlier imports)."
+handler = "wb_ledger.commands:import_db"
+params.source = { type = "path.in" }
+result.imported = { type = "object" }

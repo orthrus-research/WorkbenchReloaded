@@ -1,0 +1,5 @@
+{
+  "channelThreshold": 8,
+  "maxChangedFraction": 0.001,
+  "maxMeanAbsolute": 0.05
+}

@@ -1,0 +1,83 @@
+[module]
+name = "selftest"
+version = "0.1.0"
+summary = "Exercises the core: echo, sleep, fail, a zero-cost approval, and a call into another command."
+
+[config]
+greeting = { type = "string", default = "hello" }
+
+[[command]]
+name = "echo"
+summary = "Return the parameters, write them to a file, and record a measurement."
+handler = "wb_selftest.commands:echo"
+deterministic = true
+params.text = { type = "string", default = "ping" }
+params.times = { type = "int", default = 1, min = 1, max = 100 }
+result.text = { type = "string" }
+result.greeting = { type = "string" }
+
+[[command]]
+name = "sleep"
+summary = "Sleep, reporting progress; cancellable."
+handler = "wb_selftest.commands:sleep"
+params.seconds = { type = "duration", default = "5s", max = "1h" }
+resources = { cpu = 0.1 }
+
+[[command]]
+name = "fail"
+summary = "End with the outcome asked for, to check outcome codes."
+handler = "wb_selftest.commands:fail"
+params.outcome = { type = "enum", values = ["finding", "usage", "environment", "crash"] }
+
+[[command]]
+name = "spend"
+summary = "A zero-cost command that goes through quote, approval and re-quote like a rental."
+handler = "wb_selftest.commands:spend"
+quote = "wb_selftest.commands:spend_quote"
+spends = true
+params.price = { type = "money", unit = "USD/h", default = 0.0 }
+params.raise_to = { type = "money", unit = "USD/h", optional = true, summary = "simulate a price rise at run time" }
+
+[[command]]
+name = "copy"
+summary = "Copy an input file to the output folder (path translation and input hashing)."
+handler = "wb_selftest.commands:copy"
+deterministic = true
+params.source = { type = "path.in" }
+
+[[command]]
+name = "sizes"
+summary = "The byte sizes of several input files (a cached command over a list of paths)."
+handler = "wb_selftest.commands:sizes"
+deterministic = true
+params.sources = { type = "list", items = "path.in" }
+result.sizes = { type = "list" }
+
+[[command]]
+name = "checkout"
+summary = "Name a checkout's HEAD commit (an input recorded by git, not by hashing its files)."
+handler = "wb_selftest.commands:checkout"
+params.repo = { type = "path.in", digest = "git" }
+result.head = { type = "string" }
+
+[[command]]
+name = "chain"
+summary = "Call selftest.echo through the daemon (as plans do)."
+handler = "wb_selftest.commands:chain"
+params.text = { type = "string", default = "chained" }
+
+[[command]]
+name = "host-echo"
+summary = "Run on the Windows host under the GPU lease and report the turn token's presence."
+handler = "wb_selftest.commands:host_echo"
+runs_on = ["host"]
+resources = { gpu = true }
+params.text = { type = "string", default = "host" }
+
+[[command]]
+name = "quiet-echo"
+summary = "Like echo, but a measurement: needs a quiet machine."
+handler = "wb_selftest.commands:echo"
+resources = { quiet = true }
+params.text = { type = "string", default = "ping" }
+params.times = { type = "int", default = 1, min = 1, max = 100 }

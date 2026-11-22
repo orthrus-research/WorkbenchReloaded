@@ -1,0 +1,11 @@
+# A stand-in project for the cleanroom.yml smoke job in this repository's CI: it checks the
+# setup the workflow promises, without Gradle or a game.
+[settings]
+name = "fixture"
+
+[workflows]
+ci = ["toolchains"]
+
+[jobs.toolchains]
+description = "Java 25 is JAVA_HOME and Gradle can see every installed JDK"
+steps = [{ name = "toolchains", run = ["{python}", "check_setup.py"] }]

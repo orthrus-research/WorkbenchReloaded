@@ -1,0 +1,12 @@
+.git
+.local
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/build
+!modules/build
+**/.gradle
+sdk/java
+sdk/gradle
+sdk/node
+tests

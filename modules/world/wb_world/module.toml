@@ -1,0 +1,121 @@
+[module]
+name = "world"
+version = "0.1.0"
+summary = "Worlds on disk and as generated: what a stopped save holds, how two worlds differ (save by save or by digest), and a generator's windows against golden digests, sampled without the game."
+
+[[command]]
+name = "read"
+summary = "Read a stopped save (Anvil or cubic): block states, block entities, entities, heightmaps and light, by region or box."
+handler = "wb_world.commands:read"
+deterministic = true
+resources = { cpu = 1, mem_gb = 1 }
+params.world = { type = "path.in", summary = "the save folder, the one holding level.dat" }
+params.dimension = { type = "string", default = "", summary = "a dimension folder inside the save (DIM-1); empty: the save's own" }
+params.box = { type = "list", items = "int", optional = true, summary = "x1,y1,z1,x2,y2,z2, two block corners, inclusive: reads the units it touches, counts the blocks inside it" }
+params.regions = { type = "list", items = "string", default = [], summary = "region files to read, by name (r.0.-1.mca, 0.0.0.3dr, 0.0.2dr); empty: every one" }
+params.block_entities = { type = "list", items = "string", default = [], summary = "block-entity ids whose NBT the report keeps (minecraft:furnace); * keeps every id" }
+params.nbt_limit = { type = "int", default = 1000, min = 0, summary = "the most block-entity NBT records the report keeps" }
+params.digest = { type = "bool", default = false, summary = "also write digest.json, a wb/world-digest/v1 digest for world.digest-diff" }
+params.dump = { type = "list", items = "int", default = [], summary = "cubes the digest keeps whole, as x,y,z in 16-block units (several: x,y,z,x,y,z)" }
+params.quiet = { type = "duration", default = "60s", min = 0, summary = "a save with a session.lock written within this is taken to be open in a game; 0 reads a world known to be stopped" }
+result.units = { type = "object" }
+result.blocks = { type = "int" }
+result.states = { type = "int" }
+result.top = { type = "list" }
+result.problems = { type = "list" }
+
+[[command]]
+name = "diff"
+summary = "Compare two stopped saves unit by unit through canonical NBT, blocks named by each world's own registry."
+handler = "wb_world.commands:diff"
+deterministic = true
+resources = { cpu = 1, mem_gb = 1 }
+params.a = { type = "path.in", summary = "one save folder" }
+params.b = { type = "path.in", summary = "the other save folder" }
+params.dimension = { type = "string", default = "", summary = "a dimension folder inside both saves (DIM-1); empty: the saves' own" }
+params.box = { type = "list", items = "int", optional = true, summary = "x1,y1,z1,x2,y2,z2, two block corners, inclusive: compares the units it touches" }
+params.regions = { type = "list", items = "string", default = [], summary = "region files to compare, by name; empty: every one" }
+params.ignore = { type = "list", items = "string", default = ["LastUpdate", "InhabitedTime"], summary = "NBT fields left out: a name matches that key anywhere, a dotted path (Level.Entities) from a unit's root; shell wildcards" }
+params.quiet = { type = "duration", default = "60s", min = 0, summary = "a save with a session.lock written within this is taken to be open in a game; 0 reads worlds known to be stopped" }
+result.compared = { type = "int" }
+result.identical = { type = "int" }
+result.differing = { type = "int" }
+result.only_in_a = { type = "int" }
+result.only_in_b = { type = "int" }
+result.fields = { type = "object" }
+result.positions = { type = "list" }
+
+[[command]]
+name = "digest-diff"
+summary = "Compare two world digests (wb/world-digest/v1) and report what differs, by category."
+handler = "wb_world.commands:digest_diff"
+deterministic = true
+params.a = { type = "path.in", summary = "one digest file" }
+params.b = { type = "path.in", summary = "the other digest file" }
+params.ignore_tick = { type = "bool", default = false, summary = "compare digests taken at different ticks" }
+result.agree = { type = "bool" }
+result.differences = { type = "object" }
+
+[[command]]
+name = "light-diff"
+summary = "Compare the saved light of two stopped saves, only where every neighbouring chunk or cube is saved in both."
+handler = "wb_world.commands:light_diff"
+deterministic = true
+resources = { cpu = 1, mem_gb = 1 }
+params.a = { type = "path.in", summary = "one save folder" }
+params.b = { type = "path.in", summary = "the other save folder" }
+params.dimension = { type = "string", default = "", summary = "a dimension folder inside both saves (DIM-1); empty: the saves' own" }
+params.box = { type = "list", items = "int", optional = true, summary = "x1,y1,z1,x2,y2,z2, two block corners, inclusive: compares the units it touches" }
+params.regions = { type = "list", items = "string", default = [], summary = "region files to compare, by name; empty: every one" }
+params.quiet = { type = "duration", default = "60s", min = 0, summary = "a save with a session.lock written within this is taken to be open in a game; 0 reads worlds known to be stopped" }
+result.compared = { type = "int" }
+result.sections = { type = "int" }
+result.differing = { type = "int" }
+result.same_blocks = { type = "int" }
+
+[[command]]
+name = "golden"
+summary = "Check a world generator against golden digests of fixed windows, sampled by its own code without the game, and prove them deterministic: a second run takes the windows in another order on another thread count."
+handler = "wb_world.commands:golden"
+# Not cached: what the sampler makes depends on the generator's code, which no param holds.
+resources = { cpu = 4, mem_gb = 4 }
+timeout = "2h"
+params.golden = { type = "path.in", summary = "the golden file, wb/world-golden/v1 (wb_world/golden.py): the windows, their layers and the digests last recorded" }
+params.sampler = { type = "list", items = "string", summary = "the generator's sampler, a command line with {windows}, {out}, {threads}, {order} and {python} (the contract: wb_world/sampler.py)" }
+params.cwd = { type = "path.in", digest = "git", summary = "the folder the sampler runs in, usually the generator's checkout" }
+params.threads = { type = "list", items = "int", default = [1, 0], summary = "the threads of the first run and of the run that verifies it; 0: the machine's cores (at least 2); one count: one run, determinism not checked" }
+params.shuffle = { type = "bool", default = false, summary = "the verifying run takes the windows shuffled by a fixed seed instead of reversed" }
+params.update = { type = "bool", default = false, summary = "write golden.json, the golden file with every digest sampled now, into the output folder and never over the golden file; only when the runs agree" }
+result.windows = { type = "int" }
+result.layers = { type = "int" }
+result.verified = { type = "bool" }
+result.changed = { type = "list" }
+result.new = { type = "list" }
+result.nondeterministic = { type = "list" }
+result.runs = { type = "list" }
+result.updated = { type = "string" }
+
+[[command]]
+name = "preview"
+summary = "Paint a layer of a window of a generated world to a PNG: the generator's sampler returns the layer whole, and a palette colours it."
+handler = "wb_world.commands:preview"
+resources = { cpu = 2, mem_gb = 4 }
+timeout = "1h"
+params.sampler = { type = "list", items = "string", summary = "the generator's sampler, as world.golden runs it (wb_world/sampler.py)" }
+params.cwd = { type = "path.in", digest = "git", summary = "the folder the sampler runs in, usually the generator's checkout" }
+params.layer = { type = "string", summary = "the layer to paint, a name the sampler knows" }
+params.golden = { type = "path.in", optional = true, summary = "a golden file to take the window from, and the layer's palette" }
+params.window = { type = "string", default = "", summary = "the window's name in the golden file; without one, the name the picture is saved under (preview)" }
+params.columns = { type = "list", items = "int", optional = true, summary = "x1,z1,x2,z2, block columns, corners inclusive: the window, or in place of the golden window's" }
+params.seed = { type = "int", optional = true, summary = "the window's seed, or in place of the golden window's" }
+params.step = { type = "int", optional = true, min = 1, summary = "every step-th block along each axis (1), or in place of the golden window's" }
+params.options = { type = "object", default = {}, summary = "the generator's own settings for the window, laid over the golden window's" }
+params.palette = { type = "object", default = {}, summary = "colours (#rrggbb) by value, laid over the golden file's for the layer: text values by name, number keys as the stops of a gradient (wb_world/paint.py)" }
+params.scale = { type = "int", default = 1, min = 1, max = 16, summary = "pixels a side for each value" }
+params.threads = { type = "int", default = 0, min = 0, summary = "{threads}; 0: the machine's cores (at least 2)" }
+result.width = { type = "int" }
+result.height = { type = "int" }
+result.values = { type = "int" }
+result.unlisted = { type = "list" }
+result.png = { type = "string" }
+result.sha256 = { type = "sha256" }

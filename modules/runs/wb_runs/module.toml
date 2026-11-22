@@ -1,0 +1,125 @@
+[module]
+name = "runs"
+version = "0.2.0"
+summary = "Run custody (from orun): steps in a clean tree at an exact commit, repeated runs, interleaved A/B with paired statistics, and evidence records that refuse a comparison of runs differing in more than their treatment."
+
+[config]
+kinds = { type = "object", default = {}, summary = 'how evidence fields compare, by field name or glob, the last matching entry winning: "exact" (the default), "ignored", or for numbers { tolerance = 0.5 } or { tolerance = "2%" } (see wb_runs/evidence.py)' }
+keep_mb = { type = "float", default = 64, min = 0, summary = "the largest declared file or folder, in MB, a record keeps a copy of beside it; a larger one is only digested" }
+
+[[command]]
+name = "at-commit"
+summary = "Run steps in a clean, isolated tree of a repository at one commit; the source checkout is never written."
+handler = "wb_runs.commands:at_commit"
+requires = { binary = ["git"] }
+resources = { cpu = 2, mem_gb = 4 }
+timeout = "2h"
+params.repo = { type = "path.in", digest = "git", summary = "a git checkout" }
+params.commit = { type = "string", default = "HEAD" }
+params.steps = { type = "list", items = "string", summary = "commands, run in order; the first failure stops" }
+params.keep = { type = "bool", default = false, summary = "keep the tree after the run" }
+result.commit = { type = "string" }
+result.tree = { type = "string" }
+result.steps = { type = "list" }
+
+[[command]]
+name = "repeat"
+summary = "Run a command several times (after warm-up runs) and summarise one of its measurements, keeping each measured run's evidence record."
+handler = "wb_runs.commands:repeat"
+params.command = { type = "string" }
+params.params = { type = "object", default = {} }
+params.times = { type = "int", default = 5, min = 2, max = 200 }
+params.warmup = { type = "int", default = 1, min = 0, max = 20 }
+params.metric = { type = "string" }
+params.fields = { type = "object", default = {}, summary = "facts each run's record declares that Workbench cannot observe (jvm.flags, world.seed, machine.class); objects flatten with dots" }
+params.files = { type = "object", default = {}, summary = "files or folders the runs read, by field name: digested and kept as each run starts" }
+params.data = { type = "list", items = "string", default = [], summary = "fields of each run's result data (names or globs) its record keeps as data.<name>" }
+result.values = { type = "list" }
+result.median = { type = "float" }
+result.evidence = { type = "object" }
+
+[[command]]
+name = "ab"
+summary = "Interleave runs of a command with params A and B (AB, BA, ...), then bootstrap the paired change of a metric; with a treatment declared, refuse a verdict unless the runs differ in it alone."
+handler = "wb_runs.commands:ab"
+params.command = { type = "string" }
+params.a = { type = "object", default = {} }
+params.b = { type = "object", default = {} }
+params.pairs = { type = "int", default = 7, min = 2, max = 100 }
+params.metric = { type = "string" }
+params.fail_above = { type = "float", optional = true, summary = "a finding when B's median change exceeds this percent (e.g. 20)" }
+params.treatment = { type = "list", items = "string", default = [], summary = "evidence fields meant to differ between A and B, such as params.flags (a name, which must differ, or a glob, one of whose fields must); declaring any turns the precondition on" }
+params.control = { type = "list", items = "string", default = ["*"], summary = "evidence fields (globs) that must match in every run besides the treatment; !glob takes fields back out, the last match winning" }
+params.kinds = { type = "path.in", optional = true, summary = "a TOML file whose [kinds] table says how fields compare, over [modules.runs] kinds" }
+params.fields = { type = "object", default = {}, summary = "facts each run's record declares that Workbench cannot observe (jvm.flags, world.seed, machine.class); objects flatten with dots" }
+params.files = { type = "object", default = {}, summary = "files or folders the runs read, by field name: digested and kept as each run starts" }
+params.data = { type = "list", items = "string", default = [], summary = "fields of each run's result data (names or globs) its record keeps as data.<name>" }
+params.precondition = { type = "bool", default = true, summary = "with a treatment declared, refuse a verdict (a finding) as soon as a control differs or the treatment does not; false reports the refusals beside the verdict" }
+result.median_percent_change = { type = "float" }
+result.interval = { type = "list" }
+result.evidence = { type = "object" }
+
+[[command]]
+name = "evidence"
+summary = "Record the facts that define a finished run (its params with their defaults, inputs by digest, toolchain and machine, and the facts and files declared) as evidence.json in the out folder; give it the run's own to keep the record beside the run's outputs."
+handler = "wb_runs.commands:record_evidence"
+resources = { cpu = 0.5 }
+params.job = { type = "string", pattern = '^j_\w+$', summary = "the finished run" }
+params.fields = { type = "object", default = {}, summary = "facts the record declares that Workbench cannot observe (jvm.flags, world.seed, distance.render, machine.class); objects flatten with dots" }
+params.files = { type = "object", default = {}, summary = "files or folders the run read, by field name: digested, and kept beside the record up to [modules.runs] keep_mb" }
+params.data = { type = "list", items = "string", default = [], summary = "fields of the run's result data (names or globs) the record keeps as data.<name>" }
+result.record = { type = "string" }
+result.fields = { type = "object" }
+
+[[command]]
+name = "compare-evidence"
+summary = "Refuse a comparison of two sets of runs that differ in more than the declared treatment: every control field must match in every run and every treatment field must differ between the sides; every difference is reported."
+handler = "wb_runs.commands:compare_evidence"
+resources = { cpu = 0.2 }
+params.a = { type = "list", items = "path.in", default = [], summary = "side A's evidence records: evidence.json files, folders holding one, or folders of such folders" }
+params.b = { type = "list", items = "path.in", default = [], summary = "side B's evidence records, as a" }
+params.a_jobs = { type = "list", items = { type = "string", pattern = '^j_\w+$' }, default = [], summary = "more of side A's runs, by job id: recorded from their envelopes" }
+params.b_jobs = { type = "list", items = { type = "string", pattern = '^j_\w+$' }, default = [], summary = "more of side B's runs, by job id" }
+params.treatment = { type = "list", items = "string", default = [], summary = "fields meant to differ between A and B, each holding one value per side: a name, which must differ, or a glob, one of whose fields must; none checks that the sides match" }
+params.control = { type = "list", items = "string", default = ["*"], summary = "fields (globs) that must match in every run besides the treatment; !glob takes fields back out, the last match winning" }
+params.kinds = { type = "path.in", optional = true, summary = "a TOML file whose [kinds] table says how fields compare, over [modules.runs] kinds" }
+params.data = { type = "list", items = "string", default = [], summary = "for runs given by job id: fields of their result data (names or globs) to record as data.<name>" }
+result.refused = { type = "bool" }
+result.refusals = { type = "list" }
+result.differences = { type = "list" }
+result.treatment = { type = "object" }
+
+[[command]]
+name = "stats"
+summary = "Bootstrap the median paired change between baseline and candidate runs."
+handler = "wb_tools.adapter:run_tool"
+aliases = ["tools.stats"]
+params.argv = { type = "list", items = "string", default = [], summary = "the tool's own arguments; absolute host paths are translated" }
+params.cwd = { type = "path.in", optional = true, digest = "git", summary = "run in this folder (a project checkout)" }
+
+[[command]]
+name = "workload-guard"
+summary = "Exclude timing runs that overlap Java work the run did not start."
+handler = "wb_tools.adapter:run_tool"
+aliases = ["tools.workload-guard"]
+resources = { cpu = 0.2 }
+params.argv = { type = "list", items = "string", default = [], summary = "the tool's own arguments; absolute host paths are translated" }
+params.cwd = { type = "path.in", optional = true, digest = "git", summary = "run in this folder (a project checkout)" }
+
+[[command]]
+name = "interleaved"
+summary = "Treatments interleaved within one session, each sample's condition from a hash of its index, paired window by window: median differences, windows led and a bootstrap interval."
+handler = "wb_runs.commands:interleaved"
+deterministic = true
+resources = { cpu = 0.5 }
+params.samples = { type = "path.in", summary = "a CSV with a header, or JSON lines: one sample per row with its index, condition and metric columns" }
+params.baseline = { type = "string", summary = "the baseline condition's label" }
+params.treatments = { type = "list", items = "string", summary = "the other conditions' labels" }
+params.metrics = { type = "list", items = "string", summary = "the metric columns to compare" }
+params.window = { type = "int", default = 300, min = 4, summary = "consecutive samples per window" }
+params.index = { type = "string", default = "frame", summary = "the sample index column (the hash's input)" }
+params.condition = { type = "string", default = "condition", summary = "the condition column" }
+params.min_share = { type = "float", default = 0.3, min = 0.0, max = 0.5, summary = "a window where a condition holds less than this share is left out" }
+params.seed = { type = "int", default = 0, summary = "the bootstrap's seed" }
+result.metrics = { type = "object" }
+result.windows = { type = "int" }
