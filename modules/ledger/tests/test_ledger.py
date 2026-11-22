@@ -46,6 +46,29 @@ PARSERS = r"""
     size = 'size (?P<value>\S+)'
     [modules.ledger.parsers.broken]
     count = 'count (\d+)'
+    [modules.ledger.readers.passes]
+    each = "*"
+    label = "passes/{@key}"
+    date = "utc"
+    inputs = { commit = "commit" }
+    [modules.ledger.readers.passes.measurements]
+    seconds = { path = "seconds", unit = "s" }
+    tests = "tests.*.tests"
+    failures = "tests.*.failures"
+    [modules.ledger.readers.telemetry]
+    require = { schema = "demo.telemetry.v1" }
+    label = "telemetry/{@folder}/{@file}"
+    date = "startedUtc"
+    fields = { card = "machine.gpu", os = "machine.os" }
+    inputs = { build = "versions.app.sha256" }
+    [modules.ledger.readers.telemetry.measurements]
+    passed = "passed"
+    tick_p95_ms = { path = "scenarios.[scenario].tick.p95", unit = "ms" }
+    ready_seconds = { path = "process.*.launchToReadySeconds", unit = "s" }
+    [modules.ledger.readers.wrong]
+    label = "x"
+    fields = { colour = "c" }
+    measurements = { a = "b" }
 """
 
 
@@ -652,6 +675,86 @@ class Importers(unittest.TestCase):
         self.assertIn("modules.ledger.parsers.broken.count names no (?P<value>...) group", broken.summary)
         unknown = self.submit("ledger.parse-log", dict(params, parser="nope"), "usage")
         self.assertIn("no parser nope", unknown.summary)
+
+    def test_a_reader_turns_each_entry_of_a_file_into_a_run(self):
+        tree_a, tree_b = "a1" * 20, "b2" * 20
+        passes = write_json(self.d.data / "json" / "passes.json", {
+            tree_a: {"commit": "c" * 40, "seconds": 57.1, "utc": "2026-11-20T04:21:23Z",
+                     "tests": {"unit": {"tests": 595, "failures": 0}, "lab": {"tests": 106, "failures": 1}}},
+            tree_b: {"commit": "d" * 40, "seconds": 12, "utc": "2026-11-21T00:00:00Z", "tests": {}}})
+        first = self.submit("ledger.import-json", {"reader": "passes", "folder": str(passes)})
+        self.assertEqual((first.data.files, first.data.runs), (1, 2))
+        self.assertEqual(added(first.data.imported), {"run": 2, "run_input": 2, "measurement": 6})
+        shown = self.submit("ledger.show", {"ref": f"passes/{tree_a}"})
+        self.assertEqual(shown.data.run["date"], "2026-11-20")
+        self.assertEqual(shown.data.inputs, [{"name": "commit", "value": "c" * 40, "sha256": None}])
+        self.assertEqual(self.measured(f"passes/{tree_a}"), {
+            ("passes", "seconds", "", None, 57.1, "s"), ("passes", "tests", "unit", None, 595.0, None),
+            ("passes", "tests", "lab", None, 106.0, None), ("passes", "failures", "unit", None, 0.0, None),
+            ("passes", "failures", "lab", None, 1.0, None)})
+        self.assertEqual(self.measured(f"passes/{tree_b}"), {("passes", "seconds", "", None, 12.0, "s")})
+        again = self.submit("ledger.import-json", {"reader": "passes", "folder": str(passes)})
+        self.assertEqual(added(again.data.imported), {})
+        self.assertIn("nothing new", again.summary)
+
+    def test_a_reader_names_parts_by_field_and_refuses_what_it_does_not_read(self):
+        folder = self.d.data / "telemetry" / "11-21"
+        record = {"schema": "demo.telemetry.v1", "startedUtc": "2026-11-21T02:56:03Z", "passed": True,
+                  "machine": {"gpu": "Test GPU", "os": "Test OS"}, "versions": {"app": {"sha256": "e" * 64}},
+                  "process": {"server": {"launchToReadySeconds": 33.1}, "client": {"launchToReadySeconds": 22.8}},
+                  "scenarios": [{"scenario": "full-view", "tick": {"p95": 41.3}},
+                                {"scenario": "flight", "tick": {"p95": 12.5}},
+                                {"scenario": "flight", "tick": {"p95": 13.5}}, {"tick": {"p95": "n/a"}}]}
+        write_json(folder / "025603Z-capture.json", record)
+        write_json(folder / "030000Z-other.json", dict(record, schema="other.v2"))
+        older = {key: value for key, value in record.items() if key != "machine"}  # before records named the machine
+        write_json(folder / "031500Z-older.json", older)
+        done = self.submit("ledger.import-json", {"reader": "telemetry", "folder": str(folder.parent)}, "finding")
+        self.assertEqual((done.data.files, done.data.runs), (3, 2))
+        run = self.submit("ledger.show", {"ref": "telemetry/11-21/031500Z-older"}).data.run
+        self.assertEqual((run["card"], run["os"]), (None, None))
+        self.assertIn("030000Z-other.json: is not what reader telemetry reads: its schema is 'other.v2', not "
+                      "'demo.telemetry.v1'", done.summary)
+        shown = self.submit("ledger.show", {"ref": "telemetry/11-21/025603Z-capture"})
+        self.assertEqual((shown.data.run["date"], shown.data.run["card"], shown.data.run["os"]),
+                         ("2026-11-21", "Test GPU", "Test OS"))
+        self.assertEqual(shown.data.inputs, [{"name": "build", "value": "e" * 64, "sha256": "e" * 64}])
+        self.assertEqual(self.measured("telemetry/11-21/025603Z-capture"), {
+            ("telemetry", "passed", "", None, 1.0, None),
+            ("telemetry", "tick_p95_ms", "full-view", None, 41.3, "ms"),
+            ("telemetry", "tick_p95_ms", "flight", 1, 12.5, "ms"),
+            ("telemetry", "tick_p95_ms", "flight", 2, 13.5, "ms"),
+            ("telemetry", "ready_seconds", "server", None, 33.1, "s"),
+            ("telemetry", "ready_seconds", "client", None, 22.8, "s")})
+        wrong = self.submit("ledger.import-json", {"reader": "wrong", "folder": str(folder)}, "environment")
+        self.assertIn("modules.ledger.readers.wrong.fields: colour not a run field", wrong.summary)
+        unknown = self.submit("ledger.import-json", {"reader": "nope", "folder": str(folder)}, "usage")
+        self.assertIn("no reader nope", unknown.summary)
+
+
+class Readers(unittest.TestCase):
+    """A JSON reader's config is checked before any file is read, each mistake named."""
+
+    def test_mistakes_in_a_reader_are_named(self):
+        sys.path.insert(0, str(REPO / "modules" / "ledger"))
+        from wb_ledger import importers
+        base = {"label": "x/{@key}", "each": "runs.*", "measurements": {"m": "v"}}
+        for change, said in (({"each": "runs"}, "each must take entries"),
+                             ({"label": "x/{runs.*}"}, "takes no * or [field]"),
+                             ({"label": ""}, "label must name the run"),
+                             ({"date": "a.*"}, "date: 'a.*' must reach one value"),
+                             ({"measurements": {}}, "must name at least one metric"),
+                             ({"measurements": {"m": {"path": "v", "scale": 2}}}, "unknown key(s) scale"),
+                             ({"measurements": {"m": "a..b"}}, "has an empty step"),
+                             ({"measurements": {"m": "a.[x"}}, "must be [field]"),
+                             ({"inputs": {"i": "a.@key"}}, "@key is a path of its own"),
+                             ({"fields": {"date": "d"}}, "date has its own key"),
+                             ({"colour": 1}, "unknown key(s) colour")):
+            with self.subTest(change=change):
+                with self.assertRaises(ValueError) as caught:
+                    importers.reader({"r": dict(base, **change)}, "r")
+                self.assertIn(said, str(caught.exception))
+        self.assertEqual(importers.reader({"r": base}, "r").each, ["runs", "*"])
 
 
 if __name__ == "__main__":

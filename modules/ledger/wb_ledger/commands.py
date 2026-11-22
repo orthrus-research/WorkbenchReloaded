@@ -238,13 +238,33 @@ def import_ci(ctx: Context, project: str, runs=None):
     return {"imported": counts, "refused": refused, "unfinished": unfinished}
 
 
+def _files(root: Path, pattern: str) -> list[Path]:
+    """The file, or the files of that name pattern at any depth under the folder."""
+    return [root] if root.is_file() else sorted(path for path in root.rglob(pattern) if path.is_file())
+
+
+def _record_runs(ctx: Context, connection, state, readings: list, refused: list) -> list:
+    """Each (file, record, extra) reading's run recorded, in the caller's transaction; a run the ledger refuses is
+    listed in ``refused`` with its file and adds nothing. Returns (file, extra, run id) for each recorded run."""
+    recorded = []
+    for path, record, extra in readings:
+        try:
+            done = store.record_run(connection, record)
+        except store.Refused as error:
+            refused.append({"file": ctx.host_path(path), "why": str(error)})
+            continue
+        state.merge(done.counts)
+        recorded.append((path, extra, done.run))
+    return recorded
+
+
 def import_results(ctx: Context, folder: str, pattern: str):
     """Every result file (importers.py gives the shape) under ``folder``: its run mapped to the run of its label
     when the ledger has it, then its findings, once every file's run is recorded, so that a finding may rest on the
     run of another file. A refused file adds nothing, and a file whose findings are refused adds its run alone."""
     root = Path(folder)
-    files = [root] if root.is_file() else sorted(path for path in root.rglob(pattern) if path.is_file())
-    readings, refused, recorded = [], [], []
+    files = _files(root, pattern)
+    readings, refused = [], []
     for path in files:
         try:
             record, found = importers.result_file(path)
@@ -257,14 +277,7 @@ def import_results(ctx: Context, folder: str, pattern: str):
     state = store.Import(connection)
     with connection:  # every file read first: the write lock is held for the writes alone
         connection.execute("BEGIN IMMEDIATE")
-        for path, record, found in readings:
-            try:
-                done = store.record_run(connection, record)
-            except store.Refused as error:
-                refused.append({"file": ctx.host_path(path), "why": str(error)})
-                continue
-            state.merge(done.counts)
-            recorded.append((path, found, done.run))
+        recorded = _record_runs(ctx, connection, state, readings, refused)
         for path, found, run_id in recorded:
             if found:
                 try:
@@ -281,6 +294,44 @@ def import_results(ctx: Context, folder: str, pattern: str):
         ctx.summary(f"{len(files)} result file(s): {_imported(counts)}"
                     + (f"; {len(refused)} refused, first {refused[0]['file']}: {refused[0]['why']}" if refused else ""))
     return {"imported": counts, "refused": refused, "files": len(files)}
+
+
+def import_json(ctx: Context, reader: str, folder: str, pattern: str):
+    """Every JSON file under ``folder`` read into its runs by a reader of [modules.ledger.readers] (importers.py
+    gives a reader's shape), each run mapped to the run of its label when the ledger has it. A file the reader
+    refuses adds nothing; a run the ledger refuses adds nothing of itself."""
+    try:
+        chosen = importers.reader(ctx.config.get("readers") or {}, reader)
+    except LookupError as error:
+        raise ParamError(str(error)) from None
+    except ValueError as error:
+        raise EnvironmentProblem(str(error)) from None
+    root = Path(folder)
+    files = _files(root, pattern)
+    readings, refused = [], []
+    for path in files:
+        try:
+            records = importers.read_json(path, chosen)
+        except importers.Unreadable as error:
+            refused.append({"file": ctx.host_path(path), "why": str(error)})
+            continue
+        for record in records:
+            record.fields.setdefault("job", ctx.job)
+            readings.append((path, record, None))
+    connection = store.connect()
+    state = store.Import(connection)
+    with connection:  # every file read first: the write lock is held for the writes alone
+        connection.execute("BEGIN IMMEDIATE")
+        recorded = _record_runs(ctx, connection, state, readings, refused)
+    refused.sort(key=lambda item: item["file"])
+    counts = state.counts()
+    _refusals(ctx, [f"{item['file']}: {item['why']}" for item in refused])
+    if not files:
+        ctx.summary(f"no {pattern} under {ctx.host_path(root)}")
+    else:
+        ctx.summary(f"reader {reader}: {len(files)} file(s), {len(recorded)} run(s): {_imported(counts)}"
+                    + (f"; {len(refused)} refused, first {refused[0]['file']}: {refused[0]['why']}" if refused else ""))
+    return {"imported": counts, "refused": refused, "files": len(files), "runs": len(recorded)}
 
 
 def parse_log(ctx: Context, parser: str, log: str, run: str, replace: bool):

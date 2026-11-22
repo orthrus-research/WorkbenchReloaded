@@ -37,6 +37,29 @@ number of the match for that metric and part::
     [modules.ledger.parsers.gradle]
     build_seconds = 'BUILD SUCCESSFUL in (?P<value>\\d+)(?P<unit>s)'
     task_ms = '> Task (?P<part>\\S+) took (?P<value>[\\d.]+) ?(?P<unit>ms)'
+
+JSON readers (``ledger.import-json``) are config as well, ``[modules.ledger.readers.<name>]``, for the JSON a tool
+writes in a shape of its own. A reader says by dotted paths where a file's runs are and what each one's label,
+date, fields, inputs and measurements are. In a path, ``*`` takes every key of an object or every item of a list,
+and ``[field]`` every item of a list, each named by its ``field``. The names a measurement's wildcards take make
+its part, joined by ``/``; the names ``each`` takes make an entry's ``@key``. ``@file`` is the file's name without
+its suffix, and ``@folder`` the name of the folder it is in::
+
+    [modules.ledger.readers.passes]
+    each = "*"                          # optional: each entry here is a run (else the whole file is one)
+    require = { schema = "passes.v2" }  # optional: what the file must hold, by path, or it is refused
+    label = "passes/{@key}"             # the run's label, with paths in braces
+    date = "utc"                        # optional: an ISO date or time; else the day the file was written
+    fields = { card = "machine.gpu" }   # optional: ledger.add-run's run fields, by path
+    inputs = { commit = "commit" }      # optional: what the run ran on, by path (64 hex digits: a SHA-256 too)
+    [modules.ledger.readers.passes.measurements]
+    seconds = { path = "seconds", unit = "s" }
+    tests = "suites.*.tests"            # part: each suite's key
+    tick_p95_ms = { path = "scenarios.[name].tick.p95", unit = "ms" }
+
+Paths other than ``require``'s start at the entry. What a measurement's path reaches that is not a number is
+passed over (true and false count 1 and 0), and a field or input that is not there is left out; a label or date
+path that reaches nothing refuses the file. The measurements' source is the reader's name.
 """
 
 from __future__ import annotations
@@ -46,6 +69,7 @@ import json
 import math
 import re
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import store
@@ -237,3 +261,195 @@ def parse_log(path: Path, patterns: dict[str, re.Pattern], source: str) -> tuple
                                  None))
                     found[metric] += 1
     return rows, bad, found
+
+
+# ---------------------------------------------------------------------------------------------
+# JSON files, by a reader
+
+READER_KEYS = ("each", "require", "label", "date", "fields", "inputs", "measurements")
+MEASURE_KEYS = ("path", "unit")
+NAMES = ("@key", "@file", "@folder")
+PLACEHOLDER = re.compile(r"\{([^{}]+)\}")
+
+
+@dataclass
+class Reader:
+    """A reader of ``[modules.ledger.readers]``, checked: each value a list of path steps."""
+    name: str
+    each: list | None
+    require: dict  # path text -> (steps, expected value)
+    label: str
+    date: list | None
+    fields: dict  # run field -> steps
+    inputs: dict  # input name -> steps
+    measurements: dict  # metric -> (steps, unit)
+
+
+def _steps(text, where: str, wild: bool) -> list[str]:
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError(f"{where} must be a dotted path (text)")
+    steps = text.split(".")
+    if any(not step for step in steps):
+        raise ValueError(f"{where}: {text!r} has an empty step")
+    for step in steps:
+        if step in NAMES and len(steps) > 1:
+            raise ValueError(f"{where}: {step} is a path of its own, not a step of {text!r}")
+        if not wild and (step == "*" or step.startswith("[")):
+            raise ValueError(f"{where}: {text!r} must reach one value, so it takes no * or [field]")
+        if step.startswith("[") and (not step.endswith("]") or len(step) < 3):
+            raise ValueError(f"{where}: {step!r} must be [field]")
+    return steps
+
+
+def reader(readers: dict, name: str) -> Reader:
+    """The named reader of ``[modules.ledger.readers]``, checked. Raises LookupError for a name config does not
+    have and ValueError for a reader config gets wrong."""
+    if name not in readers:
+        have = ", ".join(sorted(readers)) or "none"
+        raise LookupError(f"no reader {name} in [modules.ledger.readers] (have: {have})")
+    where = f"modules.ledger.readers.{name}"
+    table = readers[name]
+    if not isinstance(table, dict):
+        raise ValueError(f"{where} must be a table")
+    unknown = sorted(set(table) - set(READER_KEYS))
+    if unknown:
+        raise ValueError(f"{where} has unknown key(s) {', '.join(unknown)} (known: {', '.join(READER_KEYS)})")
+    label = table.get("label")
+    if not isinstance(label, str) or not label.strip():
+        raise ValueError(f"{where}.label must name the run: text, with paths in braces")
+    for path in PLACEHOLDER.findall(label):
+        _steps(path, f"{where}.label", wild=False)
+    each = _steps(table["each"], f"{where}.each", wild=True) if table.get("each") else None
+    if each is not None and not any(step == "*" or step.startswith("[") for step in each):
+        raise ValueError(f"{where}.each must take entries: a path with a * or a [field]")
+
+    def table_of(key: str) -> dict:
+        value = table.get(key) or {}
+        if not isinstance(value, dict):
+            raise ValueError(f"{where}.{key} must be a table")
+        return value
+
+    require = {path: (_steps(path, f"{where}.require", wild=False), value)
+               for path, value in table_of("require").items()}
+    fields = table_of("fields")
+    wrong = sorted(set(fields) - (set(store.RUN_FIELDS) - {"date", "job"}))
+    if wrong:
+        raise ValueError(f"{where}.fields: {', '.join(wrong)} not a run field this sets (date has its own key; the "
+                         f"rest: {', '.join(f for f in store.RUN_FIELDS if f not in ('date', 'job'))})")
+    measurements = {}
+    for metric, spec in table_of("measurements").items():
+        at = f"{where}.measurements.{metric}"
+        if isinstance(spec, dict):
+            other = sorted(set(spec) - set(MEASURE_KEYS))
+            if other:
+                raise ValueError(f"{at} has unknown key(s) {', '.join(other)} (known: {', '.join(MEASURE_KEYS)})")
+            unit = spec.get("unit")
+            if unit is not None and not isinstance(unit, str):
+                raise ValueError(f"{at}.unit must be text")
+            measurements[metric] = (_steps(spec.get("path"), f"{at}.path", wild=True), unit)
+        else:
+            measurements[metric] = (_steps(spec, at, wild=True), None)
+    if not measurements:
+        raise ValueError(f"{where}.measurements must name at least one metric = path")
+    return Reader(name=name, each=each, require=require, label=label,
+                  date=_steps(table["date"], f"{where}.date", wild=False) if table.get("date") else None,
+                  fields={key: _steps(path, f"{where}.fields.{key}", wild=False) for key, path in fields.items()},
+                  inputs={key: _steps(path, f"{where}.inputs.{key}", wild=False)
+                          for key, path in table_of("inputs").items()},
+                  measurements=measurements)
+
+
+def _walk(value, steps: list[str], names: tuple = ()):
+    """Every (names, value) the path's steps reach from ``value``; the names are what its wildcards took."""
+    if not steps:
+        yield names, value
+        return
+    step, rest = steps[0], steps[1:]
+    if step == "*":
+        items = value.items() if isinstance(value, dict) else enumerate(value) if isinstance(value, list) else ()
+        for key, item in items:
+            yield from _walk(item, rest, names + (str(key),))
+    elif step.startswith("["):
+        field_name = step[1:-1]
+        for index, item in enumerate(value if isinstance(value, list) else ()):
+            named = item.get(field_name) if isinstance(item, dict) else None
+            yield from _walk(item, rest, names + (str(named if named is not None else index),))
+    elif isinstance(value, dict) and step in value:
+        yield from _walk(value[step], rest, names)
+    elif isinstance(value, list) and step.isdigit() and int(step) < len(value):
+        yield from _walk(value[int(step)], rest, names)
+
+
+def _one(entry, steps: list[str], known: dict):
+    """The one value a path without wildcards reaches, or None."""
+    if steps[0] in known:
+        return known[steps[0]]
+    found = [value for _, value in _walk(entry, steps)]
+    return found[0] if found else None
+
+
+def read_json(path: Path, chosen: Reader) -> list[store.Record]:
+    """A JSON file's runs by a reader (see the module docstring)."""
+    data = _json(path)
+    for text, (steps, expected) in chosen.require.items():
+        held = _one(data, steps, {})
+        if held != expected:
+            raise Unreadable(f"is not what reader {chosen.name} reads: its {text} is {held!r}, not {expected!r}")
+    entries = list(_walk(data, chosen.each)) if chosen.each else [((), data)]
+    if not entries:
+        raise Unreadable(f"has no entries at {'.'.join(chosen.each)}")
+    records, labels = [], set()
+    for names, entry in entries:
+        known = {"@key": "/".join(names), "@file": path.stem, "@folder": path.parent.name}
+        where = f" (entry {known['@key']})" if chosen.each else ""
+
+        def scalar(steps: list[str], what: str):
+            value = _one(entry, steps, known)
+            if value is None or isinstance(value, (dict, list)):
+                raise Unreadable(f"{what}: {'.'.join(steps)} reaches no value{where}")
+            return value
+
+        label = PLACEHOLDER.sub(lambda match: str(scalar(match.group(1).split("."), "label")), chosen.label)
+        if label in labels:
+            raise Unreadable(f"names run {label} twice")
+        labels.add(label)
+        def maybe(steps: list[str], what: str):
+            value = _one(entry, steps, known)
+            if isinstance(value, (dict, list)):
+                raise Unreadable(f"{what}: {'.'.join(steps)} reaches {type(value).__name__}, not a value{where}")
+            return value
+
+        fields = {key: maybe(steps, f"field {key}") for key, steps in chosen.fields.items()}
+        if chosen.date:
+            day = str(scalar(chosen.date, "date"))[:10]
+            if not store.is_date(day):
+                raise Unreadable(f"date: {'.'.join(chosen.date)} is not an ISO date or time{where}")
+        else:
+            day = day_of(path)
+        inputs = []
+        for key, steps in chosen.inputs.items():
+            value = maybe(steps, f"input {key}")
+            if value is not None:
+                value = str(value)
+                inputs.append({"name": key, "value": value,
+                               "sha256": value if store.DIGEST.fullmatch(value) else None})
+        reached = []
+        for metric, (steps, unit) in chosen.measurements.items():
+            for parts, value in _walk(entry, steps):
+                if isinstance(value, bool):
+                    value = float(value)
+                if _number(value):
+                    reached.append((metric, "/".join(parts), float(value), unit))
+        repeated = Counter((metric, part) for metric, part, _, _ in reached)
+        seen = Counter()
+        rows = []
+        for metric, part, value, unit in reached:  # items of one name (two scenarios called alike) are samples
+            seen[metric, part] += 1
+            sample = seen[metric, part] if repeated[metric, part] > 1 else None
+            rows.append((chosen.name, None, None, sample, metric, part, value, unit, None))
+        try:
+            records.append(store.Record(label=label, fields=dict(store.run_fields(fields), date=day),
+                                        inputs=store.run_inputs(inputs), measurements=rows))
+        except ValueError as error:
+            raise Unreadable(f"{error}{where}") from None
+    return records
