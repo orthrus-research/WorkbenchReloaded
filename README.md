@@ -54,7 +54,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 | `runs` | measurement, statistics and run evidence | `at-commit`, `repeat`, `ab`, `interleaved`, `evidence`, `compare-evidence`, `stats`, `workload-guard` |
 | `profile` | profiling and diagnostics of Java game processes and the GPU they run on | `jfr`, `attribute`, `memory`, `settings`, `gpu-sample`, `gpu-report` |
 | `ledger` | results and evidence | `query`, `runs`, `findings`, `show`, `costs`, `calls`, `add-run`, `add-finding`, `supersede`, `link-run`, `add-machine`, `prune`, `import`, `import-ci`, `import-results`, `parse-log` |
-| `vast` | rented machines | `offers`, `market`, `charges`, `instances`, `destroy`, `keys`, `rent`, `probe`, `bundle-check`, `bundle-riven` |
+| `vast` | rented machines | `offers`, `market`, `charges`, `instances`, `destroy`, `keys`, `rent`, `probe`, `bundle-check`, `bundle`, `lab-inputs` |
 | `ci` | project jobs, push gates, commit hygiene | `run`, `gate`, `status`, `hook`, `actions`, `scrub` |
 | `release` | release and publishing: GitHub releases, Modrinth, CurseForge, Maven | `check`, `publish`, `status` |
 | `plan` | declarative plans of commands | `check`, `run` |

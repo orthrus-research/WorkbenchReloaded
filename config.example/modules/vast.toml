@@ -1,3 +1,8 @@
 # [modules.vast]: rentals. Every rental still waits for an explicit yes on its quote; nothing here can approve one.
 min_cores = 8
+# The cards offer lookups search and vast.market rotates through; none are built in.
 # cards = ["RTX 3060", "RTX 4060", "RTX 5060 Ti"]
+# Where a template's relative folder and its recipes' relative repositories are, when a shared layer names them.
+# root = '/srv/work'
+# Bundle templates are [modules.vast.templates.<name>]: in a config folder, modules/vast/templates/<name>.toml.
+# modules/vast/docs/templates.md lists every key; modules/vast/docs/example/tours.toml is a worked one.

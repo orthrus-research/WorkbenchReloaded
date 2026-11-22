@@ -47,9 +47,11 @@ params = { runs = ["{steps.settle.outputs.r1-settle-game-captures}", "{steps.ref
 accept = ["ok", "finding"]
 
 [rental]
-# For `plan.run machine=rental`: the same game steps on a rented RTX 3060 (calibration 01's shape).
+# For `plan.run machine=rental`: the same game steps on a rented card, written into one bundle by a template
+# ([modules.vast.templates.<name>]; every key is in modules/vast/docs/templates.md).
 offer = "REPLACE-WITH-AN-OFFER-FROM-vast.offers"
 max_dph = 0.10
 cap = "90m"
-lab = 'D:\work\linux-lab'  # scrub: allow
-window = "1280x720"
+template = "tours"                     # default: the only template configured
+lab = 'D:\work\lab-inputs\tours'  # the template's input archives, as vast.lab-inputs makes them  # scrub: allow
+window = "1280x720"                    # any other key is a value the template's steps file may use
