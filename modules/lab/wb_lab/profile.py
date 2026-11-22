@@ -15,6 +15,7 @@ Command templates take ``{python}``, ``{name}``, ``{name_repr}``, ``{tour}`` and
 from __future__ import annotations
 
 import copy
+import re
 from dataclasses import dataclass, field
 
 REQUIRED = ("launcher", "instances", "prepare", "play")
@@ -32,6 +33,8 @@ DEFAULTS = {
     "load_ok": None,             # a line load prints when the instance is sound
     "collect": [],               # [file in the instance, name to keep it as] after a play
     "captures_pattern": None,    # a regular expression on play's output; group 1 is a folder of captures
+    "failures": [],              # regular expressions, most telling first: the first line one finds in play's output
+                                 # or the files it collected explains a failed play
     "recipe_files": [],          # files whose content is part of every recipe
     "default_artifact": {},      # {flag, path}: a file prepare reads unless the flag is given
     "file_flags": [],            # prepare flags whose next argument is a file, hashed into the recipe
@@ -101,6 +104,11 @@ def merged(config: dict, name: str = "") -> dict:
         raise ProfileError(f"unknown instance profile key(s) {', '.join(unknown)} (known: {', '.join(DEFAULTS)})")
     profile = copy.deepcopy(DEFAULTS)
     profile.update(given)
+    for pattern in profile["failures"]:
+        try:
+            re.compile(pattern)
+        except (re.error, TypeError) as error:
+            raise ProfileError(f"the instance profile's failures: {pattern!r} is not a regular expression ({error})") from None
     missing = [key for key in REQUIRED if not profile.get(key)]
     if missing:
         raise ProfileError(f"the instance profile needs {', '.join(missing)} (set [modules.lab.profile]; see "

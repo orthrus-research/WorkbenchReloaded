@@ -73,5 +73,28 @@ class NamedProfiles(unittest.TestCase):
         self.assertNotEqual(default, other)
 
 
+class FailurePatterns(unittest.TestCase):
+    """A failed play says why, by the profile's failure patterns over the client's log and play's own output."""
+
+    CLIENT = ("loading mods\nA custom exception was thrown by a mod, the game will display an error screen\n"
+              "RendererRequirement: Engine cannot start without Renderer: install it\n")
+    OUTPUT = "Traceback (most recent call last):\nRuntimeError: Native process exited before joined the game\n"
+
+    def test_the_most_telling_pattern_wins_over_the_earliest_line(self):
+        patterns = ["cannot start without", "Native process exited before .*"]
+        self.assertEqual(commands.explain(patterns, [self.CLIENT, self.OUTPUT]),
+                         "RendererRequirement: Engine cannot start without Renderer: install it")
+        self.assertEqual(commands.explain(patterns[1:], [self.CLIENT, self.OUTPUT]),
+                         "RuntimeError: Native process exited before joined the game")
+        self.assertIsNone(commands.explain(patterns, ["nothing to see"]))
+        self.assertIsNone(commands.explain([], [self.CLIENT]))  # no patterns: the finding stays as it was
+        self.assertEqual(len(commands.explain(patterns, ["x" * 300 + " cannot start without"])), 240)
+
+    def test_a_pattern_that_is_no_regular_expression_is_refused(self):
+        with self.assertRaises(profile.ProfileError) as raised:
+            profile.merged({"profile": dict(BASE, failures=["("])})
+        self.assertIn("failures", str(raised.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

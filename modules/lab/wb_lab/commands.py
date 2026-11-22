@@ -150,10 +150,26 @@ def play(ctx: Context, name: str, tour: str, window: str, options: str, label: s
         ctx.output(f"{label}-captures", target)
         ctx.measure("captures", sum(1 for _ in target.glob("*.png")))
     if done.returncode != 0:
-        ctx.finding(f"tour {Path(tour).name} exited {done.returncode}")
+        collected = [out / f"{label}-{kept_as}" for _relative, kept_as in p["collect"]]
+        texts = [path.read_text(encoding="utf-8", errors="replace") for path in collected if path.is_file()]
+        why = explain(p["failures"], texts + [done.stdout])
+        ctx.finding(f"tour {Path(tour).name} exited {done.returncode}" + (f": {why}" if why else ""))
     else:
         ctx.summary(f"tour {Path(tour).name} played on {name}")
     return {"instance": name, "exit": done.returncode, "captures": bool(captures)}
+
+
+def explain(patterns: list[str], texts: list[str]) -> str | None:
+    """Why a play failed, by the profile's failure patterns: tried in order, most telling first, each over every text
+    (the files play collected, then its own output); the first line one finds, shortened."""
+    for pattern in patterns:
+        regex = re.compile(pattern)
+        for text in texts:
+            for line in text.splitlines():
+                if regex.search(line):
+                    line = line.strip()
+                    return line if len(line) <= 240 else line[:239] + "…"
+    return None
 
 
 def _size(path: Path) -> int:
