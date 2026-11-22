@@ -120,13 +120,14 @@ class MultiSession(Session):
         port = self._listening_port()
         if c["desktop"] == "hidden":
             self.desktop = desktops.HiddenDesktop().__enter__()
-        mods = sorted((self.copy / "mods").glob("*.jar")) if (self.copy / "mods").is_dir() else []
         env = dict(os.environ, JAVA_HOME=str(Path(java).parents[1]))
         for index in range(1, c["count"] + 1):
             name = f"{c['prefix']}{index}"
             game = ctx.work / "clients" / name
             (game / "mods").mkdir(parents=True, exist_ok=True)
-            for mod in mods + c["mods"]:
+            if (self.copy / "mods").is_dir():  # the server's mods, with the libraries a loader keeps under them
+                shutil.copytree(self.copy / "mods", game / "mods", dirs_exist_ok=True)
+            for mod in c["mods"]:
                 shutil.copy2(mod, game / "mods" / mod.name)
             if c["files"] is not None:
                 shutil.copytree(c["files"], game, dirs_exist_ok=True)

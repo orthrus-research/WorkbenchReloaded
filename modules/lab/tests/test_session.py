@@ -79,6 +79,8 @@ class Sessions(unittest.TestCase):
         (server / "server.properties").write_text("motd=test\n", encoding="utf-8")
         (server / "mods").mkdir()
         (server / "mods" / "shared.jar").write_bytes(b"a mod both sides load")
+        (server / "mods" / "1.12.2").mkdir()
+        (server / "mods" / "1.12.2" / "library.jar").write_bytes(b"a library the loader keeps under mods")
         (self.root / "fake_client.py").write_text(FAKE_CLIENT, encoding="utf-8")
         (self.root / "client.jar").write_bytes(b"client")
         self.runtime = self.root / "runtime.json"
@@ -122,6 +124,7 @@ class Sessions(unittest.TestCase):
         self.assertIn("--server", argv)
         self.assertEqual(argv[argv.index("--tweakClass") + 1], "fake.Tweaker")
         self.assertTrue((self.root / "two" / "work" / "clients" / "wb1" / "mods" / "shared.jar").is_file())
+        self.assertTrue((self.root / "two" / "work" / "clients" / "wb1" / "mods" / "1.12.2" / "library.jar").is_file())
         self.assertEqual(receipt["runtime"]["main_class"], "fake.Main")
 
     @unittest.skipUnless(desktop.available(), "hidden desktops are a Windows feature")
