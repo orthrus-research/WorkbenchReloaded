@@ -281,6 +281,35 @@ sys.exit({code})
 """
 
 
+class PythonLookup(unittest.TestCase):
+    """ci.matrix finds a version wherever the host keeps it, and takes only an interpreter that says it is that one."""
+
+    @classmethod
+    def setUpClass(cls):
+        for module in ("build", "ci"):
+            sys.path.insert(0, str(REPO / "modules" / module))
+        from wb_ci import matrix
+        cls.matrix = matrix
+
+    def test_the_py_launchers_list_is_read_with_any_company(self):
+        drive = "X" + ":"  # an install folder as the launcher prints it, spaces and all
+        own, other = f"{drive}\\Python314\\python.exe", f"{drive}\\Program Files\\uv python\\python.exe"
+        listed = [f" -V:3.14 *        {own}", f" -V:Astral/CPython3.11.15 {other}"]
+        named = [self.matrix.LISTED.match(line) for line in listed]
+        self.assertEqual([(n["tag"], n["path"]) for n in named], [("3.14", own), ("Astral/CPython3.11.15", other)])
+
+    def test_a_version_is_taken_only_from_an_interpreter_that_is_it(self):
+        from unittest import mock
+        answers = {"a": ("/py/a", "3.10.1"), "b": ("/py/b", "3.11.2")}
+        with mock.patch.object(self.matrix, "_candidates", return_value=[["a"], ["b"], ["gone"]]), \
+                mock.patch.object(self.matrix, "_ask", side_effect=lambda argv: answers.get(argv[0])):
+            self.assertEqual(self.matrix.find_python("3.11"), "/py/b")
+            self.assertEqual(self.matrix.find_python("3.11.2"), "/py/b")
+            self.assertIsNone(self.matrix.find_python("3.11.3"))
+            self.assertIsNone(self.matrix.find_python("3.1"))  # 3.10 is not 3.1
+            self.assertEqual(self.matrix.find_python("pypy3.10"), "/py/a")  # not a version: the first answer
+
+
 class Matrix(unittest.TestCase):
     """ci.matrix: a command run per Python in a clean clone; failures and missing Pythons are findings."""
 
