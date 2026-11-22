@@ -228,6 +228,19 @@ class Store(unittest.TestCase):
         self.assertEqual(refused.outcome, "usage")  # that harness has no open session
         self.assertIn("play_open", refused.summary)
 
+    def test_9b_a_silent_session_is_stopped_at_its_limit_with_its_game(self):
+        self.assertEqual(self.ensure("nu").outcome, "ok")
+        beat = self.instances / "nu" / "heartbeat.txt"
+        stopped = self.c.submit("lab.play", {"name": "nu", "label": "hang", "limit": "10s",
+                                             "args": ["--hang"]}).result(timeout=120)
+        self.assertEqual(stopped.outcome, "finding", stopped.summary)
+        self.assertIn("did not end within 10 s; stopped with what it started", stopped.summary)
+        self.assertIsNone(stopped.data.exit)
+        self.assertTrue(beat.is_file())  # the game had started
+        last = beat.stat().st_mtime
+        time.sleep(1.5)
+        self.assertEqual(beat.stat().st_mtime, last)  # and is gone with its launcher, not orphaned
+
     def test_a_input_steps_run_in_order_in_their_checkouts(self):
         done = self.c.submit("lab.inputs", {"profile": "built", "steps": ["first", "elsewhere"]}).result(timeout=120)
         self.assertEqual(done.outcome, "ok", done.summary)

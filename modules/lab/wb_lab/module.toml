@@ -65,7 +65,7 @@ timeout = "12h"
 cancel_grace = "2m"
 params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
 params.tour = { type = "path.in", optional = true, summary = "the tour to play; none: an open session (the profile's play_open)" }
-params.limit = { type = "duration", default = "4h", min = "1m", max = "12h", summary = "an open session is stopped after this (a finding); a tour has 90 minutes" }
+params.limit = { type = "duration", default = "4h", min = "10s", max = "12h", summary = "an open session is stopped after this, with the game it started (a finding); a tour has 90 minutes" }
 params.window = { type = "string", default = "1920x1080", pattern = "^[0-9]+x[0-9]+$" }
 params.options = { type = "string", default = "", summary = "JVM options for the client, in the profile's options_env" }
 params.label = { type = "string", default = "play" }

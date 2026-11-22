@@ -39,7 +39,7 @@ cubature = "../Cubature"
 '''
 
 RUNTIME = r'''
-import argparse, json, os, sys
+import argparse, json, os, subprocess, sys, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,8 +82,12 @@ def prepare(name, seed, scale_text, args):
     (home / "standalone.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
 
 
-def play(name, tour, window):
+def play(name, tour, window, hang=False):
     home, _manifest = load(name)
+    if hang:  # a game that never ends and says nothing: a child keeps beating until something kills it
+        beat = "import pathlib, time\nwhile True:\n    pathlib.Path(%r).write_text(str(time.time()))\n    time.sleep(0.2)\n"
+        subprocess.Popen([sys.executable, "-c", beat % str(home / "heartbeat.txt")])
+        time.sleep(3600)
     logs = home / "client" / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     what = ("tour " + Path(tour).name) if tour else "open session"
@@ -114,11 +118,12 @@ if __name__ == "__main__":
     parser.add_argument("--scale")
     parser.add_argument("--tour")
     parser.add_argument("--window", default="1280x720")
+    parser.add_argument("--hang", action="store_true")
     known, rest = parser.parse_known_args()
     if known.command == "prepare":
         prepare(known.name, known.seed, known.scale, rest)
     elif known.command == "play":
-        play(known.name, known.tour, known.window)
+        play(known.name, known.tour, known.window, known.hang)
     else:
         raise SystemExit("unsupported in the fake: " + known.command)
 '''
