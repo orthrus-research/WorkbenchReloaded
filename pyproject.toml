@@ -41,10 +41,11 @@ mixin = "wb_mixin"
 probe = "wb_probe"
 content = "wb_content"
 drive = "wb_drive"
+release = "wb_release"
 
 [tool.setuptools]
-package-dir = { "wb_core" = "core/wb_core", "wb_host" = "host/wb_host", "wb_selftest" = "modules/selftest/wb_selftest", "wb_ledger" = "modules/ledger/wb_ledger", "wb_vast" = "modules/vast/wb_vast", "wb_lab" = "modules/lab/wb_lab", "wb_tools" = "modules/tools/wb_tools", "wb_frames" = "modules/frames/wb_frames", "wb_runs" = "modules/runs/wb_runs", "wb_plan" = "modules/plan/wb_plan", "wb_toolchain" = "modules/toolchain/wb_toolchain", "wb_build" = "modules/build/wb_build", "wb_jar" = "modules/jar/wb_jar", "wb_source" = "modules/source/wb_source", "wb_ci" = "modules/ci/wb_ci", "wb_world" = "modules/world/wb_world", "wb_render" = "modules/render/wb_render", "wb_assets" = "modules/assets/wb_assets", "wb_profile" = "modules/profile/wb_profile", "wb_mixin" = "modules/mixin/wb_mixin", "wb_probe" = "modules/probe/wb_probe", "wb_content" = "modules/content/wb_content", "wb_drive" = "modules/drive/wb_drive" }
-packages = ["wb_core", "wb_host", "wb_selftest", "wb_ledger", "wb_vast", "wb_lab", "wb_tools", "wb_frames", "wb_runs", "wb_plan", "wb_toolchain", "wb_build", "wb_jar", "wb_source", "wb_ci", "wb_world", "wb_render", "wb_assets", "wb_profile", "wb_mixin", "wb_probe", "wb_content", "wb_drive"]
+package-dir = { "wb_core" = "core/wb_core", "wb_host" = "host/wb_host", "wb_selftest" = "modules/selftest/wb_selftest", "wb_ledger" = "modules/ledger/wb_ledger", "wb_vast" = "modules/vast/wb_vast", "wb_lab" = "modules/lab/wb_lab", "wb_tools" = "modules/tools/wb_tools", "wb_frames" = "modules/frames/wb_frames", "wb_runs" = "modules/runs/wb_runs", "wb_plan" = "modules/plan/wb_plan", "wb_toolchain" = "modules/toolchain/wb_toolchain", "wb_build" = "modules/build/wb_build", "wb_jar" = "modules/jar/wb_jar", "wb_source" = "modules/source/wb_source", "wb_ci" = "modules/ci/wb_ci", "wb_world" = "modules/world/wb_world", "wb_render" = "modules/render/wb_render", "wb_assets" = "modules/assets/wb_assets", "wb_profile" = "modules/profile/wb_profile", "wb_mixin" = "modules/mixin/wb_mixin", "wb_probe" = "modules/probe/wb_probe", "wb_content" = "modules/content/wb_content", "wb_drive" = "modules/drive/wb_drive", "wb_release" = "modules/release/wb_release" }
+packages = ["wb_core", "wb_host", "wb_selftest", "wb_ledger", "wb_vast", "wb_lab", "wb_tools", "wb_frames", "wb_runs", "wb_plan", "wb_toolchain", "wb_build", "wb_jar", "wb_source", "wb_ci", "wb_world", "wb_render", "wb_assets", "wb_profile", "wb_mixin", "wb_probe", "wb_content", "wb_drive", "wb_release"]
 
 [tool.setuptools.package-data]
 "*" = ["module.toml", "migrations/*.sql", "profiles/*.json", "templates/**/*", "java/*.java"]

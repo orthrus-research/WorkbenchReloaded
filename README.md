@@ -56,6 +56,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 | `ledger` | results and evidence | `query`, `runs`, `findings`, `show`, `costs`, `calls`, `add-run`, `add-finding`, `supersede`, `link-run`, `add-machine`, `prune`, `import`, `import-ci`, `import-results`, `parse-log` |
 | `vast` | rented machines | `offers`, `market`, `charges`, `instances`, `destroy`, `keys`, `rent`, `probe`, `bundle-check`, `bundle-riven` |
 | `ci` | project jobs, push gates, commit hygiene | `run`, `gate`, `status`, `hook`, `actions`, `scrub` |
+| `release` | release and publishing: GitHub releases, Modrinth, CurseForge, Maven | `check`, `publish`, `status` |
 | `plan` | declarative plans of commands | `check`, `run` |
 | `tools` | the engine of the former standalone tools, behind toolchain, build, jar, mixin, probe, source, runs and ci | — |
 | `selftest` | exercises the core end to end | |
