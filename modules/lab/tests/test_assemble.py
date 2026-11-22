@@ -118,7 +118,12 @@ def fixture(base: str, folder: Path) -> Path:
                              ("patches/org.lwjgl.json", json.dumps(lwjgl).encode()),
                              ("patches/net.loader.json", json.dumps(loader).encode()),
                              ("libraries/empty-999.jar", EMPTY),
-                             ("instance.cfg", b"name=test")))
+                             ("instance.cfg", b"name=test"),
+                             (".minecraft/mods/extra.jar", b"an instance mod"),
+                             (".minecraft/config/extra.cfg", b"key=1"),
+                             (".minecraft/options.txt", b"fov:70"),
+                             (".minecraft/saves/World/level.dat", b"a world"),
+                             (".minecraft/logs/latest.log", b"a log")))
     return instance
 
 
@@ -229,6 +234,21 @@ class Assemble(unittest.TestCase):
                                                  assets=False)
         self.assertEqual([lib["name"] for lib in from_folder["libraries"]],
                          [lib["name"] for lib in from_zip["libraries"]])
+
+    def test_the_instance_game_folder_comes_with_its_files_listed(self):
+        ctx, result, runtime, out = self.run_assemble("game", system="linux", arch="x86_64", assets=False, game=True)
+        self.assertEqual(ctx.outcome, "ok", result)
+        copied = sorted(p.relative_to(out / "game").as_posix() for p in (out / "game").rglob("*") if p.is_file())
+        self.assertEqual(copied, ["config/extra.cfg", "mods/extra.jar", "options.txt"])  # never its worlds or logs
+        listed = json.loads((out / "game-inventory.json").read_text(encoding="utf-8"))["files"]
+        self.assertEqual(listed["mods/extra.jar"]["sha256"], hashlib.sha256(b"an instance mod").hexdigest())
+        self.assertEqual(runtime["game"]["files"], 3)
+        folder = self.root / "unzipped-game"
+        with zipfile.ZipFile(self.instance) as archive:
+            archive.extractall(folder)
+        _, _, from_folder, _ = self.run_assemble("game-folder", instance=folder, system="linux", arch="x86_64",
+                                                 assets=False, game=True)
+        self.assertEqual(from_folder["game"]["files"], 3)
 
     def test_rules_follow_the_architecture(self):
         library = {"name": "org.lwjgl:lwjgl:3.0:natives-windows-arm64",

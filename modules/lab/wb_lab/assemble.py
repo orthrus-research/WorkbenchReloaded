@@ -37,6 +37,8 @@ from pathlib import Path
 from wb_core.module import Context, EnvironmentProblem, ParamError
 
 SCHEMA = "wb.lab.runtime.v1"
+GAME_FOLDERS = (".minecraft", "minecraft")
+GAME_PARTS = ("mods", "config", "resourcepacks", "shaderpacks", "scripts", "groovy", "options.txt")
 NATIVE_SUFFIXES = (".dll", ".so", ".dylib", ".jnilib")
 SYSTEMS = {"Windows": "windows", "Linux": "linux", "Darwin": "osx"}
 ARCHES = {"x86": "x86", "i386": "x86", "i686": "x86", "x86_64": "x86_64", "amd64": "x86_64", "arm64": "aarch64",
@@ -332,6 +334,38 @@ def _component(ctx: Context, instance: Instance, cache: Path, uid: str, version:
     return json.loads(data), "metadata", hashlib.sha256(data).hexdigest()
 
 
+def copy_game(source: Path, target: Path) -> dict[str, dict]:
+    """The instance's own game folder (its .minecraft): the parts that make the game what it is (mods, config, packs,
+    scripts, options.txt), never its worlds, logs or screenshots. The instance is only read. Returns each file copied
+    by its POSIX path, with its size and SHA-256."""
+    files: dict[str, bytes] = {}
+    if source.is_file():
+        with zipfile.ZipFile(source) as archive:
+            names = [n for n in archive.namelist() if not n.endswith("/")]
+            prefix = _prefix(names)
+            for name in names:
+                relative = name[len(prefix):] if name.startswith(prefix) else name
+                top, _, rest = relative.partition("/")
+                if top in GAME_FOLDERS and rest and rest.split("/", 1)[0] in GAME_PARTS:
+                    files[rest] = archive.read(name)
+    else:
+        game = next((source / folder for folder in GAME_FOLDERS if (source / folder).is_dir()), None)
+        for part in GAME_PARTS if game else ():
+            path = game / part
+            items = [path] if path.is_file() else sorted(p for p in path.rglob("*") if p.is_file()) if path.is_dir() else []
+            for item in items:
+                files[item.relative_to(game).as_posix()] = item.read_bytes()
+    listed = {}
+    for relative, data in sorted(files.items()):
+        if ".." in relative.split("/"):
+            continue
+        placed = target / relative
+        placed.parent.mkdir(parents=True, exist_ok=True)
+        placed.write_bytes(data)
+        listed[relative] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    return listed
+
+
 def _unpack_natives(paths: list[Path], target: Path) -> list[str]:
     shutil.rmtree(target, ignore_errors=True)
     target.mkdir(parents=True)
@@ -347,7 +381,7 @@ def _unpack_natives(paths: list[Path], target: Path) -> list[str]:
     return sorted(set(unpacked))
 
 
-def assemble(ctx: Context, instance: str, system: str = "", arch: str = "", assets: bool = True):
+def assemble(ctx: Context, instance: str, system: str = "", arch: str = "", assets: bool = True, game: bool = False):
     here_system = SYSTEMS.get(platform.system(), platform.system().lower())
     here_arch = _arch(platform.machine())
     system, arch = system or here_system, arch or here_arch
@@ -454,7 +488,16 @@ def assemble(ctx: Context, instance: str, system: str = "", arch: str = "", asse
         "native_files": unpacked,
         "assets": asset_record,
         "fetched": fetcher.counts,
+        "game": None,
     }
+    if game:
+        copied = copy_game(source, ctx.out / "game")
+        inventory = json.dumps({"schema": SCHEMA, "files": copied}, indent=1) + "\n"
+        (ctx.out / "game-inventory.json").write_text(inventory, encoding="utf-8")
+        runtime["game"] = {"path": ctx.host_path(ctx.out / "game"), "files": len(copied)}
+        ctx.output("game", ctx.out / "game")
+        if not copied:
+            ctx.finding("game=true, but the instance holds no game folder (.minecraft) with mods, config or packs")
     target = ctx.out / "runtime.json"
     target.write_text(json.dumps(runtime, indent=1) + "\n", encoding="utf-8")
     ctx.output("runtime.json", target)

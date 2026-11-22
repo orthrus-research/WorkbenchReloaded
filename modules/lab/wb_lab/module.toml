@@ -279,6 +279,7 @@ params.instance = { type = "path.in", summary = "a Prism or MultiMC instance fol
 params.system = { type = "enum", values = ["", "windows", "linux", "osx"], default = "", summary = "the system the runtime is for; empty: the one the job runs on" }
 params.arch = { type = "enum", values = ["", "x86_64", "aarch64", "x86"], default = "", summary = "its architecture; empty: the machine's" }
 params.assets = { type = "bool", default = true, summary = "fetch the asset index and its objects too" }
+params.game = { type = "bool", default = false, summary = "also copy the instance's own game folder (mods, config, packs, scripts, options.txt; never worlds or logs), each file listed by SHA-256, for lab.session's client_files" }
 result.runtime = { type = "string", optional = true }
 result.main_class = { type = "string", optional = true }
 result.libraries = { type = "int", optional = true }
