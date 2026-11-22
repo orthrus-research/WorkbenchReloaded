@@ -355,6 +355,11 @@ def assemble(ctx: Context, instance: str, system: str = "", arch: str = "", asse
     source = Path(instance)
     read = read_instance(source)
     cache = _cache(ctx)
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise EnvironmentProblem(f"the runtime cache {ctx.host_path(cache)} cannot be made ({error.strerror or error}): "
+                                 "create it, or set [modules.lab] runtime_cache to a folder this job can write") from None
     components, recorded = [], []
     for item in read.components:
         component, origin, digest = _component(ctx, read, cache, item["uid"], item["version"])
@@ -403,7 +408,8 @@ def assemble(ctx: Context, instance: str, system: str = "", arch: str = "", asse
         except Mismatch as error:
             failures.append(str(error))
         if index_path.is_file():
-            objects = {o["hash"] for o in json.loads(index_path.read_text(encoding="utf-8")).get("objects", {}).values()}
+            entries = json.loads(index_path.read_text(encoding="utf-8")).get("objects", {})
+            objects = {o["hash"] for o in entries.values()}
             base = str(ctx.config.get("asset_base") or "").rstrip("/") + "/"
             ctx.progress("assets", msg=f"{len(objects)} object(s) of index {index['id']}")
 
@@ -417,7 +423,8 @@ def assemble(ctx: Context, instance: str, system: str = "", arch: str = "", asse
 
             with ThreadPoolExecutor(max_workers=16) as pool:
                 list(pool.map(get_object, sorted(objects)))
-            asset_record = {"root": ctx.host_path(cache / "assets"), "index": index["id"], "objects": len(objects)}
+            asset_record = {"root": ctx.host_path(cache / "assets"), "index": index["id"], "entries": len(entries),
+                            "objects": len(objects)}
     if failures:
         for failure in sorted(failures):
             ctx.finding(failure)

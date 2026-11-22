@@ -167,7 +167,7 @@ class Assemble(unittest.TestCase):
         self.assertEqual((out / "natives" / "liblwjgl.so").read_bytes(), b"linux native")
         self.assertEqual(runtime["classpath"][-1], runtime["client"]["path"])
         self.assertEqual([c["source"] for c in runtime["components"]], ["metadata", "instance", "instance"])
-        self.assertEqual(runtime["assets"]["objects"], 2)
+        self.assertEqual((runtime["assets"]["entries"], runtime["assets"]["objects"]), (3, 2))  # two share one file
         for library in runtime["libraries"]:  # every file in the cache is the SHA-1 it is listed with
             self.assertEqual(assemble.sha1_file(Path(library["path"])), library["sha1"], library["name"])
         empty = next(lib for lib in runtime["libraries"] if lib["name"] == "com.example:empty:999")
