@@ -165,6 +165,24 @@ class CacheKey(unittest.TestCase):
         self.assertEqual(keys[1], keys[2])
 
 
+class StateFolder(unittest.TestCase):
+    def test_a_native_daemon_keeps_its_state_in_the_users_folder(self):
+        import os
+        from unittest import mock
+        from wb_core import settings as wbsettings
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "workbench.toml").write_text("", encoding="utf-8")
+            resolved = resolve(wbconfig.load(folder))
+            with mock.patch.dict(os.environ, {"WB_IN_CONTAINER": ""}), \
+                    mock.patch.object(wbsettings, "in_container", return_value=False):
+                os.environ.pop("WB_STATE_DIR", None)
+                self.assertEqual(resolved.state_dir, wbsettings.native_state_dir())  # never a drive's root
+            with mock.patch.object(wbsettings, "in_container", return_value=True):
+                self.assertEqual(resolved.state_dir, Path("/var/lib/wb"))       # the container's volume
+            with mock.patch.dict(os.environ, {"WB_STATE_DIR": folder}):
+                self.assertEqual(resolved.state_dir, Path(folder))             # the environment wins
+
+
 class Quiet(unittest.TestCase):
     def test_a_measurement_on_the_host_keeps_new_container_work_waiting(self):
         from wb_core.service import Running, Workbench

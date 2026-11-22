@@ -31,7 +31,9 @@ CORE = {
         "color": {"type": "bool", "default": True},
     },
     "state": {
-        "dir": {"type": "string", "default": "/var/lib/wb"},
+        "dir": {"type": "string", "default": "/var/lib/wb",
+                "summary": "where the daemon keeps its database, jobs and logs; run natively, the default is the "
+                           "user's own state folder"},
     },
     "budget": {
         "cpu_cores": {"type": "float", "optional": True, "min": 0.5},
@@ -114,7 +116,12 @@ class Settings:
 
     @property
     def state_dir(self) -> Path:
-        return Path(os.environ.get("WB_STATE_DIR") or self.core["state"]["dir"])
+        if os.environ.get("WB_STATE_DIR"):
+            return Path(os.environ["WB_STATE_DIR"])
+        configured = self.core["state"]["dir"]
+        if configured == DEFAULT_STATE and not in_container():
+            return native_state_dir()  # the container's path would land at the root of a Windows drive
+        return Path(configured)
 
     def secret_path(self, name: str) -> Path | None:
         entry = self.secrets.get(name)
@@ -143,6 +150,18 @@ def _check(config: wbconfig.Config, prefix: str, fields: dict, values) -> dict:
 
 def in_container() -> bool:
     return Path("/.dockerenv").exists() or os.environ.get("WB_IN_CONTAINER") == "1"
+
+
+DEFAULT_STATE = "/var/lib/wb"  # the container's state volume
+
+
+def native_state_dir() -> Path:
+    """A daemon run outside the container keeps its state in the user's own folder: LOCALAPPDATA on Windows,
+    XDG_STATE_HOME (or ~/.local/state) elsewhere."""
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        return Path(os.environ["LOCALAPPDATA"]) / "wb" / "state"
+    base = os.environ.get("XDG_STATE_HOME")
+    return (Path(base) if base else Path.home() / ".local" / "state") / "wb"
 
 
 def resolve(config: wbconfig.Config, module_schemas: dict[str, dict] | None = None) -> Settings:
