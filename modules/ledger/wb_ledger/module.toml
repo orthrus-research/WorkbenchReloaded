@@ -5,6 +5,7 @@ summary = "Formal results, costs and market prices in one queryable database."
 
 [config]
 parsers = { type = "object", default = {}, summary = "log parsers for parse-log by name, [modules.ledger.parsers.<name>]: a table of metric = regex, each regex naming its number (?P<value>...) and optionally (?P<unit>...) and (?P<part>...) (see wb_ledger/importers.py)" }
+readers = { type = "object", default = {}, summary = "JSON readers for import-json by name, [modules.ledger.readers.<name>]: label, measurements and optionally each, require, date, fields and inputs, each by dotted path (see wb_ledger/importers.py)" }
 
 [[command]]
 name = "query"
@@ -151,6 +152,18 @@ params.pattern = { type = "string", default = "result.json", summary = "the file
 result.imported = { type = "object" }
 result.refused = { type = "list" }
 result.files = { type = "int" }
+
+[[command]]
+name = "import-json"
+summary = "Import JSON files a tool writes in its own shape, by a reader of [modules.ledger.readers]: each file, or each entry of one, a run mapped to the ledger's of its label (idempotent)."
+handler = "wb_ledger.commands:import_json"
+params.reader = { type = "string", summary = "the reader, by its name in [modules.ledger.readers]" }
+params.folder = { type = "path.in", summary = "a JSON file, or a folder searched for them" }
+params.pattern = { type = "string", default = "*.json", summary = "the file names searched for, at any depth" }
+result.imported = { type = "object" }
+result.refused = { type = "list" }
+result.files = { type = "int" }
+result.runs = { type = "int" }
 
 [[command]]
 name = "parse-log"
