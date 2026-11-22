@@ -189,7 +189,8 @@ second: libraries, mod jars and natives are read-only hard links to one stored c
 writes is the instance's own. `lab.snapshot` keeps a generated world and `lab.reset` restores it, so every run
 can start from the same settled state. `lab.dedupe` turns existing full copies into linked ones in place.
 `lab.play` plays a tour on an instance, or, given no tour, opens a session a person plays until they close the
-client (the profile's `play_open`), under the GPU lease either way.
+client (the profile's `play_open`), under the GPU lease either way. `lab.inputs` runs the profile's input steps
+first (pinned dependencies, the builds an instance is made from), in their checkouts, in order.
 
 ## Money
 

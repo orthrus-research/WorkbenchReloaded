@@ -77,6 +77,30 @@ class NamedProfiles(Checkouts):
         self.assertNotEqual(default, other)
 
 
+class InputSteps(Checkouts):
+    """lab.inputs' steps are checked with the profile, before anything runs."""
+
+    def test_steps_are_checked(self):
+        good = [{"name": "pins", "run": ["{python}", "setup.py"]},
+                {"name": "build", "run": ["{cwd}/gradlew", "build"], "checkout": "engine"}]
+        self.config["profile"] = dict(BASE, inputs=good, checkouts={"engine": "../engine"})
+        self.assertEqual([s["name"] for s in profile.merged(self.config)["inputs"]], ["pins", "build"])
+        cases = [({"name": "x"}, "run is a non-empty command template"),
+                 ({"name": "x", "run": []}, "run is a non-empty command template"),
+                 ({"name": "a b", "run": ["x"]}, "not a plain, distinct step name"),
+                 ({"name": "x", "run": ["x"], "cwd": "y"}, "is not a step"),
+                 ({"name": "x", "run": ["x"], "checkout": "absent"}, "checkouts name no absent")]
+        for step, expected in cases:
+            with self.subTest(expected=expected):
+                self.config["profile"] = dict(BASE, inputs=[step])
+                with self.assertRaises(profile.ProfileError) as raised:
+                    profile.merged(self.config)
+                self.assertIn(expected, str(raised.exception))
+        self.config["profile"] = dict(BASE, inputs=[good[0], good[0]])
+        with self.assertRaises(profile.ProfileError):
+            profile.merged(self.config)  # two steps of one name
+
+
 class PlayCollect(Checkouts):
     """A play may keep more files than its profile names; what it names must stay inside the instance."""
 
