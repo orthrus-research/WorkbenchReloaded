@@ -275,5 +275,81 @@ class Ci(unittest.TestCase):
         self.assertEqual((hooks / "pre-push").read_text(encoding="utf-8"), "#!/bin/sh\necho mine\n")
 
 
+CHECK = """import sys
+print("on", sys.version.split()[0], "venv" if sys.prefix != sys.base_prefix else "bare")
+sys.exit({code})
+"""
+
+
+class Matrix(unittest.TestCase):
+    """ci.matrix: a command run per Python in a clean clone; failures and missing Pythons are findings."""
+
+    @classmethod
+    def setUpClass(cls):
+        for module in ("tools", "build", "lab", "ci"):
+            sys.path.insert(0, str(REPO / "modules" / module))
+        from wb_ci import matrix
+        cls.matrix = matrix
+        cls.root = Path(tempfile.mkdtemp(prefix="wb-matrix-"))
+        cls.repo = cls.root / "repo"
+        cls.repo.mkdir()
+        git(cls.repo, "init", "-q", "-b", "main")
+        (cls.repo / "requirements.txt").write_text("", encoding="utf-8")
+        (cls.repo / "check.py").write_text(CHECK.format(code=0), encoding="utf-8")
+        git(cls.repo, "add", "-A")
+        git(cls.repo, "commit", "-q", "-m", "passes")
+        cls.good = git(cls.repo, "rev-parse", "HEAD")
+        (cls.repo / "check.py").write_text(CHECK.format(code=3), encoding="utf-8")
+        git(cls.repo, "commit", "-q", "-am", "fails")
+        cls.bad = git(cls.repo, "rev-parse", "HEAD")
+        cls.linked = cls.root / "linked"  # a linked worktree whose HEAD is the passing commit
+        git(cls.repo, "worktree", "add", "-q", "--detach", str(cls.linked), cls.good)
+
+    @classmethod
+    def tearDownClass(cls):
+        import shutil
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def run_matrix(self, name, checkout, pythons, commit="", requirements=()):
+        from wb_core.module import Context
+        ctx = Context({"job": "direct", "command": "ci.matrix", "module": "ci", "work": str(self.root / name / "work"),
+                       "out": str(self.root / name / "out"), "module_config": {}}, lambda *a, **k: None)
+        result = self.matrix.matrix(ctx, str(checkout), ["{python}", "check.py"], list(pythons), commit,
+                                    list(requirements), 120)
+        return ctx, result
+
+    def test_a_linked_worktree_runs_its_own_head(self):
+        ctx, result = self.run_matrix("linked", self.linked, [sys.executable])
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        self.assertEqual(result["commit"], self.good)
+        [one] = result["results"]
+        self.assertEqual((one["exit"], one["version"]), (0, sys.version.split()[0]))
+        self.assertEqual(one["tail"], [f"on {sys.version.split()[0]} bare"])
+        record = json.loads((self.root / "linked" / "out" / "matrix.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["schema"], "wb.ci.matrix/1")
+        self.assertFalse((self.root / "linked" / "work" / "tree").exists())
+
+    def test_a_failing_version_and_a_missing_one_are_findings(self):
+        ctx, result = self.run_matrix("bad", self.repo, [sys.executable, "9.99"])
+        self.assertEqual(result["commit"], self.bad)
+        self.assertIn(f"Python {sys.version.split()[0]} exited 3: on {sys.version.split()[0]} bare", ctx.findings)
+        self.assertIn("no Python 9.99 on this host", ctx.findings)
+
+    def test_requirements_give_each_version_its_own_environment(self):
+        ctx, result = self.run_matrix("venv", self.repo, [sys.executable], commit=self.good,
+                                      requirements=["requirements.txt"])
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        self.assertEqual(result["results"][0]["tail"], [f"on {sys.version.split()[0]} venv"])
+
+    def test_a_command_must_name_the_interpreter(self):
+        from wb_core.module import Context, ParamError
+        ctx = Context({"job": "direct", "command": "ci.matrix", "module": "ci", "work": str(self.root / "p" / "work"),
+                       "out": str(self.root / "p" / "out"), "module_config": {}}, lambda *a, **k: None)
+        with self.assertRaises(ParamError):
+            self.matrix.matrix(ctx, str(self.repo), ["python", "check.py"], [sys.executable], "", [], 60)
+        with self.assertRaises(ParamError):
+            self.matrix.matrix(ctx, str(self.repo), ["{python}", "check.py"], [sys.executable], "nope", [], 60)
+
+
 if __name__ == "__main__":
     unittest.main()

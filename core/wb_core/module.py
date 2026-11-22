@@ -224,15 +224,17 @@ class Context:
         watcher = threading.Thread(target=self._kill_on_cancel, args=(process,), daemon=True)
         watcher.start()
         deadline = time.monotonic() + timeout if timeout else None
-        for line in process.stdout:
-            line = line.rstrip("\n")
-            if capture:
-                lines.append(line)
-            if log_output:
-                self.log.debug(line)
-            if deadline and time.monotonic() > deadline:
-                process.kill()
-                raise EnvironmentProblem(f"{args[0]} exceeded {timeout:.0f} s")
+        with process.stdout:  # closed however the read ends, so no pipe outlives the call
+            for line in process.stdout:
+                line = line.rstrip("\n")
+                if capture:
+                    lines.append(line)
+                if log_output:
+                    self.log.debug(line)
+                if deadline and time.monotonic() > deadline:
+                    process.kill()
+                    process.wait()
+                    raise EnvironmentProblem(f"{args[0]} exceeded {timeout:.0f} s")
         code = process.wait()
         if self.cancelled.is_set():
             raise Cancelled()

@@ -55,7 +55,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 | `profile` | profiling and diagnostics of Java game processes and the GPU they run on | `jfr`, `attribute`, `memory`, `settings`, `gpu-sample`, `gpu-report` |
 | `ledger` | results and evidence | `query`, `runs`, `findings`, `show`, `costs`, `calls`, `add-run`, `add-finding`, `supersede`, `link-run`, `add-machine`, `prune`, `import`, `import-ci`, `import-results`, `parse-log` |
 | `vast` | rented machines | `offers`, `market`, `charges`, `instances`, `destroy`, `keys`, `rent`, `probe`, `bundle-check`, `bundle`, `lab-inputs` |
-| `ci` | project jobs, push gates, commit hygiene | `run`, `gate`, `status`, `hook`, `actions`, `scrub` |
+| `ci` | project jobs, push gates, commit hygiene, Python lanes | `run`, `gate`, `status`, `hook`, `actions`, `scrub`, `matrix` |
 | `release` | release and publishing: GitHub releases, Modrinth, CurseForge, Maven | `check`, `publish`, `status` |
 | `plan` | declarative plans of commands | `check`, `run` |
 | `tools` | the engine of the former standalone tools, behind toolchain, build, jar, mixin, probe, source, runs and ci | — |
@@ -71,6 +71,17 @@ file names checked out at the commit the project pins. The checkouts are only re
 (below), and the Python environments the project names, built once per set of requirements. The run records stay in Workbench, where `ci.gate` reads them:
 `ci.hook project=NAME` installs a pre-push hook that refuses a commit whose tree has not passed. `commit=worktree`
 runs the checkout's working tree as it would be committed. Projects are declared in `[modules.ci.projects]`.
+
+`ci.matrix` is a portability lane: on a host (Windows, macOS or Linux, no GPU needed, so it runs beside a game) it
+clones a checkout's commit clean and runs one command per Python, `{python}` standing for each interpreter:
+
+```sh
+wb ci.matrix checkout=. 'command=["{python}","-m","unittest","discover"]' 'pythons=["3.12","3.14"]'
+```
+
+A version is found through the `py` launcher on Windows and as `python3.12` elsewhere; an interpreter path is used
+as given. `requirements=[...]` gives each version an environment of its own. Each version's exit, time and output
+are kept, with `matrix.json` over all of them; a failure, or a Python the host lacks, is a finding.
 
 ### Writing jobs for Workbench
 
