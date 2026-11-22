@@ -234,5 +234,9 @@ class Console:
         self._reader.join(timeout)
         if not self._reader.is_alive():
             self._log.close()
+            try:  # the pipe it read from is done too
+                self.process.stdout.close()
+            except (OSError, AttributeError):
+                pass
         else:
             self._log.flush()

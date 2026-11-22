@@ -268,6 +268,54 @@ result.exit = { type = "int" }
 result.receipt = { type = "string" }
 
 [[command]]
+name = "session"
+summary = "One dedicated server and several clients on the host, each client started from an assembled runtime (lab.assemble) with an offline name and no launcher: they join on their own, play for ticks, seconds or until a line, a scripted client may be killed, and every console, log and crash report is kept with a receipt. desktop = hidden keeps them off the user's desktop (Windows)."
+handler = "wb_lab.session:session"
+runs_on = ["host"]
+resources = { gpu = true }
+timeout = "24h"
+cancel_grace = "2m"
+params.runtime = { type = "path.in", summary = "runtime.json from lab.assemble, assembled where the host can read its cache" }
+params.clients = { type = "int", default = 2, min = 1, max = 8, summary = "how many clients join" }
+params.prefix = { type = "string", default = "wb", pattern = "^[A-Za-z0-9_]{1,12}$", summary = "the clients' offline names are this and 1, 2, ..." }
+params.client_jdk = { type = "string", default = "26", summary = "the JDK the clients run on, as the host names its JDKs" }
+params.client_mods = { type = "list", items = "path.in", default = [], summary = "client-only mods added to the server's own (a renderer)" }
+params.client_files = { type = "path.in", optional = true, summary = "a folder laid over each client's game folder (config, options.txt)" }
+params.client_jvm_args = { type = "list", items = "string", default = [], summary = "JVM options for every client" }
+params.window = { type = "string", default = "854x480", summary = "each client's window, WIDTHxHEIGHT" }
+params.joined = { type = "string", default = "{name} joined the game", summary = "the server console line that shows a client joined ({name} is the client)" }
+params.left = { type = "string", default = "{name} left the game", summary = "the server console line that shows a client left" }
+params.join_timeout = { type = "duration", default = "10m", summary = "how long every client has to join" }
+params.kill_client = { type = "int", default = 0, min = 0, max = 8, summary = "a client to kill during the run (1 is the first; 0: none)" }
+params.kill_after = { type = "duration", default = "30s", summary = "how long after the last join it is killed" }
+params.leave_timeout = { type = "duration", default = "1m", summary = "how long the server has to show the killed client leaving" }
+params.desktop = { type = "enum", values = ["visible", "hidden"], default = "visible", summary = "hidden: the clients run on a desktop of their own that never takes the input (Windows)" }
+params.server = { type = "path.in", summary = "a stopped server folder (its JARs, mods, config and world); the run uses a copy, so it is never written" }
+params.jdk = { type = "string", default = "8", summary = "the JDK that runs it, as Workbench names them (8, 17, 25); empty: none, for a launch that names no {java}" }
+params.jar = { type = "string", default = "", summary = "the server JAR for {jar}: a glob relative to the folder that matches one file; empty: the folder's only top-level JAR" }
+params.jvm_args = { type = "list", items = "string", default = [], summary = "JVM options for {jvm_args}; {port}, {ticks} and {server} are filled in" }
+params.launch = { type = "list", items = "string", default = ["{java}", "{jvm_args}", "-jar", "{jar}", "nogui"], summary = "the server's command line, run in the copy: {java}, {jvm_args} (an item of its own: the options), {jar}, {server} (the copy), {port}, {ticks}" }
+params.exclude = { type = "list", items = "string", default = [], summary = "globs of the folder left out of the copy: logs, or world for a fresh one" }
+params.files = { type = "path.in", optional = true, summary = "a folder laid over the copy: config, scripts, datapacks" }
+params.mods = { type = "list", items = "path.in", default = [], summary = "JARs added to the copy's mods folder" }
+params.properties = { type = "object", default = {}, summary = "server.properties values for the copy ({port} is filled in); unless it names server-port, the copy listens on a free port" }
+params.ready = { type = "list", items = "string", default = ['Done \([^)]*\)! For help'], summary = "regular expressions; the server is ready once each has matched a console line" }
+params.ready_timeout = { type = "duration", default = "10m", max = "2h" }
+params.commands = { type = "list", items = "any", default = [], summary = "console commands sent once it is ready, in order: a string, or {send, expect, timeout}, where expect is a regular expression the reply must match" }
+params.reply_timeout = { type = "duration", default = "60s", max = "1h", summary = "how long an expected reply, or the game time, may take" }
+params.ticks = { type = "int", default = 0, min = 0, summary = "then run until this many game ticks have passed, by the server's own game time (tick_query)" }
+params.seconds = { type = "duration", default = 0, max = "20h", summary = "then run this long" }
+params.until = { type = "list", items = "string", default = [], summary = "then run until a console line matches one of these regular expressions; the run ends at the first of ticks, seconds and until" }
+params.run_timeout = { type = "duration", default = "1h", max = "20h", summary = "the longest a run for ticks or until may take; reaching it is a finding" }
+params.tick_query = { type = "string", default = "time query gametime", summary = "the console command that prints the game time" }
+params.tick_reply = { type = "string", default = '[Tt]ime is (\d+)', summary = "its reply; group 1 is the game time in ticks" }
+params.save = { type = "bool", default = false, summary = "send save-all, and wait for it to finish, before stopping" }
+params.stop = { type = "list", items = "string", default = ["stop"], summary = "the console commands that stop the server" }
+params.grace = { type = "duration", default = "2m", max = "30m", summary = "how long it may take to stop before it is killed (a finding)" }
+params.keep = { type = "list", items = "string", default = [], summary = "globs, relative to the copy, of what to keep from it under files/ (world, logs/*.log); the console, new crash reports and the receipt are always kept" }
+result.receipt = { type = "string", optional = true }
+
+[[command]]
 name = "server-scenario"
 summary = "Run a server scenario: a copy of a stopped server with a probe added (a mod JAR, datapacks, config), run for ticks, seconds or until a line and stopped gracefully; a finding unless the run wrote valid JSON where the probe writes it."
 handler = "wb_lab.server:scenario"
