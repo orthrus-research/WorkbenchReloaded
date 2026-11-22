@@ -76,7 +76,7 @@ runs the checkout's working tree as it would be committed. Projects are declared
 clones a checkout's commit clean and runs one command per Python, `{python}` standing for each interpreter:
 
 ```sh
-wb ci.matrix checkout=. 'command=["{python}","-m","unittest","discover"]' 'pythons=["3.12","3.14"]'
+wb run ci.matrix checkout=. 'command=["{python}","-m","unittest","discover"]' 'pythons=["3.12","3.14"]'
 ```
 
 A version is looked for where hosts keep them: the `py` launcher and every interpreter it lists on Windows (uv's and
