@@ -1,4 +1,5 @@
--- The results ledger, ported from Quadrature's tools/results.py (schema version 3) with a ledger_ prefix.
+-- The results ledger, ported from an earlier results tool (its schema version 3) with a ledger_ prefix. 002 moves
+-- the run columns that named one project's inputs into ledger_run_input.
 CREATE TABLE ledger_run (
     id INTEGER PRIMARY KEY,
     label TEXT NOT NULL UNIQUE,

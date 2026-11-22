@@ -1,16 +1,23 @@
 """The ledger's storage functions, shared with other modules (``vast`` records its requests, offers,
-rentals and charges through these). Ported from Quadrature's tools/results.py, behaviour unchanged.
+rentals and charges through these).
+
+A run names what it ran on as inputs, each a name, a value and the input's SHA-256 when it is known, so the
+schema names nothing of any one project: a project's jars, checkouts and versions are data of its runs.
 """
 
 from __future__ import annotations
 
 import datetime
 import json
+import math
 import os
+import re
 import sqlite3
 import statistics
+import string
 import time
 import zlib
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,9 +37,23 @@ OFFER_FIELDS = {
 RENTAL_FIELDS = ("offer", "label", "purpose", "created", "destroyed", "held_s", "dph_quoted", "dph_billed", "disk_gb",
                  "driver", "outcome", "failure", "to_running_s", "to_ssh_s", "upload_s", "upload_bytes", "bootstrap_s",
                  "work_s", "fetch_s", "download_bytes", "job", "quote")
-RUN_FIELDS = ("date", "instance", "os", "host", "card", "driver", "client_jar", "cubature", "riven", "options", "tour",
-              "window", "radius", "exit", "evidence", "note", "job")
+RUN_FIELDS = ("date", "instance", "os", "host", "card", "driver", "options", "tour", "window", "radius", "exit",
+              "evidence", "note", "job")
+WHOLE_FIELDS = ("radius", "exit")
+INPUT_KEYS = ("name", "value", "sha256")
+# A measurement row's columns, in the order its tuples hold them.
+MEASUREMENT_FIELDS = ("source", "place", "view", "sample", "metric", "part", "value", "unit", "against")
 STATUSES = ("established", "hypothesis", "refuted", "superseded")
+DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+DIGEST = re.compile(r"(?:sha256:)?([0-9a-fA-F]{64})")
+
+
+class Unknown(LookupError):
+    """A run, finding, machine, rental or job the ledger (or Workbench) does not have."""
+
+
+class Refused(ValueError):
+    """What a record states disagrees with what the ledger holds; nothing of the record is written."""
 
 
 class Median:
@@ -70,14 +91,143 @@ def connect(path: Path | None = None, read_only: bool = False) -> sqlite3.Connec
     return connection
 
 
-def now_utc() -> str:
-    moment = time.time()
+def utc(moment: float) -> str:
+    """A moment as call times are written: UTC, to the millisecond."""
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(moment)) + f".{int(moment % 1 * 1000):03d}Z"
+
+
+def now_utc() -> str:
+    return utc(time.time())
 
 
 def clean(value):
     return value.strip() if isinstance(value, str) else value
 
+
+# ---------------------------------------------------------------------------------------------
+# what a run, its inputs and its measurements must look like
+
+def is_date(value) -> bool:
+    if not isinstance(value, str) or not DATE.fullmatch(value):
+        return False
+    try:
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def digest_of(value) -> str | None:
+    """A value that is a SHA-256 (64 hex digits) is also its input's digest, in lower case. Migration 002 moved the
+    run columns of the first schema into inputs by the same rule."""
+    if isinstance(value, str) and len(value) == 64 and all(c in string.hexdigits for c in value):
+        return value.lower()
+    return None
+
+
+def run_fields(fields) -> dict:
+    """A run's fields, checked: known names only (what a run ran on is an input, not a field), a YYYY-MM-DD date,
+    whole numbers for radius and exit, text or numbers for the rest; unset ones left out. Raises ValueError naming
+    the first problem."""
+    if not isinstance(fields, dict):
+        raise ValueError("fields must be an object")
+    unknown = sorted(set(fields) - set(RUN_FIELDS))
+    if unknown:
+        raise ValueError(f"unknown run field(s) {', '.join(unknown)} (known: {', '.join(RUN_FIELDS)}); what a run "
+                         "ran on goes in its inputs")
+    checked = {}
+    for name, value in fields.items():
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            raise ValueError(f"run field {name} must be text or a number")
+        if name in WHOLE_FIELDS:
+            if isinstance(value, float) and value.is_integer():
+                value = int(value)
+            if not isinstance(value, int):
+                raise ValueError(f"run field {name} must be a whole number, not {value!r}")
+        if name == "date" and not is_date(value):
+            raise ValueError(f"run field date must be YYYY-MM-DD, not {value!r}")
+        checked[name] = value
+    return checked
+
+
+def run_inputs(items, where: str = "inputs") -> list[tuple]:
+    """A run's inputs, checked, as (name, value, sha256): each {name, value, sha256} with a value, a SHA-256 or both,
+    names unique. A value is kept as text, a digest as lower-case hex (a ``sha256:`` prefix dropped). Raises
+    ValueError naming the first problem."""
+    if not isinstance(items, list):
+        raise ValueError(f"{where} must be a list of {{name, value, sha256}}")
+    checked, seen = [], set()
+    for index, item in enumerate(items):
+        at = f"{where}[{index}]"
+        if not isinstance(item, dict):
+            raise ValueError(f"{at} must be an object: {{name, value, sha256}}")
+        unknown = sorted(set(item) - set(INPUT_KEYS))
+        if unknown:
+            raise ValueError(f"{at} has unknown key(s) {', '.join(unknown)} (known: {', '.join(INPUT_KEYS)})")
+        name, value, digest = (item.get(key) for key in INPUT_KEYS)
+        if not isinstance(name, str) or not name or name != name.strip():
+            raise ValueError(f"{at} needs a name: text without surrounding spaces")
+        if name in seen:
+            raise ValueError(f"{at}: input {name} is named twice")
+        seen.add(name)
+        if value is not None:
+            if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+                raise ValueError(f"{at}: the value of input {name} must be text or a number")
+            value = value if isinstance(value, str) else str(value)
+        if digest is not None:
+            match = DIGEST.fullmatch(digest) if isinstance(digest, str) else None
+            if match is None:
+                raise ValueError(f"{at}: the sha256 of input {name} must be 64 hex digits")
+            digest = match.group(1).lower()
+        if value is None and digest is None:
+            raise ValueError(f"{at}: input {name} needs a value, a sha256, or both")
+        checked.append((name, value, digest))
+    return checked
+
+
+def measurement_rows(items, source: str, where: str = "measurements") -> list[tuple]:
+    """Measurements, checked, as rows in MEASUREMENT_FIELDS order: each {metric, value, ...} of those keys, its value
+    a finite number (or numeric text), its sample a whole number, the rest text; ``source`` is the source of those
+    that name none. Raises ValueError naming the first problem."""
+    if not isinstance(items, list):
+        raise ValueError(f"{where} must be a list of {{metric, value, ...}}")
+    rows = []
+    for index, item in enumerate(items):
+        at = f"{where}[{index}]"
+        if not isinstance(item, dict) or "metric" not in item or "value" not in item:
+            raise ValueError(f"{at} needs metric and value")
+        unknown = sorted(set(item) - set(MEASUREMENT_FIELDS))
+        if unknown:
+            raise ValueError(f"{at} has unknown key(s) {', '.join(unknown)} (known: {', '.join(MEASUREMENT_FIELDS)})")
+        try:
+            if isinstance(item["value"], bool):
+                raise ValueError
+            value = float(item["value"])
+        except (TypeError, ValueError):
+            raise ValueError(f"{at}: value {item['value']!r} is not a number") from None
+        if not math.isfinite(value):
+            raise ValueError(f"{at}: value {item['value']!r} is not a finite number")
+        sample = item.get("sample")
+        if isinstance(sample, float) and sample.is_integer():
+            sample = int(sample)
+        if sample is not None and (isinstance(sample, bool) or not isinstance(sample, int)):
+            raise ValueError(f"{at}: sample must be a whole number")
+        text = {}
+        for key in ("source", "place", "view", "metric", "part", "unit", "against"):
+            if item.get(key) is not None and not isinstance(item[key], str):
+                raise ValueError(f"{at}: {key} must be text")
+            text[key] = item.get(key)
+        if not text["metric"]:
+            raise ValueError(f"{at} needs a metric")
+        rows.append((text["source"] or source, text["place"], text["view"], sample, text["metric"], text["part"] or "",
+                     value, text["unit"], text["against"]))
+    return rows
+
+
+# ---------------------------------------------------------------------------------------------
+# machines, offers, calls, rentals and charges
 
 def upsert_machine(connection, provider: str, key: str, specs: dict) -> int:
     specs = {name: clean(value) for name, value in specs.items() if name in MACHINE_FIELDS or name == "note"}
@@ -140,6 +290,20 @@ def record_call(connection, provider: str, method: str, endpoint: str, request, 
     return call_id
 
 
+def prune_responses(connection, before: str, execute: bool) -> dict:
+    """The stored response bodies of the calls sent before ``before`` (UTC, as call times are written): how many and
+    their compressed bytes. ``execute`` drops them; the calls stay, and so do the offers they listed."""
+    with connection:
+        if execute:
+            connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT count(*) AS calls, coalesce(sum(length(response)), 0) AS bytes "
+                                 "FROM ledger_api_call WHERE time < ? AND response IS NOT NULL", (before,)).fetchone()
+        if execute:
+            connection.execute("UPDATE ledger_api_call SET response = NULL WHERE time < ? AND response IS NOT NULL",
+                               (before,))
+    return {"calls": row["calls"], "bytes": row["bytes"], "before": before}
+
+
 def add_rental(connection, record: dict) -> int:
     provider, instance = record["provider"], str(record["instance"])
     offer = record.get("offer")
@@ -181,23 +345,30 @@ def add_charges(connection, provider: str, results: list[dict]) -> int:
     return count
 
 
-def add_run(connection, label: str, fields: dict, measurements: list[tuple] = ()) -> int:
-    values = {name: fields.get(name) for name in RUN_FIELDS if fields.get(name) is not None}
-    values.setdefault("date", datetime.date.today().isoformat())
+# ---------------------------------------------------------------------------------------------
+# runs and findings
+
+def add_run(connection, label: str, fields: dict, measurements: list[tuple] = (), inputs: list[tuple] = ()) -> int:
+    """Records a run, or sets the fields given of the run of that label; its measurements are added, and its inputs
+    set (an input named again takes the new value). A new run's date is today unless the fields give one."""
+    values = {name: fields[name] for name in RUN_FIELDS if fields.get(name) is not None}
     with connection:
         row = connection.execute("SELECT id FROM ledger_run WHERE label = ?", (label,)).fetchone()
         if row:
             run_id = row["id"]
             if values:
-                connection.execute(f"UPDATE ledger_run SET {', '.join(f'{n} = ?' for n in values)} WHERE id = ?",
-                                   (*values.values(), run_id))
+                connection.execute(f"UPDATE ledger_run SET {', '.join(f'{quoted(n)} = ?' for n in values)} "
+                                   "WHERE id = ?", (*values.values(), run_id))
         else:
-            names = ["label", *values]
-            run_id = connection.execute(f"INSERT INTO ledger_run ({', '.join(names)}) VALUES "
-                                        f"({', '.join('?' * len(names))})", (label, *values.values())).lastrowid
-        for row in measurements:
-            connection.execute("INSERT INTO ledger_measurement (run_id, source, place, view, sample, metric, part, "
-                               "value, unit, against) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (run_id, *row))
+            values.setdefault("date", datetime.date.today().isoformat())
+            names = ("label", *values)
+            run_id = connection.execute(f"INSERT INTO ledger_run ({listed(names)}) VALUES ({marks(names)})",
+                                        (label, *values.values())).lastrowid
+        connection.executemany("INSERT INTO ledger_run_input (run_id, name, value, sha256) VALUES (?, ?, ?, ?) "
+                               "ON CONFLICT (run_id, name) DO UPDATE SET value = excluded.value, "
+                               "sha256 = excluded.sha256", [(run_id, *item) for item in inputs])
+        connection.executemany(f"INSERT INTO ledger_measurement (run_id, {listed(MEASUREMENT_FIELDS)}) "
+                               f"VALUES (?, {marks(MEASUREMENT_FIELDS)})", [(run_id, *row) for row in measurements])
     return run_id
 
 
@@ -212,19 +383,261 @@ def add_finding(connection, finding_id: str, title: str, statement: str, status:
         for label in runs:
             row = connection.execute("SELECT id FROM ledger_run WHERE label = ? OR id = ?", (label, label)).fetchone()
             if row is None:
-                raise KeyError(f"no run {label}")
+                raise Unknown(f"no run {label}")
             connection.execute("INSERT OR IGNORE INTO ledger_finding_run VALUES (?, ?)", (finding_id, row["id"]))
         for job in jobs:
             connection.execute("INSERT OR IGNORE INTO ledger_finding_job VALUES (?, ?)", (finding_id, job))
             connection.execute("UPDATE artifact SET pinned = 1 WHERE job = ?", (job,))  # D26: evidence is kept
 
 
-TABLE_MAP = {"run": "ledger_run", "measurement": "ledger_measurement", "finding": "ledger_finding",
-             "finding_run": "ledger_finding_run", "machine": "ledger_machine", "api_call": "ledger_api_call",
-             "offer": "ledger_offer", "rental": "ledger_rental", "charge": "ledger_charge"}
+def find_run(connection, ref: str) -> sqlite3.Row | None:
+    """The run of a label, else of an id; None when there is neither."""
+    return connection.execute("SELECT id, label FROM ledger_run WHERE label = ? OR CAST(id AS TEXT) = ? "
+                              "ORDER BY label = ? DESC LIMIT 1", (ref, ref, ref)).fetchone()
+
+
+def find_ref(connection, table: str, ref: str | None) -> int | None:
+    """The id of a machine named PROVIDER:KEY or a rental named PROVIDER:INSTANCE; None for none named."""
+    if not ref:
+        return None
+    provider, colon, key = ref.partition(":")
+    if not colon or not provider or not key:
+        raise ValueError(f"{table} {ref!r} is not PROVIDER:{'KEY' if table == 'machine' else 'INSTANCE'}")
+    column = "key" if table == "machine" else "instance"
+    row = connection.execute(f"SELECT id FROM ledger_{table} WHERE provider = ? AND {column} = ?",
+                             (provider, key)).fetchone()
+    if row is None:
+        raise Unknown(f"no {table} {ref} in the ledger")
+    return row["id"]
+
+
+def link_run(connection, ref: str, jobs: list[str], machine: str | None = None, rental: str | None = None) -> dict:
+    """Links a run to the Workbench jobs its results came from, and sets the machine or rental it ran on (one not
+    named is kept). Raises Unknown, changing nothing, for a run, machine, rental or job there is none of."""
+    jobs = list(dict.fromkeys(jobs))
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        run = find_run(connection, ref)
+        if run is None:
+            raise Unknown(f"no run {ref}")
+        machine_id, rental_id = find_ref(connection, "machine", machine), find_ref(connection, "rental", rental)
+        known = {row["id"] for row in connection.execute(f"SELECT id FROM job WHERE id IN ({marks(jobs)})", jobs)
+                 } if jobs else set()
+        missing = [job for job in jobs if job not in known]
+        if missing:
+            raise Unknown(f"no job {', '.join(missing)} in this Workbench")
+        linked = [job for job in jobs if keyed(connection, "ledger_run_job", {"run_id": run["id"], "job": job})
+                  == "inserted"]
+        if machine_id is not None or rental_id is not None:
+            connection.execute("UPDATE ledger_run SET machine_id = coalesce(?, machine_id), "
+                               "rental_id = coalesce(?, rental_id) WHERE id = ?", (machine_id, rental_id, run["id"]))
+        row = connection.execute("SELECT machine_id, rental_id FROM ledger_run WHERE id = ?", (run["id"],)).fetchone()
+        every = [r["job"] for r in connection.execute("SELECT job FROM ledger_run_job WHERE run_id = ? ORDER BY job",
+                                                       (run["id"],))]
+    return {"run": run["id"], "label": run["label"], "linked": linked, "jobs": every,
+            "machine_id": row["machine_id"], "rental_id": row["rental_id"]}
+
+
+def supersede(connection, finding_id: str, by: str) -> bool:
+    """Marks a finding superseded by another; False when it already is. Raises ValueError for a finding superseding
+    itself, Unknown for one there is none of, and Refused when another finding supersedes it already or it
+    supersedes the other, directly or through others."""
+    if finding_id == by:
+        raise ValueError(f"finding {finding_id} cannot supersede itself")
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        rows = {row["id"]: row for row in connection.execute(
+            "SELECT id, status, superseded_by FROM ledger_finding WHERE id IN (?, ?)", (finding_id, by))}
+        for name in (finding_id, by):
+            if name not in rows:
+                raise Unknown(f"no finding {name}")
+        held = rows[finding_id]["superseded_by"]
+        if held == by and rows[finding_id]["status"] == "superseded":
+            return False
+        if held not in (None, by):
+            raise Refused(f"finding {finding_id} is superseded by {held} already")
+        step, seen = rows[by]["superseded_by"], {by}
+        while step is not None and step not in seen:
+            if step == finding_id:
+                raise Refused(f"finding {by} is superseded by {finding_id} (directly or through others), so it "
+                              f"cannot supersede {finding_id}")
+            seen.add(step)
+            row = connection.execute("SELECT superseded_by FROM ledger_finding WHERE id = ?", (step,)).fetchone()
+            step = row["superseded_by"] if row else None
+        connection.execute("UPDATE ledger_finding SET status = 'superseded', superseded_by = ? WHERE id = ?",
+                           (by, finding_id))
+    return True
+
+
+# ---------------------------------------------------------------------------------------------
+# recording what files state: CI run records, result files, parsed logs
+
+@dataclass
+class Record:
+    """One run as a file states it, for record_run."""
+    label: str
+    fields: dict = field(default_factory=dict)  # as run_fields checks them
+    inputs: list = field(default_factory=list)  # (name, value, sha256), as run_inputs makes them
+    measurements: list = field(default_factory=list)  # rows, as measurement_rows makes them
+    jobs: list = field(default_factory=list)  # the Workbench jobs its results came from
+
+
+@dataclass
+class Recorded:
+    run: int
+    added: bool  # whether record_run added the run, rather than mapping it to the ledger's
+    counts: Counter  # rows by (table, outcome): inserted, matched, and measurements replaced
+
+
+def record_run(connection, record: Record, replace: bool = False) -> Recorded:
+    """Maps a run to the ledger's run of its label, or adds it, and records what it states, so that recording it
+    again changes nothing: an input is added when the run has none of its name and matched when it has this one;
+    the measurements of a source are added when the run has none from that source and matched when it holds
+    exactly these; a job link is added once. A run the ledger has keeps its fields.
+
+    Raises Refused, with nothing of the record written, when the ledger's run has another value of one of its
+    inputs or other measurements from one of its sources; ``replace`` replaces such measurements instead. Runs in
+    the caller's transaction."""
+    counts = Counter()
+    connection.execute("SAVEPOINT record_run")
+    try:
+        run_id, added = _map_run(connection, record, counts)
+        _map_inputs(connection, record, run_id, counts)
+        _map_measurements(connection, record, run_id, replace, counts)
+        for job in dict.fromkeys(record.jobs):
+            counts["run_job", keyed(connection, "ledger_run_job", {"run_id": run_id, "job": job})] += 1
+    except (Refused, sqlite3.IntegrityError) as error:
+        connection.execute("ROLLBACK TO record_run")
+        connection.execute("RELEASE record_run")
+        if isinstance(error, Refused):
+            raise
+        raise Refused(f"run {record.label} cannot be recorded: {error}") from None
+    connection.execute("RELEASE record_run")
+    return Recorded(run_id, added, counts)
+
+
+def _map_run(connection, record: Record, counts: Counter) -> tuple[int, bool]:
+    row = connection.execute("SELECT id FROM ledger_run WHERE label = ?", (record.label,)).fetchone()
+    if row is not None:
+        counts["run", "matched"] += 1
+        return row["id"], False
+    values = {name: record.fields[name] for name in RUN_FIELDS if record.fields.get(name) is not None}
+    values.setdefault("date", datetime.date.today().isoformat())
+    names = ("label", *values)
+    run_id = connection.execute(f"INSERT INTO ledger_run ({listed(names)}) VALUES ({marks(names)})",
+                                (record.label, *values.values())).lastrowid
+    counts["run", "inserted"] += 1
+    return run_id, True
+
+
+def _map_inputs(connection, record: Record, run_id: int, counts: Counter):
+    for name, value, digest in record.inputs:
+        held = connection.execute("SELECT value, sha256 FROM ledger_run_input WHERE run_id = ? AND name = ?",
+                                  (run_id, name)).fetchone()
+        if held is None:
+            connection.execute("INSERT INTO ledger_run_input (run_id, name, value, sha256) VALUES (?, ?, ?, ?)",
+                               (run_id, name, value, digest))
+            counts["run_input", "inserted"] += 1
+        elif (held["value"], held["sha256"]) == (value, digest):
+            counts["run_input", "matched"] += 1
+        else:
+            raise Refused(f"the ledger's run {record.label} ran on {name} {_stated(held['value'], held['sha256'])}, "
+                          f"not {_stated(value, digest)}")
+
+
+def _map_measurements(connection, record: Record, run_id: int, replace: bool, counts: Counter):
+    sources: dict[str, list] = {}
+    for row in record.measurements:
+        sources.setdefault(row[0], []).append(tuple(row))
+    for source, rows in sources.items():
+        held = [tuple(row) for row in connection.execute(
+            f"SELECT {listed(MEASUREMENT_FIELDS)} FROM ledger_measurement WHERE run_id = ? AND source = ?",
+            (run_id, source))]
+        if held and Counter(held) == Counter(rows):
+            counts["measurement", "matched"] += len(rows)
+            continue
+        if held and not replace:
+            raise Refused(f"the ledger's run {record.label} holds other measurements from {source} ({len(held)} "
+                          f"there, {len(rows)} here)")
+        if held:
+            connection.execute("DELETE FROM ledger_measurement WHERE run_id = ? AND source = ?", (run_id, source))
+            counts["measurement", "replaced"] += len(held)
+        connection.executemany(f"INSERT INTO ledger_measurement (run_id, {listed(MEASUREMENT_FIELDS)}) "
+                               f"VALUES (?, {marks(MEASUREMENT_FIELDS)})", [(run_id, *row) for row in rows])
+        counts["measurement", "inserted"] += len(rows)
+
+
+def _stated(value, digest) -> str:
+    return (repr(value) if value is not None else "(no value)") + (f" sha256 {digest[:12]}" if digest else "")
+
+
+def record_findings(connection, findings: list[dict], run_id: int) -> Counter:
+    """Maps each finding to the ledger's finding of its id, or adds it, and links it to the run, to the other runs
+    it names by label and to its jobs, whose evidence is pinned. A finding the ledger has is kept as it is, its
+    links added. Raises Refused, with none of them written, when one rests on a run the ledger does not have."""
+    counts = Counter()
+    connection.execute("SAVEPOINT record_findings")
+    try:
+        for finding in findings:
+            runs = [run_id]
+            for label in finding.get("runs", ()):
+                row = connection.execute("SELECT id FROM ledger_run WHERE label = ?", (label,)).fetchone()
+                if row is None:
+                    raise Refused(f"finding {finding['id']} rests on run {label}, which the ledger does not have")
+                runs.append(row["id"])
+            if connection.execute("SELECT 1 FROM ledger_finding WHERE id = ?", (finding["id"],)).fetchone():
+                counts["finding", "matched"] += 1
+            else:
+                connection.execute("INSERT INTO ledger_finding (id, date, title, statement, status, evidence) "
+                                   "VALUES (?, ?, ?, ?, ?, ?)",
+                                   (finding["id"], finding.get("date") or datetime.date.today().isoformat(),
+                                    finding["title"], finding["statement"], finding["status"], finding.get("evidence")))
+                counts["finding", "inserted"] += 1
+            for run in dict.fromkeys(runs):
+                counts["finding_run", keyed(connection, "ledger_finding_run",
+                                            {"finding_id": finding["id"], "run_id": run})] += 1
+            for job in dict.fromkeys(finding.get("jobs", ())):
+                counts["finding_job", keyed(connection, "ledger_finding_job",
+                                            {"finding_id": finding["id"], "job": job})] += 1
+                connection.execute("UPDATE artifact SET pinned = 1 WHERE job = ?", (job,))  # D26: evidence is kept
+    except (Refused, sqlite3.IntegrityError) as error:
+        connection.execute("ROLLBACK TO record_findings")
+        connection.execute("RELEASE record_findings")
+        if isinstance(error, Refused):
+            raise
+        raise Refused(f"a finding cannot be recorded: {error}") from None
+    connection.execute("RELEASE record_findings")
+    return counts
+
+
+def keyed(connection, table: str, values: dict) -> str:
+    """Adds a row named by its key alone (a link) unless the ledger has it already; whether it was inserted or
+    matched."""
+    if connection.execute(f"SELECT 1 FROM {table} WHERE {matching(values)}", tuple(values.values())).fetchone():
+        return "matched"
+    connection.execute(f"INSERT INTO {table} ({listed(values)}) VALUES ({marks(values)})", tuple(values.values()))
+    return "inserted"
+
+
+def jobs_of_output(connection, command: str, name: str, path) -> list[str]:
+    """The jobs of ``command`` whose output ``name`` is the file or folder at ``path``: the Workbench jobs a record
+    came from."""
+    return [row["job"] for row in connection.execute(
+        "SELECT a.job FROM artifact a JOIN job j ON j.id = a.job WHERE a.name = ? AND a.path = ? AND j.command = ? "
+        "ORDER BY j.submitted, a.job", (name, str(path), command))]
+
+
+# ---------------------------------------------------------------------------------------------
+# importing a results database
+
+TABLE_MAP = {"run": "ledger_run", "run_input": "ledger_run_input", "measurement": "ledger_measurement",
+             "finding": "ledger_finding", "finding_run": "ledger_finding_run", "machine": "ledger_machine",
+             "api_call": "ledger_api_call", "offer": "ledger_offer", "rental": "ledger_rental",
+             "charge": "ledger_charge"}
 SOURCE_TABLES = {new: old for old, new in TABLE_MAP.items()}
 # Each table after the tables its rows reference, so a reference's map is complete before it is translated.
-IMPORT_ORDER = ("machine", "api_call", "offer", "rental", "run", "measurement", "finding", "finding_run", "charge")
+IMPORT_ORDER = ("machine", "api_call", "offer", "rental", "run", "run_input", "measurement", "finding", "finding_run",
+                "charge")
 # What became of a source row, exactly one each: inserted under its own id; remapped to a new id, its own being
 # another row's; matched to the ledger row that already is it; or repaired: matched to a verbatim copy an
 # earlier import made, whose references now name the rows this import maps theirs to.
@@ -246,6 +659,7 @@ class Table:
     natural: tuple[str, ...]  # the columns that say two rows are the same thing
     references: dict[str, str]  # a column naming another row -> the source table that row is in
     renumbered: bool  # an INTEGER PRIMARY KEY: a row whose id is taken can be given a new one
+    inputs: tuple[str, ...] = ()  # source run columns the ledger has none of: each becomes an input of its run
 
     @property
     def id(self) -> str:
@@ -278,6 +692,12 @@ class Import:
             self.added.setdefault(table.old, set()).add(row[table.id])
         self.tally[table.old][outcome] += 1
 
+    def merge(self, counts: Counter):
+        """Adds the rows a record_run or record_findings wrote, by (table, outcome), to the tally."""
+        for (table, outcome), rows in counts.items():
+            tally = self.tally.setdefault(table, dict.fromkeys(OUTCOMES, 0))
+            tally[outcome] = tally.get(outcome, 0) + rows
+
     def counts(self) -> dict:
         """The rows added to each table under its name, as before, and per outcome the source rows it had."""
         counts = {old: tally["inserted"] + tally["remapped"] for old, tally in self.tally.items()}
@@ -290,7 +710,8 @@ def import_results(connection, source: Path) -> dict:
     same natural key when there is one, else a new row, under the source's id when that id is free and a new id
     when it is not. References are translated through those maps, so each names the row it named in the source,
     and a verbatim copy an earlier import made, whose reference names a row this import maps elsewhere, is
-    repaired. Importing twice changes nothing.
+    repaired. A source of an older schema, whose runs name what they ran on in columns of their own, gives its runs
+    those values as inputs. Importing twice changes nothing.
 
     ``counts[old]`` is the rows added to each table; ``counts[outcome][old]`` splits its source rows by
     ``OUTCOMES``."""
@@ -320,7 +741,8 @@ def describe(connection, old: str) -> Table:
     new = TABLE_MAP[old]
     info = connection.execute(f"PRAGMA main.table_info({new})").fetchall()
     ours = {column["name"] for column in info}
-    columns = tuple(c["name"] for c in connection.execute(f"PRAGMA src.table_info({old})") if c["name"] in ours)
+    theirs = [c["name"] for c in connection.execute(f"PRAGMA src.table_info({old})")]
+    columns = tuple(column for column in theirs if column in ours)
     key = tuple(column["name"] for column in sorted(info, key=lambda c: c["pk"]) if column["pk"])
     renumbered = len(key) == 1 and next(c["type"] for c in info if c["name"] == key[0]).upper() == "INTEGER"
     natural = natural_key(connection, new, columns, key, renumbered)
@@ -329,7 +751,8 @@ def describe(connection, old: str) -> Table:
         raise ImportConflict(f"the source's {old} has no {', '.join(missing)}, which names its rows")
     references = {fk["from"]: SOURCE_TABLES[fk["table"]]
                   for fk in connection.execute(f"PRAGMA main.foreign_key_list({new})") if fk["from"] in columns}
-    return Table(old, new, columns, key, natural, references, renumbered)
+    inputs = tuple(column for column in theirs if column not in ours) if old == "run" else ()
+    return Table(old, new, columns, key, natural, references, renumbered, inputs)
 
 
 def natural_key(connection, new: str, columns: tuple, key: tuple, renumbered: bool) -> tuple[str, ...]:
@@ -345,13 +768,15 @@ def natural_key(connection, new: str, columns: tuple, key: tuple, renumbered: bo
 
 
 def copy_table(state: Import, table: Table):
-    state.tally[table.old] = dict.fromkeys(OUTCOMES, 0)
+    state.tally.setdefault(table.old, dict.fromkeys(OUTCOMES, 0))
     if len(table.key) == 1:
         copy_identified(state, table)
     elif table.natural:
         copy_keyed(state, table)
     else:
         copy_keyless(state, table)
+    if table.inputs:
+        copy_inputs(state, table)
 
 
 def copy_identified(state: Import, table: Table):
@@ -426,8 +851,9 @@ def same_row(connection, table: Table, values: dict):
 
 
 def copy_keyed(state: Import, table: Table):
-    """Rows named by a composite key (a finding's runs, charges): translated, then inserted or ignored as
-    INSERT OR IGNORE would, except that a row the ledger refuses for anything but its key stops the import."""
+    """Rows named by a composite key (a finding's runs, a run's inputs, charges): translated, then inserted or
+    ignored as INSERT OR IGNORE would, except that a row the ledger refuses for anything but its key stops the
+    import."""
     for row in source_rows(state.connection, table):
         values = state.translate(table, row)
         found = state.connection.execute(f"SELECT 1 FROM {table.new} WHERE {matching(table.natural)}",
@@ -450,6 +876,31 @@ def copy_keyless(state: Import, table: Table):
     except sqlite3.IntegrityError as error:
         raise ImportConflict(f"a {table.old} row can be neither matched nor inserted: {error}") from None
     state.tally[table.old].update(inserted=len(copied), matched=len(rows) - len(copied))
+
+
+def copy_inputs(state: Import, table: Table):
+    """The source run columns the ledger has none of (an older schema gave some inputs columns of their own) become
+    inputs of their runs, named by the column, as migration 002 moved the ledger's own: every value, one of 64 hex
+    digits being also the input's SHA-256. An input its run has already is matched."""
+    tally = state.tally.setdefault("run_input", dict.fromkeys(OUTCOMES, 0))
+    cursor = state.connection.execute(f"SELECT {listed((table.id, *table.inputs))} FROM src.{table.old} "
+                                      f"ORDER BY {quoted(table.id)}")
+    for row in cursor.fetchall():
+        run_id = state.maps[table.old][row[0]]
+        for name, value in zip(table.inputs, tuple(row)[1:]):
+            if value is None:
+                continue
+            if state.connection.execute("SELECT 1 FROM ledger_run_input WHERE run_id = ? AND name = ?",
+                                        (run_id, name)).fetchone():
+                tally["matched"] += 1
+                continue
+            value = value if isinstance(value, str) else str(value)
+            try:
+                state.connection.execute("INSERT INTO ledger_run_input (run_id, name, value, sha256) "
+                                         "VALUES (?, ?, ?, ?)", (run_id, name, value, digest_of(value)))
+            except sqlite3.IntegrityError as error:
+                raise ImportConflict(f"run {row[0]!r}: its {name} cannot be an input: {error}") from None
+            tally["inserted"] += 1
 
 
 def source_rows(connection, table: Table) -> list[dict]:

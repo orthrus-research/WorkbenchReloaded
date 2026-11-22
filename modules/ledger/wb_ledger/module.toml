@@ -1,7 +1,10 @@
 [module]
 name = "ledger"
-version = "0.1.0"
+version = "0.2.0"
 summary = "Formal results, costs and market prices in one queryable database."
+
+[config]
+parsers = { type = "object", default = {}, summary = "log parsers for parse-log by name, [modules.ledger.parsers.<name>]: a table of metric = regex, each regex naming its number (?P<value>...) and optionally (?P<unit>...) and (?P<part>...) (see wb_ledger/importers.py)" }
 
 [[command]]
 name = "query"
@@ -14,7 +17,7 @@ result.rows = { type = "list" }
 
 [[command]]
 name = "runs"
-summary = "List recorded runs, optionally by label pattern."
+summary = "List recorded runs with their inputs, optionally by label pattern."
 handler = "wb_ledger.commands:runs"
 params.like = { type = "string", default = "%" }
 result.runs = { type = "list" }
@@ -28,7 +31,7 @@ result.findings = { type = "list" }
 
 [[command]]
 name = "show"
-summary = "Show one run (by label or id) or finding (by id) with its measurements."
+summary = "Show one run (by label or id) with its inputs, jobs and measurements, or a finding (by id) with its runs."
 handler = "wb_ledger.commands:show"
 params.ref = { type = "string" }
 
@@ -50,11 +53,13 @@ result.calls = { type = "list" }
 
 [[command]]
 name = "add-run"
-summary = "Record a run and, optionally, measurements (a list of {metric, value, ...})."
+summary = "Record a run with what it ran on and, optionally, measurements; a label recorded already gets the fields, inputs and measurements given."
 handler = "wb_ledger.commands:add_run"
 params.label = { type = "string" }
-params.fields = { type = "object", default = {} }
-params.measurements = { type = "list", default = [] }
+params.fields = { type = "object", default = {}, summary = "run fields: date (YYYY-MM-DD), instance, os, host, card, driver, options, tour, window, radius, exit, evidence, note, job" }
+params.inputs = { type = "list", items = "object", default = [], summary = "what the run ran on, each {name, value, sha256} with a value, a sha256 or both; an input named again takes the new value" }
+params.measurements = { type = "list", items = "object", default = [], summary = "each {metric, value} and optionally unit, part, source (default wb), place, view, sample, against" }
+result.run = { type = "int" }
 
 [[command]]
 name = "add-finding"
@@ -69,8 +74,92 @@ params.jobs = { type = "list", default = [] }
 params.evidence = { type = "string", optional = true }
 
 [[command]]
+name = "supersede"
+summary = "Mark a finding superseded by another; refused when a third supersedes it already, or when it supersedes the other itself."
+handler = "wb_ledger.commands:supersede"
+params.finding = { type = "string", pattern = "^[a-z0-9][a-z0-9-]*$", summary = "the finding superseded" }
+params.by = { type = "string", pattern = "^[a-z0-9][a-z0-9-]*$", summary = "the finding that supersedes it" }
+result.changed = { type = "bool" }
+
+[[command]]
+name = "link-run"
+summary = "Link a run to the Workbench jobs its results came from, and set the machine or rental it ran on."
+handler = "wb_ledger.commands:link_run"
+params.run = { type = "string", summary = "the run's label or id" }
+params.jobs = { type = "list", items = "string", default = [], summary = "Workbench job ids; each must be a job of this Workbench" }
+params.machine = { type = "string", optional = true, summary = "PROVIDER:KEY of a machine the ledger has (ledger.add-machine)" }
+params.rental = { type = "string", optional = true, summary = "PROVIDER:INSTANCE of a rental the ledger has" }
+result.run = { type = "int" }
+result.linked = { type = "list" }
+result.jobs = { type = "list" }
+
+[[command]]
+name = "add-machine"
+summary = "Record a machine's specs (one of ours, or a host by hand); specs given replace those recorded."
+handler = "wb_ledger.commands:add_machine"
+params.provider = { type = "string", default = "local", pattern = "\\S", summary = "local, or the provider it is rented from" }
+params.key = { type = "string", pattern = "\\S", summary = "the provider's machine id, or a name for one of ours" }
+params.host = { type = "string", optional = true, summary = "the provider's host id: one host may own several machines" }
+params.gpu = { type = "string", optional = true }
+params.gpu_ram_mib = { type = "float", optional = true, min = 0, unit = "MiB" }
+params.gpu_mem_bw = { type = "float", optional = true, min = 0, unit = "GB/s" }
+params.pcie_bw = { type = "float", optional = true, min = 0, unit = "GB/s" }
+params.cpu = { type = "string", optional = true }
+params.cpu_cores_effective = { type = "float", optional = true, min = 0, summary = "the cores the machine (or a rented container) gets" }
+params.cpu_ram_mib = { type = "float", optional = true, min = 0, unit = "MiB" }
+params.cpu_ghz = { type = "float", optional = true, min = 0, unit = "GHz" }
+params.disk_bw = { type = "float", optional = true, min = 0, unit = "MB/s" }
+params.inet_up = { type = "float", optional = true, min = 0, unit = "Mb/s" }
+params.inet_down = { type = "float", optional = true, min = 0, unit = "Mb/s" }
+params.place = { type = "string", optional = true }
+params.note = { type = "string", optional = true }
+result.machine = { type = "int" }
+result.added = { type = "bool" }
+
+[[command]]
+name = "prune"
+summary = "Drop the stored response bodies of provider calls older than N days, keeping the calls and the offers they listed; a dry run unless execute=true."
+handler = "wb_ledger.commands:prune"
+params.days = { type = "int", default = 30, min = 1 }
+params.execute = { type = "bool", default = false, summary = "false: count what would be dropped" }
+result.calls = { type = "int" }
+result.bytes = { type = "int" }
+result.dropped = { type = "bool" }
+
+[[command]]
 name = "import"
-summary = "Import a results database, mapping ids so references hold (idempotent; repairs earlier imports)."
+summary = "Import a results database, mapping ids so references hold (idempotent; repairs earlier imports); an older schema's run columns become inputs."
 handler = "wb_ledger.commands:import_db"
 params.source = { type = "path.in" }
 result.imported = { type = "object" }
+
+[[command]]
+name = "import-ci"
+summary = "Import a CI project's run records: one run per CI run (ci/<project>/<run id>), its trees as inputs, each job's seconds and status as measurements (idempotent)."
+handler = "wb_ledger.commands:import_ci"
+params.project = { type = "string", pattern = "^[^/\\\\]+$", summary = "the CI project; its runs are recorded as ci/<project>/<run id>" }
+params.runs = { type = "path.in", optional = true, summary = "a folder of the project's run records, each a folder with a summary.json (default: the records ci.run keeps in Workbench's state)" }
+result.imported = { type = "object" }
+result.refused = { type = "list" }
+
+[[command]]
+name = "import-results"
+summary = "Import result files (wb/ledger-result/v1: a run's label, fields, inputs, measurements, jobs and findings), mapping each run to the ledger's of its label (idempotent)."
+handler = "wb_ledger.commands:import_results"
+params.folder = { type = "path.in", summary = "a result file, or a folder searched for them" }
+params.pattern = { type = "string", default = "result.json", summary = "the file names searched for, at any depth" }
+result.imported = { type = "object" }
+result.refused = { type = "list" }
+result.files = { type = "int" }
+
+[[command]]
+name = "parse-log"
+summary = "Parse a log with a parser of [modules.ledger.parsers] into a run's measurements (idempotent: a log parsed again into its run changes nothing)."
+handler = "wb_ledger.commands:parse_log"
+requires = { config = ["modules.ledger.parsers"] }
+params.parser = { type = "string", summary = "a parser's name under [modules.ledger.parsers]" }
+params.log = { type = "path.in" }
+params.run = { type = "string", summary = "the run's label or id; a label the ledger does not have records a new run" }
+params.replace = { type = "bool", default = false, summary = "replace the measurements this parser recorded in the run before, when they differ" }
+result.measurements = { type = "int" }
+result.missing = { type = "list" }
