@@ -345,6 +345,7 @@ params.kill_client = { type = "int", default = 0, min = 0, max = 8, summary = "a
 params.kill_after = { type = "duration", default = "30s", summary = "how long after the last join it is killed" }
 params.leave_timeout = { type = "duration", default = "1m", summary = "how long the server has to show the killed client leaving" }
 params.desktop = { type = "enum", values = ["visible", "hidden"], default = "visible", summary = "hidden: the clients run on a desktop of their own that never takes the input (Windows)" }
+params.audio = { type = "bool", default = false, summary = "sample each client's audio peak from the last join to the end of the run (Windows): which clients made sound, and how loud" }
 params.server = { type = "path.in", summary = "a stopped server folder (its JARs, mods, config and world); the run uses a copy, so it is never written" }
 params.jdk = { type = "string", default = "8", summary = "the JDK that runs it, as Workbench names them (8, 17, 25); empty: none, for a launch that names no {java}" }
 params.jar = { type = "string", default = "", summary = "the server JAR for {jar}: a glob relative to the folder that matches one file; empty: the folder's only top-level JAR" }

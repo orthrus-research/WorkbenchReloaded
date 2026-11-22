@@ -137,6 +137,14 @@ class Sessions(unittest.TestCase):
         self.assertTrue(receipt["desktop"]["never_input"])
         self.assertIn("fake client wb1 connected", (out / "clients" / "wb1" / "console.log").read_text(encoding="utf-8"))
 
+    @unittest.skipUnless(desktop.available(), "audio sessions are read on Windows")
+    def test_the_clients_audio_is_sampled_through_the_run(self):
+        ctx, result, receipt, out = self.run_session("audio", clients=1, audio=True)
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        heard = receipt["clients"][0]["audio"]
+        self.assertGreater(heard["samples"], 0)
+        self.assertEqual(heard["heard"], 0)  # the fake client plays nothing
+
     def test_a_client_that_never_joins_is_a_finding(self):
         session.client_argv = lambda *a, **k: [sys.executable, "-c", "print('crashed at start'); raise SystemExit(3)"]
         ctx, result, receipt, out = self.run_session("crash", clients=1)

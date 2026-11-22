@@ -10,6 +10,7 @@ scripted ``kill_client`` is killed ``kill_after`` the last join, and the server 
 are stopped before the server. ``desktop = "hidden"`` starts them on a hidden desktop (Windows), so they never take
 the user's focus or input.
 
+With ``audio = true`` (Windows) each client's audio peak is sampled from the last join to the end of the run.
 Each client's console, log, crash reports and screenshots are kept under ``clients/<name>/`` in the out folder, and the receipt
 gains the runtime (by SHA-256), each client's command line, join time, exit and what the kill did.
 """
@@ -30,6 +31,7 @@ from pathlib import Path
 
 from wb_core.module import Context, EnvironmentProblem, ParamError, sha256_file
 
+from . import audio as audios
 from . import desktop as desktops
 from . import process as processes
 from .server import Options, Session, _span
@@ -106,13 +108,26 @@ class MultiSession(Session):
         self.runtime: dict = {}
         self.desktop: desktops.HiddenDesktop | None = None
         self.kill_timer: threading.Timer | None = None
+        self.sampler: audios.Sampler | None = None
+        self.heard: dict[str, dict] | None = None
 
     # the server is ready: start the clients and wait for them to join, then run as a server session does
     def _run(self):
         if self._start_clients() and self._await_joins():
             self._arm_kill()
-            super()._run()
-            self._await_leave()
+            if self.c["audio"]:
+                self.sampler = audios.Sampler({client.process.pid: client.name for client in self.clients}).start()
+            try:
+                super()._run()
+                self._await_leave()
+            finally:
+                self._stop_sampler()
+
+    def _stop_sampler(self):
+        if self.sampler is None:
+            return
+        self.heard, self.sampler = self.sampler.stop(), None
+        self.ctx.measure("clients_heard", sum(1 for entry in self.heard.values() if entry["heard"]))
 
     def _start_clients(self) -> bool:
         ctx, c = self.ctx, self.c
@@ -221,6 +236,7 @@ class MultiSession(Session):
     def _stop(self, cancelled: bool):
         if self.kill_timer is not None:
             self.kill_timer.cancel()
+        self._stop_sampler()
         for client in self.clients:
             if client.alive():
                 client.stop()
@@ -258,7 +274,8 @@ class MultiSession(Session):
                               "main_class": self.runtime.get("main_class")}
         receipt["clients"] = [{"name": client.name, "uuid": offline_uuid(client.name), "argv": client.argv,
                                "joined_at": client.joined_at, "exit": client.exit, "killed": client.killed,
-                               "left_at": client.left_at} for client in self.clients]
+                               "left_at": client.left_at, "audio": (self.heard or {}).get(client.name)}
+                              for client in self.clients]
         return receipt
 
 
@@ -272,7 +289,8 @@ def _last_line(log: Path) -> str:
 
 def session(ctx: Context, runtime: str, clients: int, prefix: str, client_jdk: str, client_mods: list,
             client_jvm_args: list, window: str, joined: str, left: str, join_timeout: float, kill_client: int,
-            kill_after: float, leave_timeout: float, desktop: str, client_files: str | None = None, **params):
+            kill_after: float, leave_timeout: float, desktop: str, client_files: str | None = None,
+            audio: bool = False, **params):
     """lab.session: one server and several clients (module.toml lists the params; this module's docstring the run)."""
     options = Options.parse(params)
     runtime_path = Path(runtime)
@@ -284,6 +302,8 @@ def session(ctx: Context, runtime: str, clients: int, prefix: str, client_jdk: s
         raise ParamError(f"runtime: {runtime} is not lab.assemble's runtime.json (schema {loaded.get('schema')!r})")
     if desktop == "hidden" and not desktops.available():
         raise ParamError("desktop = hidden needs Windows")
+    if audio and not audios.available():
+        raise ParamError("audio needs Windows, whose audio sessions it reads")
     match = re.fullmatch(r"(\d+)x(\d+)", window)
     if not match:
         raise ParamError(f"window: {window!r} is not WIDTHxHEIGHT")
@@ -307,6 +327,6 @@ def session(ctx: Context, runtime: str, clients: int, prefix: str, client_jdk: s
         "files": Path(client_files) if client_files else None, "jvm_args": [str(a) for a in client_jvm_args],
         "window": (int(match.group(1)), int(match.group(2))), "joined": joined, "left": left,
         "join_timeout": join_timeout, "kill_client": kill_client, "kill_after": kill_after,
-        "leave_timeout": leave_timeout, "desktop": desktop})
+        "leave_timeout": leave_timeout, "desktop": desktop, "audio": audio})
     multi.runtime = loaded
     return multi.execute()
