@@ -1,25 +1,31 @@
 """Refuse commits that carry what a project keeps out of its repository.
 
-A diff and its message carry no attribution trailers, no private files, no local paths (drive
-letters, home folders, ``.local``) and no personal data. This tool checks that mechanically, as
-Git hooks or in CI.
+A commit carries no attribution trailers, no private files, no local paths (drive letters, home
+folders, ``.local``) and no personal data: not in its diff, not in its message, and not in the
+author and committer it names. This tool checks that mechanically, as Git hooks or in CI.
 
     orthrus-scrub install                 # commit-msg, pre-commit and pre-push hooks in this clone
     orthrus-scrub staged                  # what a pre-commit hook checks: the staged diff
     orthrus-scrub message .git/COMMIT_EDITMSG
-    orthrus-scrub range origin/main..HEAD # every commit in a range: messages and diffs (CI)
+    orthrus-scrub range origin/main..HEAD # every commit in a range, merges included (CI)
     orthrus-scrub tree                    # every tracked file, for a first audit of a repository
 
 Findings print as ``where: category: detail`` and the exit status is 1. A line that must keep a
 match (a documented example path) can carry the marker ``scrub: allow``.
+
+A range checks every commit's author, committer and message, merges included, and the diff of
+every commit that is not a merge (what a merge brings in is checked in the commits it merges). A
+merge made on a forge's website passes no local hook: after a fetch, ``range main..origin/main``
+checks it.
 
 The built-in checks name no one: ``*-by:`` and ``*session:`` trailers, local paths, email
 addresses and ``.local/``. What else is private is the machine's to say, in a rules file kept out
 of every repository: ``~/.config/wb/scrub-rules.toml``, or the file ``ORTHRUS_SCRUB_RULES_FILE``
 names. It takes the same keys as the settings below:
 
-    attribution-names = ["examplebot"]       # regular expressions: names a co-author trailer or a
-                                             # "made with ..." line must not credit
+    attribution-names = ["examplebot"]       # regular expressions: names that no co-author
+                                             # trailer, "made with ..." line, author or committer
+                                             # may credit
     deny-patterns = ['example\\.chat/share']  # regular expressions no line may match
     deny-paths = [".tooling/**"]             # files that must stay untracked
 
@@ -77,6 +83,14 @@ def attribution_patterns(names: list[str]) -> list[re.Pattern[str]]:
     return patterns
 
 
+def credited_pattern(names: list[str]) -> re.Pattern[str] | None:
+    """One of ``names`` (regular expressions) as a whole word, for a commit's author or committer."""
+    if not names:
+        return None
+    either = "|".join(f"(?:{name})" for name in names)
+    return re.compile(rf"(?i)\b({either})\b")
+
+
 def private_rules() -> dict[str, Any]:
     """The machine's rules file: the one ``ORTHRUS_SCRUB_RULES_FILE`` names, else ``RULES_FILE``."""
     named = os.environ.get("ORTHRUS_SCRUB_RULES_FILE")
@@ -126,6 +140,7 @@ class Rules:
     terms: list[re.Pattern[str]]
     attribution: list[re.Pattern[str]] = field(default_factory=lambda: list(TRAILERS))
     deny_patterns: list[re.Pattern[str]] = field(default_factory=list)
+    credited: re.Pattern[str] | None = None  # names no author or committer may carry
 
     @staticmethod
     def load(root: Path) -> Rules:
@@ -143,13 +158,15 @@ class Rules:
             if path is not None and path.is_file():
                 lines = path.read_text(encoding="utf-8").splitlines()
                 terms += [t.strip() for t in lines if t.strip() and not t.startswith("#")]
+        names = both("attribution-names")
         return Rules(
             allow_paths=both("allow-paths"),
             deny_paths=DEFAULT_DENY_PATHS + both("deny-paths"),
             allow_emails=[re.compile(p, re.I) for p in DEFAULT_ALLOW_EMAILS + both("allow-emails")],
             terms=[re.compile(rf"(?i)(?<!\w){re.escape(t)}(?!\w)") for t in terms],
-            attribution=attribution_patterns(both("attribution-names")),
+            attribution=attribution_patterns(names),
             deny_patterns=[re.compile(p) for p in both("deny-patterns")],
+            credited=credited_pattern(names),
         )
 
 
@@ -273,10 +290,24 @@ def check_staged(root: Path, rules: Rules) -> list[Finding]:
     return check_diff(diff, [n for n in names if n], rules)
 
 
-def check_commit(root: Path, sha: str, rules: Rules) -> list[Finding]:
+def check_identity(identity: str, place: str, rules: Rules) -> Iterator[Finding]:
+    """A commit's author or committer, ``name <address>``: no personal data, no credited name."""
+    credited = rules.credited.search(identity) if rules.credited else None
+    if credited:
+        yield Finding(place, "attribution", repr(credited.group(0)))
+    yield from check_line(identity, place, rules)
+
+
+def check_commit(root: Path, sha: str, rules: Rules, merge: bool = False) -> list[Finding]:
+    """A commit's author, committer and message, and its diff unless it is a merge."""
     short = sha[:10]
-    message = git(root, "log", "-1", "--format=%B", sha)
-    findings = list(check_text(message, f"{short} message", rules))
+    shown = git(root, "log", "-1", "--format=%an <%ae>%n%cn <%ce>%n%B", sha)
+    author, committer, message = shown.split("\n", 2)
+    findings = list(check_identity(author, f"{short} author", rules))
+    findings += check_identity(committer, f"{short} committer", rules)
+    findings += check_text(message, f"{short} message", rules)
+    if merge:
+        return findings  # what a merge brings in is checked in the commits it merges
     names = git(root, "show", "--format=", "--name-only", "--diff-filter=ACMR", "-z", sha)
     diff = git(root, "show", "--format=", *DIFF_ARGS, sha)
     findings += check_diff(diff, [n for n in names.split("\0") if n.strip()], rules, f"{short} ")
@@ -284,10 +315,10 @@ def check_commit(root: Path, sha: str, rules: Rules) -> list[Finding]:
 
 
 def check_range(root: Path, revisions: list[str], rules: Rules) -> list[Finding]:
-    shas = git(root, "rev-list", "--reverse", "--no-merges", *revisions).split()
     findings: list[Finding] = []
-    for sha in shas:
-        findings += check_commit(root, sha, rules)
+    for line in git(root, "rev-list", "--reverse", "--parents", *revisions).splitlines():
+        sha, *parents = line.split()
+        findings += check_commit(root, sha, rules, merge=len(parents) > 1)
     return findings
 
 
