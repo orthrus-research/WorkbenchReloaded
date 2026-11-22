@@ -45,7 +45,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 | `probe` | probes and harnesses: JVM runs without the game | `jdk-matrix`, `api-consumer` |
 | `source` | formatting and determinism of source | `format`, `strict-math` |
 | `lab` | game instances and sessions: host routines, dedicated servers in the container, runtimes assembled from launcher metadata, and a server with several clients | `ensure`, `snapshot`, `reset`, `instances`, `remove`, `dedupe`, `store-gc`, `play`, `turn`, `script`, `prepare`, `migrate`, `prune-instances`, `gpu`, `queue`, `server`, `server-scenario`, `session`, `assemble`, `install-server`, `userdev` |
-| `drive` | workload drivers: what a game session is made to do and see | `tour-lint`, `path`, `path-check`, `gallery` |
+| `drive` | workload drivers: what a game session is made to do and see | `tour-lint`, `path`, `path-check`, `gallery`, `send` |
 | `frames` | capture and visual verification | `compare`, `measure`, `check`, `quality` |
 | `world` | world saves on disk and generated worlds: reading, comparing, goldens | `read`, `diff`, `digest-diff`, `light-diff`, `golden`, `preview` |
 | `render` | shader packs, GPU test runs and GPU qualification | `validate`, `load-verdict`, `gl-gate`, `gl-run` |
@@ -108,6 +108,20 @@ through its Gradle home's `init.d`, and `toolchain.repo-init gradle_home=...` wr
 host (the repository then lives under a root, such as the out root). Gradle asks the repository only for the exact
 versions it holds, so it never stands in for what a public repository still serves. `repo-list` shows what it holds
 and why; `repo-verify` hashes it all again.
+
+## Game sessions without a launcher
+
+`lab.assemble` turns a launcher instance (a Prism or MultiMC folder, or the .zip it exports) into a runtime: every
+library by the target's rules, the natives, the client JAR and the assets, each fetched against the SHA-1 its
+metadata names into a shared cache, and `runtime.json` naming the main class, arguments and class path.
+`lab.install-server` installs a dedicated server with its loader's own installer, pinned by SHA-256. `lab.session`
+then runs one server and several clients started straight from the runtime, each with an offline name, waits for
+them to join, can kill one on cue, and keeps every console, log and capture; `desktop = "hidden"` keeps the clients
+on a desktop of their own that never takes the input (Windows). `lab.userdev` runs a project's development client
+from its own build in a fresh run folder, and an exit code alone never passes it: the receipt the game writes does.
+
+The drive agent (`mods/drive-agent`) is a small client mod a session adds: it captures views once they settle and
+answers requests on the game's own thread (status, screenshot, chat, keys, clicks), which `drive.send` writes.
 
 ## The Gradle plugin
 

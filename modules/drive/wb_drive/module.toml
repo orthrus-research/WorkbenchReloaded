@@ -110,3 +110,16 @@ result.rows = { type = "int" }
 result.views = { type = "int" }
 result.commands = { type = "int" }
 result.findings = { type = "int" }
+
+[[command]]
+name = "send"
+summary = "Send one request to a running client's drive agent (mods/drive-agent) through its inbox and wait for its answer: status, screenshot, chat, key, click, close or quit, done on the game's own thread."
+handler = "wb_drive.agent:send"
+runs_on = ["host"]
+resources = { cpu = 0.1 }
+params.inbox = { type = "path.out", summary = "the agent's inbox (-Dwb.driver.inbox; by default <game folder>/wb-inbox)" }
+params.outbox = { type = "path.out", optional = true, summary = "its outbox; default: the inbox's sibling with outbox in place of inbox" }
+params.action = { type = "string", summary = "status, screenshot, chat, key, click, close or quit" }
+params.args = { type = "object", default = {}, summary = "the action's own values: name (screenshot, key), text (chat), ticks (key), x, y, button (click)" }
+params.timeout = { type = "duration", default = "60s", summary = "how long the agent has to answer" }
+result.answer = { type = "object", optional = true }

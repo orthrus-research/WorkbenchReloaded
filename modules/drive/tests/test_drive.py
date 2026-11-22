@@ -746,5 +746,70 @@ class Commands(unittest.TestCase):
             self.assertIn(message, result.summary)
 
 
+class AgentSend(unittest.TestCase):
+    """drive.send against a fake agent that answers its inbox the way the mod does."""
+
+    def setUp(self):
+        import threading
+        self.root = Path(tempfile.mkdtemp(prefix="wb-send-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.inbox, self.outbox = self.root / "wb-inbox", self.root / "wb-outbox"
+        self.inbox.mkdir()
+        self.outbox.mkdir()
+        self.stop = threading.Event()
+        self.seen = []
+        self.agent = threading.Thread(target=self.serve, daemon=True)
+        self.agent.start()
+        self.addCleanup(self.stop.set)
+
+    def serve(self):
+        import os
+        import time
+        while not self.stop.is_set():
+            for request in sorted(self.inbox.glob("*.json")):
+                body = json.loads(request.read_text(encoding="utf-8"))
+                self.seen.append(body)
+                if body["action"] == "status":
+                    reply = {"id": request.stem, "ok": True, "result": {"world": True, "fps": 60}}
+                elif body["action"] == "quit":
+                    continue  # this agent never answers a quit
+                else:
+                    reply = {"id": request.stem, "ok": False, "error": "IllegalStateException: no screen is open"}
+                part = self.outbox / f"{request.stem}.json.part"
+                part.write_text(json.dumps(reply), encoding="utf-8")
+                os.replace(part, self.outbox / f"{request.stem}.json")
+                request.unlink()
+            time.sleep(0.05)
+
+    def send(self, action, args=None, timeout=5):
+        from wb_core.module import Context
+        from wb_drive import agent
+        ctx = Context({"job": f"j-{action}", "command": "drive.send", "module": "drive", "work": str(self.root / "w"),
+                       "out": str(self.root / "o" / action)}, lambda event: None)
+        return ctx, agent.send(ctx, str(self.inbox), action, args or {}, timeout)
+
+    def test_an_answer_comes_back(self):
+        ctx, result = self.send("status")
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        self.assertEqual(result["answer"]["result"], {"world": True, "fps": 60})
+        self.assertEqual(list(self.outbox.iterdir()), [])  # the answer is taken
+
+    def test_a_refusal_and_no_answer_are_findings(self):
+        ctx, _ = self.send("click", {"x": 1, "y": 2})
+        self.assertEqual(ctx.findings, ["the agent refused click: IllegalStateException: no screen is open"])
+        self.assertEqual(self.seen[-1], {"action": "click", "x": 1, "y": 2})
+        ctx, result = self.send("quit", timeout=0.5)
+        self.assertIsNone(result["answer"])
+        self.assertIn("no answer to quit", ctx.findings[0])
+        self.assertEqual(list(self.inbox.glob("*.json")), [])  # the unanswered request is taken back
+
+    def test_requests_it_cannot_send_are_refused(self):
+        from wb_core.module import ParamError
+        with self.assertRaises(ParamError):
+            self.send("fly")
+        with self.assertRaises(ParamError):
+            self.send("status", {"action": "quit"})
+
+
 if __name__ == "__main__":
     unittest.main()

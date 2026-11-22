@@ -1,0 +1,57 @@
+// The Workbench drive agent: a small client mod for 1.12.2 on Cleanroom that captures views when they settle and
+// answers requests a session writes to its inbox. Nothing runs unless a system property turns it on (README.md).
+plugins {
+    id 'java'
+    id 'xyz.wagyourtail.unimined' version '1.4.43-kappa'
+}
+
+group = 'cc.orthrus.wb'
+version = mod_version
+
+base {
+    archivesName = 'wbdrive'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(26)
+    }
+}
+
+// Bytecode for Java 21, the oldest Java Cleanroom runs on.
+tasks.withType(JavaCompile).configureEach {
+    options.release = 21
+    options.encoding = 'UTF-8'
+    // classfile: the game's libraries name annotation classes they do not ship
+    options.compilerArgs.addAll(['-Xlint:all,-options,-processing,-classfile', '-Werror'])
+}
+
+unimined.minecraft {
+    version '1.12.2'
+    mappings {
+        mcp('stable', '39-1.12')
+    }
+    cleanroom {
+        loader cleanroom_api
+    }
+    defaultRemapJar = false
+    remap(tasks.named('jar').get())
+}
+
+processResources {
+    inputs.property('version', project.version)
+    filesMatching('mcmod.info') {
+        expand(version: project.version)
+    }
+}
+
+jar {
+    archiveClassifier = 'dev'
+    finalizedBy tasks.named('remapJar')
+}
+
+// The same JAR from the same sources on every machine.
+tasks.withType(AbstractArchiveTask).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
