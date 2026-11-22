@@ -26,7 +26,7 @@ from . import __version__, types
 from .db import Database, dumps
 from .logs import REDACT, LogHub
 from .manifest import Command, Module
-from .module import sha256_tree
+from .module import ParamError, sha256_tree
 from .paths import PathError, PathMap
 from .requirements import Activation, Checker, Reason
 from .settings import Settings
@@ -725,6 +725,8 @@ class Workbench:
                                    {k: v for k, v in data.items() if k in command.result})
                 except types.ValueError_ as error:
                     outcome, summary = "environment", f"handler result does not match its schema: {error}"
+        except ParamError as error:
+            outcome, summary = "usage", str(error)
         except Exception as error:  # noqa: BLE001
             self.hub.error(f"job failed in the core: {error}", job=job, module=entry.module.name)
             outcome, summary = "environment", f"{type(error).__name__}: {error}"
@@ -871,8 +873,8 @@ class Workbench:
         return inputs
 
     def _input(self, name: str, spec: dict, host_path: str, path: Path) -> dict:
-        if not path.exists():
-            raise FileNotFoundError(f"input {name} does not exist: {host_path}")
+        if not path.exists():  # the request names a file that is not there: outcome usage, as a handler's would be
+            raise ParamError(f"input {name} does not exist: {host_path}")
         if spec.get("digest") == "git":
             # A checkout's files, build output and caches included, can take hours to hash through a mount;
             # the command reads it through git and reports the commit or tree it read.

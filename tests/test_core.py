@@ -388,6 +388,19 @@ class Lifecycle(unittest.TestCase):
         self.assertFalse(changed["cache"]["hit"])
         self.assertEqual(changed.data.sizes, [1, 3])
 
+    def test_an_input_path_that_is_not_there_is_a_usage_refusal(self):
+        there = self.d.data / "list-there.txt"
+        there.write_text("a", encoding="utf-8")
+        gone = self.d.data / "not-there.txt"
+        for command, params in (("selftest.sizes", {"sources": [str(there), str(gone)]}),
+                                ("selftest.checkout", {"repo": str(gone)})):
+            with self.subTest(command=command):
+                result = self.c.submit(command, params).result(timeout=60)
+                self.assertEqual(result.outcome, "usage", result.summary)  # the request's mistake, not the machine's
+                self.assertIn("does not exist", result.summary)
+                self.assertIn("not-there.txt", result.summary)
+                self.assertNotIn("Error", result.summary)
+
     def test_a_checkout_input_is_recorded_by_its_head_not_hashed(self):
         import subprocess
         repo = self.d.data / "checkout"
