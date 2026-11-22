@@ -216,6 +216,21 @@ params.execute = { type = "bool", default = false }
 # Dedicated servers need no GPU and no host: these run in the container (wb_lab/server.py).
 params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 [[command]]
+name = "install-server"
+summary = "Install a dedicated server with its loader's own installer, the installer pinned by SHA-256: every installed file is kept by size and SHA-256 with a receipt, and the folder is a stopped server for lab.server and lab.session. The EULA is accepted only when the request says eula = true."
+handler = "wb_lab.install:install_server"
+resources = { cpu = 1 }
+timeout = "2h"
+params.installer = { type = "path.in", summary = "the loader's installer JAR" }
+params.sha256 = { type = "sha256", summary = "its SHA-256: another installer is refused before anything runs" }
+params.jdk = { type = "string", default = "26", summary = "the JDK that runs the installer, as Workbench names them" }
+params.launch = { type = "list", items = "string", default = ["{java}", "-jar", "{installer}", "--installServer", "{target}"], summary = "the installer's command line: {java}, {installer} and {target} (the folder it installs into) are filled in" }
+params.eula = { type = "bool", default = false, summary = "true writes eula.txt, recording that the requester accepts the Minecraft EULA for this folder" }
+params.timeout = { type = "duration", default = "30m", summary = "the installer is stopped after this" }
+result.server = { type = "string", optional = true }
+result.files = { type = "int", optional = true }
+
+[[command]]
 name = "assemble"
 summary = "Assemble a game runtime from a launcher instance's metadata: libraries by the target's rules, natives, the client JAR and assets fetched against their SHA-1 into a shared cache (or found in candidate folders), the natives unpacked, and runtime.json naming the main class, arguments and class path. Starts nothing."
 handler = "wb_lab.assemble:assemble"
