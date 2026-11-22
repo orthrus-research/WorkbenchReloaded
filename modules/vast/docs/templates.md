@@ -26,7 +26,7 @@ host paths: absolute, or relative to the machine's `[modules.vast] root` (the wa
 | Key | Default | What it is |
 |---|---|---|
 | `folder` | (required) | the folder of the template's files; all of them go into the bundle |
-| `script` | `run.sh` | the entry script in the folder; the rental runs `bash /root/<its name> <run.args>` |
+| `script` | `run.sh` | the entry script in the folder; the rental runs `bash /root/<its name> <run.args>`. It and every `.sh` file in the folder need LF line endings: one with CRLF (a Windows checkout with autocrlf) is refused before anything is rented |
 | `exclude` | `[]` | globs of folder files to leave out |
 | `summary` | `""` | what the template runs |
 | `purpose` | `measurement` | recorded with the rental |
