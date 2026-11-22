@@ -3,7 +3,7 @@
 An input with a recipe is built in a throwaway clean tree: a shared clone of its repository at the pinned commit, so
 the checkout is only read (as ``runs.at-commit`` and ``toolchain.rebuild`` do), where the recipe's steps run in
 order. A recipe's ``beside`` checkouts are clean trees too, each at its own pinned commit in the folder next to the
-tree it names (``../Cubature``), for steps that read a sibling checkout the way a project's own tools expect. A step
+tree it names (``../Engine``), for steps that read a sibling checkout the way a project's own tools expect. A step
 may name ``{python}`` (Workbench's interpreter), ``{tree}`` (the clean tree) and ``{beside.<name>}``; it gets every JDK as
 ``JAVA_HOME_<major>_X64`` (and ``JAVA_HOME`` for the recipe's ``jdk``), ``WB_PIN_CACHE`` and the recipe's ``env``.
 The files the recipe's ``artifacts`` globs match, relative to its ``base`` folder and less its ``exclude``, are
