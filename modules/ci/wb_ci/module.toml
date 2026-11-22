@@ -76,3 +76,19 @@ handler = "wb_tools.adapter:run_tool"
 aliases = ["tools.scrub"]
 params.argv = { type = "list", items = "string", default = [], summary = "the tool's own arguments; absolute host paths are translated" }
 params.cwd = { type = "path.in", optional = true, digest = "git", summary = "run in this folder (a project checkout)" }
+
+[[command]]
+name = "matrix"
+summary = "Run a project's command once per Python on the host (a portability lane that needs no GPU): a clean clone of its commit, each interpreter by version (py launcher on Windows, pythonX.Y elsewhere) or path, an environment per version from requirements when given, and each version's result kept."
+handler = "wb_ci.matrix:matrix"
+runs_on = ["host"]
+resources = { cpu = 1 }
+timeout = "6h"
+params.checkout = { type = "path.in", digest = "git", summary = "the project checkout" }
+params.command = { type = "list", items = "string", summary = "the command, naming the interpreter as {python} ({python} -m unittest discover)" }
+params.pythons = { type = "list", items = "string", summary = "the Pythons: versions (3.12) or interpreter paths" }
+params.commit = { type = "string", default = "", summary = "the commit to clone; empty: the checkout's HEAD" }
+params.requirements = { type = "list", items = "string", default = [], summary = "requirements files (relative to the checkout) each version's environment is made from; empty: the bare interpreters" }
+params.timeout = { type = "duration", default = "30m", summary = "each version's run is stopped after this" }
+result.commit = { type = "string", optional = true }
+result.results = { type = "list", optional = true }

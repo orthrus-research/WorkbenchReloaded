@@ -123,6 +123,8 @@ def run(ctx: Context, args: list, *, cwd, timeout: float, env: dict | None = Non
         if process.poll() is None:  # the timeout, a cancel, or an interrupt
             kill_tree(process)
     reader.join(5)
+    if not reader.is_alive():  # a grandchild still holding the pipe keeps the reader; closing under it would race
+        process.stdout.close()
     return Ran(code, "\n".join(lines), round(time.monotonic() - started, 3))
 
 
