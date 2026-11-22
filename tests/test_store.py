@@ -153,6 +153,20 @@ class Store(unittest.TestCase):
         self.assertEqual(list((store / "blobs").rglob("*.*")), [])
         self.assertEqual([p for p in (store / "blobs").rglob("*") if p.is_file()], [])
 
+    def test_7_packs_join_the_recipe(self):
+        pack = self.d.data / "light-shaders.zip"  # under the daemon's data root
+        pack.write_bytes(b"a shader pack")
+        plain = self.ensure("epsilon")
+        packed = self.ensure("zeta", packs=[str(pack)])
+        self.assertEqual(packed.outcome, "ok", packed.summary)
+        self.assertNotEqual(packed.data.recipe, plain.data.recipe)  # another recipe, never the same template
+        shaders = Path("client") / "shaderpacks"
+        self.assertEqual((self.instances / "zeta" / shaders / "light-shaders.zip").read_bytes(), b"a shader pack")
+        self.assertFalse((self.instances / "epsilon" / shaders).exists())
+        again = self.ensure("eta", packs=[str(pack)])
+        self.assertFalse(again.data.prepared_template)  # the same packs: the same template
+        self.assertTrue((self.instances / "eta" / shaders / "light-shaders.zip").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

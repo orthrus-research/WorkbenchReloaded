@@ -25,6 +25,7 @@ world_parts = ["server/world", "server/world.cubature-cache", "client/Distant_Ho
 rewrite = ["standalone.json", "client/client-runtime.json"]
 linkable_dirs = ["server/libraries", "client/natives"]
 linkable_suffixes = [".jar"]
+packs_dir = "client/shaderpacks"
 lab_root = ".local"
 stays = ["toolchains"]
 lab_items = [["cubic-standalone", "instances"], ["cubic-lab", "lab instances"], ["frozen", "frozen builds"],

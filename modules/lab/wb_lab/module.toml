@@ -18,6 +18,8 @@ asset_base = { type = "string", default = "https://resources.download.minecraft.
 runtime_cache = { type = "string", default = "", summary = "where lab.assemble keeps libraries, client JARs and assets, shared by every runtime; empty: <state>/cache/runtime (put it under a configured root for the host to use what it holds)" }
 library_candidates = { type = "list", items = "string", default = [], summary = "folders lab.assemble searches by file name for a library with the SHA-1 its metadata names before downloading it (a Gradle cache, a launcher's libraries)" }
 asset_candidates = { type = "list", items = "string", default = [], summary = "asset folders (holding objects/ and indexes/) lab.assemble searches before downloading" }
+pack_cache = { type = "string", default = "", summary = "where lab.pack keeps pack files by SHA-512, shared by every pack; empty: <state>/cache/packs" }
+pack_hosts = { type = "list", items = "string", default = ["cdn.modrinth.com", "github.com", "raw.githubusercontent.com", "gitlab.com"], summary = "the hosts lab.pack downloads from (by default the ones the Modrinth pack format allows)" }
 
 [[command]]
 name = "gpu"
@@ -46,6 +48,7 @@ params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
 params.seed = { type = "int", optional = true }
 params.scale = { type = "int", optional = true }
 params.args = { type = "list", items = "string", default = [], summary = "further prepare arguments" }
+params.packs = { type = "list", items = "path.in", default = [], summary = "shader or resource packs laid into the instance's packs_dir (the profile's); they are part of its recipe" }
 
 [[command]]
 name = "play"
@@ -146,6 +149,7 @@ params.verify = { type = "bool", default = true, summary = "check the instance w
 result.recipe = { type = "string" }
 result.reused = { type = "bool" }
 params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
+params.packs = { type = "list", items = "path.in", default = [], summary = "shader or resource packs laid into the instance's packs_dir (the profile's); they are part of its recipe" }
 
 [[command]]
 name = "snapshot"
@@ -252,6 +256,18 @@ params.deadline = { type = "duration", default = "10m", summary = "the run is st
 params.jdk = { type = "string", default = "26", summary = "the JDK Gradle runs on, as the host names them; empty: the environment's" }
 result.exit = { type = "int", optional = true }
 result.captures = { type = "int", optional = true }
+
+[[command]]
+name = "pack"
+summary = "Get a release-exact modpack from its Modrinth pack file (.mrpack): each file for the chosen side downloaded from a host pack_hosts allows and checked by its SHA-512, kept in a shared cache, the overrides laid over, with a receipt. Starts nothing."
+handler = "wb_lab.pack:pack"
+resources = { cpu = 1 }
+timeout = "2h"
+params.pack = { type = "path.in", summary = "the pack file (.mrpack)" }
+params.side = { type = "enum", values = ["client", "server"], default = "client", summary = "the side the files are for" }
+params.optional = { type = "bool", default = false, summary = "take the files the pack marks optional too" }
+result.pack = { type = "string", optional = true }
+result.files = { type = "int", optional = true }
 
 [[command]]
 name = "assemble"

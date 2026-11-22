@@ -44,7 +44,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 | `mixin` | Mixin and patches: configurations and application verified without the game | `remap-proof`, `apply`, `doctor` |
 | `probe` | probes and harnesses: JVM runs without the game | `jdk-matrix`, `api-consumer` |
 | `source` | formatting and determinism of source | `format`, `strict-math` |
-| `lab` | game instances and sessions: host routines, dedicated servers in the container, runtimes assembled from launcher metadata, and a server with several clients | `ensure`, `snapshot`, `reset`, `instances`, `remove`, `dedupe`, `store-gc`, `play`, `turn`, `script`, `prepare`, `migrate`, `prune-instances`, `gpu`, `queue`, `server`, `server-scenario`, `session`, `assemble`, `install-server`, `userdev` |
+| `lab` | game instances and sessions: host routines, dedicated servers in the container, runtimes assembled from launcher metadata, and a server with several clients | `ensure`, `snapshot`, `reset`, `instances`, `remove`, `dedupe`, `store-gc`, `play`, `turn`, `script`, `prepare`, `migrate`, `prune-instances`, `gpu`, `queue`, `server`, `server-scenario`, `session`, `assemble`, `install-server`, `userdev`, `pack` |
 | `drive` | workload drivers: what a game session is made to do and see | `tour-lint`, `path`, `path-check`, `gallery`, `send` |
 | `frames` | capture and visual verification | `compare`, `measure`, `check`, `quality` |
 | `world` | world saves on disk and generated worlds: reading, comparing, goldens | `read`, `diff`, `digest-diff`, `light-diff`, `golden`, `preview` |
@@ -114,7 +114,8 @@ and why; `repo-verify` hashes it all again.
 `lab.assemble` turns a launcher instance (a Prism or MultiMC folder, or the .zip it exports) into a runtime: every
 library by the target's rules, the natives, the client JAR and the assets, each fetched against the SHA-1 its
 metadata names into a shared cache, and `runtime.json` naming the main class, arguments and class path.
-`lab.install-server` installs a dedicated server with its loader's own installer, pinned by SHA-256. `lab.session`
+`lab.install-server` installs a dedicated server with its loader's own installer, pinned by SHA-256. `lab.pack` gets
+a release-exact modpack from its Modrinth pack file, every file checked by its SHA-512. `lab.session`
 then runs one server and several clients started straight from the runtime, each with an offline name, waits for
 them to join, can kill one on cue, and keeps every console, log and capture; `desktop = "hidden"` keeps the clients
 on a desktop of their own that never takes the input (Windows). `lab.userdev` runs a project's development client
