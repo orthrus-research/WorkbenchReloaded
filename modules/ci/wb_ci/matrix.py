@@ -2,10 +2,11 @@
 
 The checkout's commit (``commit``, by default its HEAD) is cloned clean once, and for each of ``pythons`` the
 command runs in that clone with ``{python}`` naming the interpreter: in ``folder`` inside it, with ``env`` added to
-its environment (the record keeps the variables' names, not their values). A Python is named by version (``3.12``:
-found through the ``py`` launcher on Windows, as ``python3.12`` elsewhere) or by its path. With ``requirements``,
-each version gets an environment of its own, made from those files (relative to the checkout's top), so the run
-tests the packages that version resolves.
+its environment (the record keeps the variables' names, not their values). A Python is named by its path or by
+version (``3.12``): the ``py`` launcher's own and every interpreter it lists on Windows, ``python3.12`` on PATH
+elsewhere, and uv's where uv is installed, each asked its version before it is used. With ``requirements``, each
+version gets an environment of its own, made from those files (relative to the checkout's top), so the run tests
+the packages that version resolves.
 Each version's exit code, time and last lines are kept; a failing version, or one the host lacks, is a finding.
 Host routines without a GPU run beside a lease holder, so the matrix never waits for a game.
 """
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -26,19 +28,56 @@ from wb_build import checkout as checkouts
 SCHEMA = "wb.ci.matrix/1"
 
 
-def find_python(spec: str) -> str | None:
-    """The interpreter a version (3.12) or a path names on this host, or None."""
-    if os.sep in spec or "/" in spec:
-        return spec if Path(spec).is_file() else None
-    probe = (["py", f"-{spec}"] if os.name == "nt" and shutil.which("py") else
-             [shutil.which(f"python{spec}") or f"python{spec}"])
+VERSION = re.compile(r"\d+(?:\.\d+){1,2}")
+LISTED = re.compile(r"^\s*-V:(?P<tag>\S+)\s+(?:\*\s+)?(?P<path>\S.*?)\s*$")  # a line of py -0p
+
+
+def _quiet(argv: list[str]) -> subprocess.CompletedProcess | None:
     try:
-        done = subprocess.run([*probe, "-c", "import sys; print(sys.executable)"], capture_output=True, text=True,
-                              timeout=60)
+        return subprocess.run(argv, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    path = done.stdout.strip().splitlines()[-1:] if done.returncode == 0 else []
-    return path[0] if path and Path(path[0]).is_file() else None
+
+
+def _ask(argv: list[str]) -> tuple[str, str] | None:
+    """The interpreter ``argv`` starts, as (its executable, its version), or None when it does not answer."""
+    done = _quiet([*argv, "-c", "import sys; print(sys.executable); print(sys.version.split()[0])"])
+    lines = done.stdout.strip().splitlines() if done and done.returncode == 0 else []
+    return (lines[-2], lines[-1]) if len(lines) >= 2 and Path(lines[-2]).is_file() else None
+
+
+def _candidates(spec: str) -> list[list[str]]:
+    """Where a version may be on this host, most usual first: the py launcher's own and every interpreter it lists
+    (any company's: uv's, conda's) on Windows, pythonX.Y on PATH elsewhere, and uv's where uv is installed."""
+    found = []
+    if os.name == "nt" and shutil.which("py"):
+        found.append(["py", f"-{spec}"])
+        listed = _quiet(["py", "-0p"])
+        for line in (listed.stdout.splitlines() if listed and listed.returncode == 0 else []):
+            named = LISTED.match(line)
+            if named and any(v == spec or v.startswith(spec + ".") for v in VERSION.findall(named["tag"])):
+                found.append([named["path"]])
+    elif shutil.which(f"python{spec}"):
+        found.append([shutil.which(f"python{spec}")])
+    if shutil.which("uv"):
+        located = _quiet(["uv", "python", "find", "--no-project", spec])
+        path = located.stdout.strip().splitlines()[-1:] if located and located.returncode == 0 else []
+        if path:
+            found.append(path)
+    return found
+
+
+def find_python(spec: str) -> str | None:
+    """The interpreter a version (3.12, 3.12.4) or a path names on this host, or None. A version is confirmed by
+    asking the interpreter; a name that is not a version (pypy3.10) is taken as the first lookup answers it."""
+    if os.sep in spec or "/" in spec:
+        return spec if Path(spec).is_file() else None
+    numbered = VERSION.fullmatch(spec) is not None
+    for argv in _candidates(spec):
+        answered = _ask(argv)
+        if answered and (not numbered or answered[1] == spec or answered[1].startswith(spec + ".")):
+            return answered[0]
+    return None
 
 
 def python_version(python: str) -> str:

@@ -79,10 +79,12 @@ clones a checkout's commit clean and runs one command per Python, `{python}` sta
 wb ci.matrix checkout=. 'command=["{python}","-m","unittest","discover"]' 'pythons=["3.12","3.14"]'
 ```
 
-A version is found through the `py` launcher on Windows and as `python3.12` elsewhere; an interpreter path is used
-as given. `requirements=[...]` gives each version an environment of its own; `folder=` runs the command in a folder
-of the checkout and `env=` adds variables (`'env={"PYTHONPATH":"src"}'`). Each version's exit, time and output are
-kept, with `matrix.json` over all of them; a failure, or a Python the host lacks, is a finding.
+A version is looked for where hosts keep them: the `py` launcher and every interpreter it lists on Windows (uv's and
+conda's too), `python3.12` on PATH elsewhere, and uv's wherever uv is installed, each asked its version before it is
+used. An interpreter path is used as given. `requirements=[...]` gives each version an environment of its own;
+`folder=` runs the command in a folder of the checkout and `env=` adds variables (`'env={"PYTHONPATH":"src"}'`).
+Each version's exit, time and output are kept, with `matrix.json` over all of them; a failure, or a Python the host
+lacks, is a finding.
 
 ### Writing jobs for Workbench
 
