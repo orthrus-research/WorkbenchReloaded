@@ -122,8 +122,17 @@ def prepare(ctx: Context, name: str, args: list, seed=None, scale=None, profile:
     return {"instance": name, "exit": done.returncode}
 
 
-def play(ctx: Context, name: str, tour: str, window: str, options: str, label: str, args: list, profile: str = ""):
+def play(ctx: Context, name: str, tour: str, window: str, options: str, label: str, args: list, profile: str = "",
+         collect: list | None = None):
     launcher, p = _launcher(ctx), _profile(ctx)
+    extra = []
+    for item in collect or []:
+        if not (isinstance(item, list) and len(item) == 2 and all(isinstance(x, str) and x for x in item)):
+            raise ParamError(f"collect: {item!r} is not a [file in the instance, name to keep it as] pair")
+        relative, kept_as = item
+        if relative.startswith(("/", "\\")) or ".." in relative.replace("\\", "/").split("/") or "/" in kept_as:
+            raise ParamError(f"collect: {relative!r} must stay inside the instance and {kept_as!r} be a plain name")
+        extra.append((relative, kept_as))
     if not os.environ.get("WB_TURN_TOKEN"):
         raise EnvironmentProblem("play must run under the GPU lease (wb-host takes it for this routine)")
     instance = _instances(ctx) / name
@@ -138,7 +147,7 @@ def play(ctx: Context, name: str, tour: str, window: str, options: str, label: s
     out = ctx.out
     (out / f"{label}-play.log").write_text(done.stdout, encoding="utf-8")
     ctx.output(f"{label}-play-log", out / f"{label}-play.log")
-    for relative, kept_as in p["collect"]:
+    for relative, kept_as in [*p["collect"], *extra]:
         source = instance / relative
         if source.is_file():
             shutil.copy2(source, out / f"{label}-{kept_as}")
@@ -150,7 +159,7 @@ def play(ctx: Context, name: str, tour: str, window: str, options: str, label: s
         ctx.output(f"{label}-captures", target)
         ctx.measure("captures", sum(1 for _ in target.glob("*.png")))
     if done.returncode != 0:
-        collected = [out / f"{label}-{kept_as}" for _relative, kept_as in p["collect"]]
+        collected = [out / f"{label}-{kept_as}" for _relative, kept_as in [*p["collect"], *extra]]
         texts = [path.read_text(encoding="utf-8", errors="replace") for path in collected if path.is_file()]
         why = explain(p["failures"], texts + [done.stdout])
         ctx.finding(f"tour {Path(tour).name} exited {done.returncode}" + (f": {why}" if why else ""))

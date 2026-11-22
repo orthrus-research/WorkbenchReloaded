@@ -17,7 +17,9 @@ BASE = {"launcher": "run.py", "instances": "instances", "prepare": ["{python}", 
         "play": ["{python}", "run.py", "play", "{name}"]}
 
 
-class NamedProfiles(unittest.TestCase):
+class Checkouts(unittest.TestCase):
+    """Two launcher checkouts and a config naming a profile for each; no tests of its own."""
+
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         root = Path(self.folder.name)
@@ -34,6 +36,8 @@ class NamedProfiles(unittest.TestCase):
     def ctx(self, name: str = ""):
         return SimpleNamespace(config=self.config, params={"profile": name} if name else {})
 
+
+class NamedProfiles(Checkouts):
     def test_a_job_picks_its_harness_and_the_default_stays(self):
         self.assertEqual(profile.merged(self.config)["instances"], "instances")
         self.assertEqual(profile.merged(self.config, "other")["instances"], "runs")
@@ -71,6 +75,19 @@ class NamedProfiles(unittest.TestCase):
         self.assertNotIn("profile", default)  # the default profile's recipe keys are what they were
         self.assertEqual(other["profile"], "other")
         self.assertNotEqual(default, other)
+
+
+class PlayCollect(Checkouts):
+    """A play may keep more files than its profile names; what it names must stay inside the instance."""
+
+    def test_a_bad_collect_entry_is_refused_before_anything_runs(self):
+        from wb_core.module import ParamError
+        for collect, expected in (([["only-one"]], "pair"), ([["../outside.log", "x"]], "inside the instance"),
+                                  ([["logs/a.log", "sub/name"]], "plain name")):
+            with self.subTest(expected=expected):
+                with self.assertRaises(ParamError) as raised:
+                    commands.play(self.ctx(), "inst", "tour.json", "854x480", "", "p", [], collect=collect)
+                self.assertIn(expected, str(raised.exception))
 
 
 class FailurePatterns(unittest.TestCase):

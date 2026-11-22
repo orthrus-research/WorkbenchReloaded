@@ -64,6 +64,7 @@ params.window = { type = "string", default = "1920x1080", pattern = "^[0-9]+x[0-
 params.options = { type = "string", default = "", summary = "JVM options for the client, in the profile's options_env" }
 params.label = { type = "string", default = "play" }
 params.args = { type = "list", items = "string", default = [] }
+params.collect = { type = "list", items = "list", default = [], summary = "more files to keep after this play, beside the profile's collect: [file in the instance, name to keep it as] pairs" }
 params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 
 [[command]]
