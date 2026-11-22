@@ -1,9 +1,11 @@
 """ci.matrix: a project's command run once per Python on a host, for portability (a lane with no GPU).
 
 The checkout's commit (``commit``, by default its HEAD) is cloned clean once, and for each of ``pythons`` the
-command runs in that clone with ``{python}`` naming the interpreter. A Python is named by version (``3.12``: found
-through the ``py`` launcher on Windows, as ``python3.12`` elsewhere) or by its path. With ``requirements``, each
-version gets an environment of its own, made from those files, so the run tests the packages that version resolves.
+command runs in that clone with ``{python}`` naming the interpreter: in ``folder`` inside it, with ``env`` added to
+its environment (the record keeps the variables' names, not their values). A Python is named by version (``3.12``:
+found through the ``py`` launcher on Windows, as ``python3.12`` elsewhere) or by its path. With ``requirements``,
+each version gets an environment of its own, made from those files (relative to the checkout's top), so the run
+tests the packages that version resolves.
 Each version's exit code, time and last lines are kept; a failing version, or one the host lacks, is a finding.
 Host routines without a GPU run beside a lease holder, so the matrix never waits for a game.
 """
@@ -49,15 +51,24 @@ def python_version(python: str) -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
-def matrix(ctx: Context, checkout: str, command: list, pythons: list, commit: str, requirements: list,
-           timeout: float):
-    from wb_lab import process as processes  # the lab's runner: a timeout that kills the tree, cancelling
+def inside(name: str, what: str) -> str:
+    """A path relative to the checkout's top that stays inside it, as POSIX; else a usage error."""
+    path = Path(name)
+    if path.is_absolute() or path.drive or ".." in path.parts:
+        raise ParamError(f"{what}: {name} must be relative to the checkout's top, inside it")
+    return path.as_posix()
 
+
+def matrix(ctx: Context, checkout: str, command: list, pythons: list, commit: str, requirements: list,
+           timeout: float, folder: str = "", env: dict | None = None):
     root = Path(checkout)
     if not command or not any("{python}" in str(item) for item in command):
         raise ParamError("command: it must name the interpreter as {python}")
     if not pythons:
         raise ParamError("pythons: name at least one Python (a version such as 3.12, or a path)")
+    folder = inside(folder, "folder") if folder else ""
+    requirements = [inside(str(r), "requirements") for r in requirements]
+    extra = {str(name): str(value) for name, value in (env or {}).items()}
     # HEAD is the checkout's own: a linked worktree's HEAD lives in its git dir, not in the shared one clone_at reads
     named = checkouts.git(["--git-dir", str(checkouts.git_dir(ctx, root)), "rev-parse", "--verify", "--quiet",
                            f"{commit or 'HEAD'}^{{commit}}"], check=False)
@@ -65,6 +76,22 @@ def matrix(ctx: Context, checkout: str, command: list, pythons: list, commit: st
         raise ParamError(f"no commit {commit or 'HEAD'} in {ctx.host_path(root)}")
     tree = ctx.work / "tree"
     full, _ = checkouts.clone_at(ctx, root, named.stdout.strip(), tree)
+    try:
+        return _lanes(ctx, root, tree, full, command, pythons, requirements, timeout, folder, extra)
+    finally:
+        shutil.rmtree(tree, ignore_errors=True)
+
+
+def _lanes(ctx: Context, root: Path, tree: Path, full: str, command: list, pythons: list, requirements: list,
+           timeout: float, folder: str, extra: dict) -> dict:
+    from wb_lab import process as processes  # the lab's runner: a timeout that kills the tree, cancelling
+
+    where = tree / folder if folder else tree
+    if not where.is_dir():
+        raise ParamError(f"folder: {folder} is not a folder in {full[:12]}")
+    missing = [r for r in requirements if not (tree / r).is_file()]
+    if missing:
+        raise ParamError(f"requirements: {', '.join(missing)} not in {full[:12]}")
     results, problems = [], []
     for index, spec in enumerate(pythons):
         ctx.check_cancel()
@@ -88,7 +115,7 @@ def matrix(ctx: Context, checkout: str, command: list, pythons: list, commit: st
                 continue
         ctx.progress("run", msg=f"Python {spec}")
         argv = [str(item).replace("{python}", python) for item in command]
-        ran = processes.run(ctx, argv, cwd=tree, timeout=timeout)
+        ran = processes.run(ctx, argv, cwd=where, timeout=timeout, env=extra)
         version = python_version(python)
         log = ctx.out / f"python-{version or index}.log"
         log.write_text(ran.output + "\n", encoding="utf-8")
@@ -101,10 +128,9 @@ def matrix(ctx: Context, checkout: str, command: list, pythons: list, commit: st
         elif ran.code != 0:
             problems.append(f"Python {version or spec} exited {ran.code}: {(tail or ['no output'])[-1][:200]}")
     record = {"schema": SCHEMA, "checkout": ctx.host_path(root), "commit": full, "command": command,
-              "platform": sys.platform, "results": results}
+              "folder": folder, "env": sorted(extra), "platform": sys.platform, "results": results}
     (ctx.out / "matrix.json").write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
     ctx.output("matrix", ctx.out / "matrix.json")
-    shutil.rmtree(tree, ignore_errors=True)
     for problem in problems:
         ctx.finding(problem)
     if not problems:
