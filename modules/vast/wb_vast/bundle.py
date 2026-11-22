@@ -88,6 +88,16 @@ class Bundle:
         return total
 
 
+CRLF = ("has Windows line endings (CRLF), which bash on the rental cannot run; check it out with LF line endings "
+        "(for example `*.sh text eol=lf` in .gitattributes) or convert it")
+
+
+def windows_line_endings(path: Path) -> bool:
+    """Whether a script has CRLF line endings: a checkout on Windows with autocrlf makes them, and bash on a rental
+    stops at the first line. Caught here, before anything is rented."""
+    return b"\r\n" in path.read_bytes()
+
+
 def load(folder: Path, resolve, *, verify_uploads: bool = True) -> Bundle:
     """``resolve`` maps a path written in the manifest (host or container form) to a readable local path.
     ``verify_uploads`` off skips hashing the pinned uploads (a maker that has just hashed them)."""
@@ -121,6 +131,8 @@ def load(folder: Path, resolve, *, verify_uploads: bool = True) -> Bundle:
     script = folder / run.get("script", "run.sh")
     if not script.is_file():
         raise ParamError(f"bundle script {run.get('script', 'run.sh')} is missing")
+    if windows_line_endings(script):
+        raise ParamError(f"bundle script {run.get('script', 'run.sh')} {CRLF}")
     needs = data.get("needs") or {}
     return Bundle(folder=folder, name=data.get("name", folder.name), purpose=data.get("purpose", "measurement"),
                   jdks=[str(j) for j in needs.get("jdk", [])], gpu=bool(needs.get("gpu", False)), uploads=uploads,

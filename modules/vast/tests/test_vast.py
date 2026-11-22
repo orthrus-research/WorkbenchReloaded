@@ -62,7 +62,7 @@ def make_daemon(api_url: str, root: Path | None = None, vast: str = "", extra: s
 def write_bundle(folder: Path) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "payload.tar").write_bytes(b"x" * 1024)
-    (folder / "run.sh").write_text("#!/bin/bash\necho RUN done\n", encoding="utf-8")
+    (folder / "run.sh").write_bytes(b"#!/bin/bash\necho RUN done\n")  # LF on every OS, as a rental needs
     (folder / "bundle.toml").write_text(
         'name = "test-bundle"\n[needs]\njdk = ["26"]\ngpu = true\n[[upload]]\npath = "payload.tar"\n'
         '[run]\nscript = "run.sh"\ndone = "RUN done"\nfailed = \'^RUN tour .* exit [^0]\'\n', encoding="utf-8")
@@ -110,6 +110,13 @@ class Rental(unittest.TestCase):
         loaded = bundles.load(self.bundle, lambda v: v)
         self.assertEqual(loaded.stop, "pkill -f '/root/run.sh'")  # no launcher's name built in
         self.assertIsNone(loaded.partial)
+
+    def test_a_script_with_windows_line_endings_is_refused_before_renting(self):
+        folder = write_bundle(self.d.data / "bundle-crlf")
+        (folder / "run.sh").write_bytes(b"#!/bin/bash\r\necho RUN done\r\n")  # as autocrlf checks it out
+        checked = self.c.submit("vast.bundle-check", {"bundle": str(folder)}).result(timeout=60)
+        self.assertEqual(checked.outcome, "usage")
+        self.assertIn("run.sh has Windows line endings (CRLF)", checked.summary)
 
     def test_bundle_check_shows_a_pinned_bootstrap(self):
         result = self.c.submit("vast.bundle-check", {"bundle": str(self.bundle)}).result(timeout=60)
@@ -703,6 +710,18 @@ class Bundles(unittest.TestCase):
         self.assertFalse((self.d.out / "bundle-refused" / "bundle.toml").exists())
         unlabelled = self.bundle("bundle-unlabelled", lab=None)
         self.assertIn("give lab=", " ".join(unlabelled.data.problems))
+
+    def test_a_template_script_with_windows_line_endings_writes_nothing(self):
+        script = self.data / "bundles" / "tours" / "run.sh"
+        kept = script.read_bytes()
+        script.write_bytes(kept.replace(b"\n", b"\r\n"))
+        try:
+            refused = self.bundle("bundle-crlf")
+        finally:
+            script.write_bytes(kept)
+        self.assertEqual(refused.outcome, "finding")
+        self.assertIn("run.sh has Windows line endings (CRLF)", refused.summary)
+        self.assertFalse((self.d.out / "bundle-crlf" / "bundle.toml").exists())
 
     def test_a_drifted_input_or_a_changed_bundle_is_refused(self):
         lab = self.d.out / "lab-drifted"

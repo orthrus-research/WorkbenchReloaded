@@ -728,6 +728,8 @@ def bundle(ctx: Context, template: str, steps: list, values: dict, dry_run: bool
     files: dict[str, tuple] = {}
     for relative in listed:
         _place(files, f"{bundles.FILES}/{relative}", folder / relative, "the template's folder", problems)
+        if (relative == chosen.script or relative.endswith(".sh")) and bundles.windows_line_endings(folder / relative):
+            problems.append(f"{where}.folder: {relative} {bundles.CRLF}")
     if plan_dir is not None:  # a folder already written for the template, taken as it is
         compiled = templates.Compiled("")
         compiled.outputs = templates.expand_outputs(chosen, templates.Scope(label, values, {}), problems)
