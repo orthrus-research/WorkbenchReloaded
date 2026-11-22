@@ -807,5 +807,57 @@ class Repository(unittest.TestCase):
         self.assertEqual(gradle.init_script("/repo", [], []), "")  # nothing to serve
 
 
+class GradleHome(unittest.TestCase):
+    """toolchain.gradle-home: a Gradle home that lists the machine's JDKs, other lines kept."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.home = Path(self.folder.name) / "gradle-home"
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def ctx(self, jdks):
+        out = Path(self.folder.name) / "out"
+        out.mkdir(exist_ok=True)
+        notes = {}
+        return SimpleNamespace(_jdks=jdks, out=out, output=lambda *a, **k: None,
+                               summary=lambda text: notes.setdefault("summary", text)), notes
+
+    def test_the_block_is_written_once_and_replaced_in_place(self):
+        from wb_toolchain import commands, gradle_home
+        self.home.mkdir()
+        own = "org.gradle.jvmargs=-Xmx4g\n"
+        (self.home / "gradle.properties").write_text(own, encoding="utf-8")
+        ctx, notes = self.ctx({"8": "/jdk8", "26": "/jdk26", "name": "ignored"})
+        dry = commands.gradle_home(ctx, gradle_home=str(self.home))
+        self.assertFalse(dry["written"])
+        self.assertIn("dry run", notes["summary"])
+        self.assertEqual((self.home / "gradle.properties").read_text(encoding="utf-8"), own)
+        done = commands.gradle_home(ctx, gradle_home=str(self.home), write=True)
+        self.assertTrue(done["written"])
+        text = (self.home / "gradle.properties").read_text(encoding="utf-8")
+        self.assertTrue(text.startswith(own))  # the user's own line stays
+        self.assertIn("org.gradle.java.installations.paths=/jdk8,/jdk26", text)  # majors in order
+        self.assertIn("auto-detect=false", text)
+        ctx, _ = self.ctx({"26": "/jdk26", "27": "/jdk27"})
+        commands.gradle_home(ctx, gradle_home=str(self.home), write=True)
+        again = (self.home / "gradle.properties").read_text(encoding="utf-8")
+        self.assertEqual(again.count(gradle_home.BEGIN), 1)  # replaced, not appended
+        self.assertIn("paths=/jdk26,/jdk27", again)
+        if os.name == "nt":  # a backslash escapes in a properties file: Windows paths are written with slashes
+            drive = "X" + ":"  # synthetic: built in parts, as the other path tests do
+            self.assertIn(f"paths={drive}/jdk26", gradle_home.block([drive + "\\jdk26"], False, False))
+        self.assertNotIn("jdk8", again)
+        self.assertFalse(commands.gradle_home(ctx, gradle_home=str(self.home), write=True)["written"])  # no change
+
+    def test_a_machine_without_jdks_is_refused(self):
+        from wb_core.module import EnvironmentProblem
+        from wb_toolchain import commands
+        ctx, _ = self.ctx({})
+        with self.assertRaises(EnvironmentProblem):
+            commands.gradle_home(ctx, gradle_home=str(self.home))
+
+
 if __name__ == "__main__":
     unittest.main()

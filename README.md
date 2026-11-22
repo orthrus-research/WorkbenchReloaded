@@ -38,7 +38,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 
 | Module | Kind of operation | Commands |
 |---|---|---|
-| `toolchain` | JDKs, pinned inputs, pinned rebuilds, dependency repair, artifact rescue | `jdk`, `pins`, `rebuild`, `patch`, `repo-add`, `repo-list`, `repo-verify`, `repo-init` |
+| `toolchain` | JDKs, pinned inputs, pinned rebuilds, dependency repair, artifact rescue | `jdk`, `pins`, `rebuild`, `patch`, `repo-add`, `repo-list`, `repo-verify`, `repo-init`, `gradle-home` |
 | `build` | builds and their provenance | `receipt`, `freeze`, `stage`, `archive` |
 | `jar` | static analysis of compiled mods | `audit`, `survey`, `index`, `references`, `hook-targets`, `diff` |
 | `mixin` | Mixin and patches: configurations and application verified without the game | `remap-proof`, `apply`, `doctor` |

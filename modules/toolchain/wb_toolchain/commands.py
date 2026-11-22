@@ -329,3 +329,27 @@ def rebuild(ctx: Context, repo: str, commit: str, steps: list, artifact: str, sh
     ctx.output(target.name, target)
     ctx.summary(f"{target.name}: rebuilt at {sha[:12]}, the pinned SHA-256 {made[:12]}")
     return {**result, "artifact": ctx.host_path(target), "kept": ctx.host_path(tree) if keep else None}
+
+
+# -- toolchain.gradle-home --------------------------------------------------------------------------
+def gradle_home(ctx: Context, gradle_home=None, write: bool = False, auto_detect: bool = False,
+                auto_download: bool = False):
+    """Write (or, by default, show) the block of a Gradle home's gradle.properties that lists this machine's JDKs:
+    wb_toolchain.gradle_home."""
+    from . import gradle_home as homes
+    folder = homes.home_folder(gradle_home)
+    jdks = homes.jdk_homes(dict(getattr(ctx, "_jdks", {}) or {}))
+    if not jdks:
+        raise EnvironmentProblem("this machine names no JDKs (on a host: [runner] jdks)")
+    target = folder / "gradle.properties"
+    existing = target.read_text(encoding="utf-8") if target.is_file() else ""
+    text = homes.merged(existing, homes.block(jdks, auto_detect, auto_download))
+    preview = ctx.out / "gradle.properties"
+    preview.write_text(text, encoding="utf-8")
+    ctx.output("gradle.properties", preview, "text/plain")
+    if write and text != existing:
+        folder.mkdir(parents=True, exist_ok=True)
+        write_atomic(target, text.encode("utf-8"))
+    verb = "lists" if write else "would list (a dry run: write=true writes it)"
+    ctx.summary(f"{target} {verb} {len(jdks)} JDK(s), auto-detect {'on' if auto_detect else 'off'}")
+    return {"gradle_home": str(folder), "jdks": jdks, "written": bool(write and text != existing)}

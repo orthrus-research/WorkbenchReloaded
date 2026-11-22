@@ -108,3 +108,15 @@ resources = { cpu = 0.2 }
 params.machine = { type = "enum", values = ["host", "container"], default = "host", summary = "where the builds that read it run: host (the repository named by its host path, under a configured root) or container (the builds ci runs)" }
 params.gradle_home = { type = "path.out", optional = true, summary = "a Gradle user home (GRADLE_USER_HOME) whose init.d gets the script; without it the script is only returned" }
 result.script = { type = "string" }
+
+[[command]]
+name = "gradle-home"
+summary = "Show, or with write=true write, the block of a Gradle home's gradle.properties that lists this machine's JDKs, as CI's Gradle home does, so local builds pass no JDK paths of their own; other lines are kept."
+handler = "wb_toolchain.commands:gradle_home"
+runs_on = ["host"]
+params.gradle_home = { type = "string", optional = true, summary = "the Gradle home; default GRADLE_USER_HOME, else the user's .gradle" }
+params.write = { type = "bool", default = false, summary = "write it; otherwise show what it would be" }
+params.auto_detect = { type = "bool", default = false, summary = "let Gradle look for other JDKs too" }
+params.auto_download = { type = "bool", default = false, summary = "let Gradle download missing JDKs" }
+result.jdks = { type = "list" }
+result.written = { type = "bool" }
