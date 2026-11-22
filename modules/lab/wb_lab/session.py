@@ -10,7 +10,7 @@ scripted ``kill_client`` is killed ``kill_after`` the last join, and the server 
 are stopped before the server. ``desktop = "hidden"`` starts them on a hidden desktop (Windows), so they never take
 the user's focus or input.
 
-Each client's console, log and crash reports are kept under ``clients/<name>/`` in the out folder, and the receipt
+Each client's console, log, crash reports and screenshots are kept under ``clients/<name>/`` in the out folder, and the receipt
 gains the runtime (by SHA-256), each client's command line, join time, exit and what the kill did.
 """
 
@@ -245,9 +245,9 @@ class MultiSession(Session):
                 latest = client.game / "logs" / "latest.log"
                 if latest.is_file():
                     shutil.copy2(latest, kept / "latest.log")
-                crashes = client.game / "crash-reports"
-                if crashes.is_dir():
-                    shutil.copytree(crashes, kept / "crash-reports", dirs_exist_ok=True)
+                for folder in ("crash-reports", "screenshots"):  # a capture is evidence too
+                    if (client.game / folder).is_dir():
+                        shutil.copytree(client.game / folder, kept / folder, dirs_exist_ok=True)
                 for hs_err in client.game.glob("hs_err_pid*.log"):
                     shutil.copy2(hs_err, kept / hs_err.name)
             self.ctx.output("clients", self.ctx.out / "clients")

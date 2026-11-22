@@ -55,6 +55,8 @@ value = lambda flag: args[args.index(flag) + 1]
 name, game = value("--username"), pathlib.Path(value("--gameDir"))
 (game / "logs").mkdir(parents=True, exist_ok=True)
 (game / "logs" / "latest.log").write_text(f"client {name} started with {len(args)} arguments\n")
+(game / "screenshots").mkdir(exist_ok=True)
+(game / "screenshots" / "view.png").write_bytes(b"a capture")
 connection = socket.create_connection((value("--server"), int(value("--port"))))
 connection.sendall((name + "\n").encode())
 print(f"fake client {name} connected as {value('--uuid')}", flush=True)
@@ -120,6 +122,7 @@ class Sessions(unittest.TestCase):
         console = (out / "clients" / "wb1" / "console.log").read_text(encoding="utf-8")
         self.assertIn(f"fake client wb1 connected as {session.offline_uuid('wb1')}", console)
         self.assertTrue((out / "clients" / "wb1" / "latest.log").is_file())
+        self.assertTrue((out / "clients" / "wb1" / "screenshots" / "view.png").is_file())  # captures are kept
         argv = clients["wb1"]["argv"]
         self.assertIn("--server", argv)
         self.assertEqual(argv[argv.index("--tweakClass") + 1], "fake.Tweaker")
