@@ -53,6 +53,16 @@ class ScriptEnvironments(unittest.TestCase):
             self.assertEqual(len(built), 1)  # made once, then reused
             self.assertEqual(commands._script_python(Ctx(), root / "other" / "x.py"), commands._python(Ctx()))
 
+    def test_the_manifest_allows_the_longest_script_timeout(self):
+        from harness import REPO
+        from wb_core import types
+        from wb_core.manifest import parse
+        lab = parse(REPO / "modules" / "lab" / "wb_lab" / "module.toml", "wb_lab")
+        script = next(c for c in lab.commands if c.name == "script")
+        spec = script.params["timeout"]
+        self.assertEqual(types.coerce("timeout", spec, spec["default"]), 4 * 3600)
+        self.assertGreaterEqual(script.timeout, types.parse_duration(spec["max"]))
+
 
 class HostRunner(unittest.TestCase):
     @classmethod
@@ -150,6 +160,17 @@ class HostRunner(unittest.TestCase):
         self.assertEqual([s["id"] for s in result.data.steps], ["one", "two"])
         outside = self.c.submit("lab.script", {"script": str(Path(__file__))}).result(timeout=120)
         self.assertEqual(outside.outcome, "usage")
+
+    def test_a_silent_script_is_stopped_at_its_timeout(self):
+        scripts = self.lab / "scripts"
+        scripts.mkdir(exist_ok=True)
+        (scripts / "silent.py").write_text("import time\ntime.sleep(120)\n", encoding="utf-8")
+        started = time.monotonic()
+        result = self.c.submit("lab.script", {"script": str(scripts / "silent.py"), "timeout": "2s"}).result(timeout=120)
+        self.assertLess(time.monotonic() - started, 60)  # it printed nothing, and was stopped all the same
+        self.assertEqual(result.outcome, "finding", result.summary)
+        self.assertEqual(result.summary, "silent.py did not finish within 2 s; stopped")
+        self.assertIsNone(result.data.exit)
 
     def test_migrate_links_back_and_undoes(self):
         from wb import platform

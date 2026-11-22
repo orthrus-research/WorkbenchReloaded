@@ -1,7 +1,7 @@
 [module]
 name = "lab"
 version = "0.1.0"
-summary = "Native game sessions on the host through wb-host: instances, the GPU lease, and the lab home."
+summary = "Game sessions: native client sessions on the host through wb-host (instances, the GPU lease, the lab home), and headless dedicated-server sessions in the container."
 
 [config]
 launcher = { type = "string", default = "", summary = "the checkout whose launcher (the profile's launcher script) prepares and plays instances" }
@@ -72,9 +72,10 @@ summary = "Run a campaign script (Python or PowerShell) from a folder allow-list
 handler = "wb_lab.commands:script"
 runs_on = ["host"]
 resources = { gpu = true, quiet = true }
-timeout = "4h"
+timeout = "24h"
 params.script = { type = "string", summary = "a .py or .ps1 path under an allow-listed folder" }
 params.args = { type = "list", items = "string", default = [] }
+params.timeout = { type = "duration", default = "4h", min = "1s", max = "24h", summary = "the script is stopped after this, printing or not (a finding)" }
 
 [[command]]
 name = "turn"
@@ -194,3 +195,81 @@ runs_on = ["host"]
 resources = { gpu = true }
 params.days = { type = "int", default = 30, min = 1 }
 params.execute = { type = "bool", default = false }
+
+# Dedicated servers need no GPU and no host: these run in the container (wb_lab/server.py).
+[[command]]
+name = "server"
+summary = "Run a dedicated server from a copy of a stopped server folder: wait until it is ready, send console commands, let it run for ticks, seconds or until a line, stop it gracefully, and keep its console, new crash reports, chosen files and a receipt."
+handler = "wb_lab.server:server"
+resources = { cpu = 2, mem_gb = 4 }
+timeout = "24h"
+cancel_grace = "2m"
+params.server = { type = "path.in", summary = "a stopped server folder (its JARs, mods, config and world); the run uses a copy, so it is never written" }
+params.jdk = { type = "string", default = "8", summary = "the JDK that runs it, as Workbench names them (8, 17, 25); empty: none, for a launch that names no {java}" }
+params.jar = { type = "string", default = "", summary = "the server JAR for {jar}: a glob relative to the folder that matches one file; empty: the folder's only top-level JAR" }
+params.jvm_args = { type = "list", items = "string", default = [], summary = "JVM options for {jvm_args}; {port}, {ticks} and {server} are filled in" }
+params.launch = { type = "list", items = "string", default = ["{java}", "{jvm_args}", "-jar", "{jar}", "nogui"], summary = "the server's command line, run in the copy: {java}, {jvm_args} (an item of its own: the options), {jar}, {server} (the copy), {port}, {ticks}" }
+params.exclude = { type = "list", items = "string", default = [], summary = "globs of the folder left out of the copy: logs, or world for a fresh one" }
+params.files = { type = "path.in", optional = true, summary = "a folder laid over the copy: config, scripts, datapacks" }
+params.mods = { type = "list", items = "path.in", default = [], summary = "JARs added to the copy's mods folder" }
+params.properties = { type = "object", default = {}, summary = "server.properties values for the copy ({port} is filled in); unless it names server-port, the copy listens on a free port" }
+params.ready = { type = "list", items = "string", default = ['Done \([^)]*\)! For help'], summary = "regular expressions; the server is ready once each has matched a console line" }
+params.ready_timeout = { type = "duration", default = "10m", max = "2h" }
+params.commands = { type = "list", items = "any", default = [], summary = "console commands sent once it is ready, in order: a string, or {send, expect, timeout}, where expect is a regular expression the reply must match" }
+params.reply_timeout = { type = "duration", default = "60s", max = "1h", summary = "how long an expected reply, or the game time, may take" }
+params.ticks = { type = "int", default = 0, min = 0, summary = "then run until this many game ticks have passed, by the server's own game time (tick_query)" }
+params.seconds = { type = "duration", default = 0, max = "20h", summary = "then run this long" }
+params.until = { type = "list", items = "string", default = [], summary = "then run until a console line matches one of these regular expressions; the run ends at the first of ticks, seconds and until" }
+params.run_timeout = { type = "duration", default = "1h", max = "20h", summary = "the longest a run for ticks or until may take; reaching it is a finding" }
+params.tick_query = { type = "string", default = "time query gametime", summary = "the console command that prints the game time" }
+params.tick_reply = { type = "string", default = '[Tt]ime is (\d+)', summary = "its reply; group 1 is the game time in ticks" }
+params.save = { type = "bool", default = false, summary = "send save-all, and wait for it to finish, before stopping" }
+params.stop = { type = "list", items = "string", default = ["stop"], summary = "the console commands that stop the server" }
+params.grace = { type = "duration", default = "2m", max = "30m", summary = "how long it may take to stop before it is killed (a finding)" }
+params.keep = { type = "list", items = "string", default = [], summary = "globs, relative to the copy, of what to keep from it under files/ (world, logs/*.log); the console, new crash reports and the receipt are always kept" }
+result.ready = { type = "bool" }
+result.ended = { type = "string" }
+result.ticks = { type = "int" }
+result.stopped = { type = "string" }
+result.exit = { type = "int" }
+result.receipt = { type = "string" }
+
+[[command]]
+name = "server-scenario"
+summary = "Run a server scenario: a copy of a stopped server with a probe added (a mod JAR, datapacks, config), run for ticks, seconds or until a line and stopped gracefully; a finding unless the run wrote valid JSON where the probe writes it."
+handler = "wb_lab.server:scenario"
+resources = { cpu = 2, mem_gb = 4 }
+timeout = "24h"
+cancel_grace = "2m"
+params.server = { type = "path.in", summary = "a stopped server folder (its JARs, mods, config and world); the run uses a copy, so it is never written" }
+params.probe = { type = "string", summary = "a glob, relative to the copy, of the JSON the probe writes; none written, or JSON that does not parse, is a finding" }
+params.require = { type = "object", default = {}, summary = 'values the probe JSON must hold, by dotted path, e.g. {"error": null, "cases.0.passed": true}' }
+params.files = { type = "path.in", optional = true, summary = "a folder laid over the copy: the probe's config, scripts, datapacks" }
+params.mods = { type = "list", items = "path.in", default = [], summary = "JARs added to the copy's mods folder: the probe mod" }
+params.jdk = { type = "string", default = "8", summary = "the JDK that runs it, as Workbench names them (8, 17, 25); empty: none, for a launch that names no {java}" }
+params.jar = { type = "string", default = "", summary = "the server JAR for {jar}: a glob relative to the folder that matches one file; empty: the folder's only top-level JAR" }
+params.jvm_args = { type = "list", items = "string", default = [], summary = "JVM options for {jvm_args}; {port}, {ticks} and {server} are filled in (-Dprobe.ticks={ticks})" }
+params.launch = { type = "list", items = "string", default = ["{java}", "{jvm_args}", "-jar", "{jar}", "nogui"], summary = "the server's command line, run in the copy: {java}, {jvm_args} (an item of its own: the options), {jar}, {server} (the copy), {port}, {ticks}" }
+params.exclude = { type = "list", items = "string", default = [], summary = "globs of the folder left out of the copy: logs, or world for a fresh one" }
+params.properties = { type = "object", default = {}, summary = "server.properties values for the copy ({port} is filled in); unless it names server-port, the copy listens on a free port" }
+params.ready = { type = "list", items = "string", default = ['Done \([^)]*\)! For help'], summary = "regular expressions; the server is ready once each has matched a console line" }
+params.ready_timeout = { type = "duration", default = "10m", max = "2h" }
+params.commands = { type = "list", items = "any", default = [], summary = "console commands sent once it is ready, in order: a string, or {send, expect, timeout}, where expect is a regular expression the reply must match" }
+params.reply_timeout = { type = "duration", default = "60s", max = "1h", summary = "how long an expected reply, or the game time, may take" }
+params.ticks = { type = "int", default = 0, min = 0, summary = "then run until this many game ticks have passed, by the server's own game time (tick_query)" }
+params.seconds = { type = "duration", default = 0, max = "20h", summary = "then run this long" }
+params.until = { type = "list", items = "string", default = [], summary = "then run until a console line matches one of these (the probe's last line); a scenario names ticks, seconds or until" }
+params.run_timeout = { type = "duration", default = "1h", max = "20h", summary = "the longest a run for ticks or until may take; reaching it is a finding" }
+params.tick_query = { type = "string", default = "time query gametime", summary = "the console command that prints the game time" }
+params.tick_reply = { type = "string", default = '[Tt]ime is (\d+)', summary = "its reply; group 1 is the game time in ticks" }
+params.save = { type = "bool", default = false, summary = "send save-all, and wait for it to finish, before stopping" }
+params.stop = { type = "list", items = "string", default = ["stop"], summary = "the console commands that stop the server" }
+params.grace = { type = "duration", default = "2m", max = "30m", summary = "how long it may take to stop before it is killed (a finding)" }
+params.keep = { type = "list", items = "string", default = [], summary = "globs, relative to the copy, of what to keep from it under files/; the probe JSON, the console, new crash reports and the receipt are always kept" }
+result.ready = { type = "bool" }
+result.ended = { type = "string" }
+result.ticks = { type = "int" }
+result.stopped = { type = "string" }
+result.exit = { type = "int" }
+result.receipt = { type = "string" }
+result.probe = { type = "list" }

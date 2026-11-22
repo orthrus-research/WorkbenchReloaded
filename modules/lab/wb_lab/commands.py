@@ -206,7 +206,10 @@ def _script_python(ctx: Context, path: Path) -> str:
     return _python(ctx)
 
 
-def script(ctx: Context, script: str, args: list):
+def script(ctx: Context, script: str, args: list, timeout: float = 4 * 3600):
+    """``timeout`` holds even for a script that prints nothing: the run is stopped there (with whatever it started)
+    and that is a finding."""
+    from . import process
     path = _allowed(ctx, script)
     if path.suffix.lower() == ".py":
         command = [_script_python(ctx, path), "-X", "utf8", str(path), *args]
@@ -216,15 +219,17 @@ def script(ctx: Context, script: str, args: list):
             raise EnvironmentProblem("no PowerShell (pwsh or powershell.exe) to run " + path.name)
         command = [shell, "-NoProfile", "-File", str(path), *args]
     ctx.progress("script", msg=path.name)
-    done = ctx.run(command, cwd=path.parent, timeout=4 * 3600)
+    done = process.run(ctx, command, cwd=path.parent, timeout=timeout)
     log = ctx.out / f"{path.stem}.log"
-    log.write_text(done.stdout, encoding="utf-8")
+    log.write_text(done.output, encoding="utf-8")
     ctx.output(path.stem, log)
-    if done.returncode != 0:
-        ctx.finding(f"{path.name} exited {done.returncode}")
+    if done.code is None:
+        ctx.finding(f"{path.name} did not finish within {process.span(timeout)}; stopped")
+    elif done.code != 0:
+        ctx.finding(f"{path.name} exited {done.code}")
     else:
         ctx.summary(f"{path.name} finished")
-    return {"script": str(path), "exit": done.returncode}
+    return {"script": str(path), "exit": done.code, "seconds": done.seconds}
 
 
 def turn(ctx: Context, steps: list, continue_on_finding: bool):
