@@ -48,7 +48,7 @@ runs_on = ["host"]
 timeout = "40m"
 params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
 params.seed = { type = "int", optional = true }
-params.scale = { type = "int", optional = true }
+params.scale = { type = "float", optional = true, summary = "a whole or fractional scale (0.5); a whole one is passed as an integer" }
 params.args = { type = "list", items = "string", default = [], summary = "further prepare arguments" }
 params.packs = { type = "list", items = "path.in", default = [], summary = "shader or resource packs laid into the instance's packs_dir (the profile's); they are part of its recipe" }
 
@@ -142,7 +142,7 @@ runs_on = ["host"]
 timeout = "40m"
 params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
 params.seed = { type = "int", optional = true }
-params.scale = { type = "int", optional = true }
+params.scale = { type = "float", optional = true, summary = "a whole or fractional scale (0.5); a whole one is passed as an integer" }
 params.args = { type = "list", items = "string", default = [], summary = "prepare arguments" }
 params.world = { type = "string", default = "", summary = "a world snapshot label to start from; empty: the prepared (empty) world" }
 params.replace = { type = "bool", default = false, summary = "replace an instance of the same name built from another recipe" }

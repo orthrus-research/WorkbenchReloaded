@@ -60,10 +60,16 @@ def _launcher(ctx: Context) -> Path:
     return path
 
 
+def _whole(value):
+    """A number as the launcher and the recipe see it: a whole float is an integer (4.0 -> 4), so a scale given as
+    a float keeps the command line and the recipe it had when scales were integers."""
+    return int(value) if isinstance(value, float) and value.is_integer() else value
+
+
 def _prepare_command(ctx: Context, name: str, seed, scale, args: list) -> list[str]:
     p = _profile(ctx)
     command = profiles.command(p["prepare"], python=_python(ctx), name=name)
-    for value, flag, what in ((seed, "seed_flag", "seed"), (scale, "scale_flag", "scale")):
+    for value, flag, what in ((seed, "seed_flag", "seed"), (_whole(scale), "scale_flag", "scale")):
         if value is None:
             continue
         if not p[flag]:
@@ -536,7 +542,7 @@ def recipe_inputs(ctx: Context, seed, scale, args: list, packs: list | None = No
         else:
             normal.append(arg)
         previous = arg
-    inputs = {"schema": 2, "seed": seed, "scale": scale, "args": normal,
+    inputs = {"schema": 2, "seed": seed, "scale": _whole(scale), "args": normal,
               "files": {name: _digest(_profile_path(ctx, name)) for name in p["recipe_files"]}}
     if _profile_name(ctx):  # another harness's recipe never shares a template; the default profile's keys stand
         inputs["profile"] = _profile_name(ctx)

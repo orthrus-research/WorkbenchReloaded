@@ -48,7 +48,8 @@ def target(name):
     return STANDALONE / name
 
 
-def prepare(name, seed, args):
+def prepare(name, seed, scale_text, args):
+    scale = None if scale_text is None else float(scale_text)  # scale_text as the command line gave it
     home = target(name)
     if home.exists():
         raise SystemExit("instance exists: " + name)
@@ -72,7 +73,9 @@ def prepare(name, seed, args):
     (client / "client-runtime.json").write_text(json.dumps({"natives": str(client / "natives")}), encoding="utf-8")
     (home / "installer.log").write_text("installed\n", encoding="utf-8")
     manifest = {"name": name, "server": str(server), "client": str(client), "seed": seed,
-                "generator": {"layoutScale": 1.0, "definitions": {"riven-base.json": {"revision": 1}}},
+                "generator": {"layoutScale": 1.0 if scale is None else scale,
+                              "definitions": {"riven-base.json": {"revision": 1}}},
+                "scaleArgument": scale_text,
                 "cubicJar": {"sha256": "c" * 64}}
     (home / "standalone.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
 
@@ -96,10 +99,10 @@ if __name__ == "__main__":
     parser.add_argument("command")
     parser.add_argument("--name", required=True)
     parser.add_argument("--seed", type=int, default=8675309)
-    parser.add_argument("--scale", type=int)
+    parser.add_argument("--scale")
     known, rest = parser.parse_known_args()
     if known.command == "prepare":
-        prepare(known.name, known.seed, rest)
+        prepare(known.name, known.seed, known.scale, rest)
     else:
         raise SystemExit("unsupported in the fake: " + known.command)
 '''
