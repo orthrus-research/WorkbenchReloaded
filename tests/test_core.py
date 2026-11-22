@@ -64,6 +64,20 @@ class ConfigMerge(unittest.TestCase):
         self.assertIn(f"{self.folder.as_posix()}:/mnt/out:rw", mounts)
         self.assertEqual(resolve(config).roots[0].container, self.folder.as_posix())  # natively: the host path
 
+    def test_a_folder_may_keep_other_tools_files_beside_its_config(self):
+        self.write("workbench.toml", "[core.config]\nignore = [\"scrub-rules.toml\", \"tools/*.toml\"]\n")
+        self.write("scrub-rules.toml", "attribution-names = ['someone']\n")  # another tool's machine file
+        self.write("tools/other.toml", "x = 1\n")
+        self.write("modules/selftest.toml", "greeting = 'kept'\n")
+        config = wbconfig.load(self.folder)
+        self.assertNotIn("scrub-rules", config.values)  # never read as a config table
+        self.assertNotIn("tools", config.values)
+        self.assertEqual(config.values["modules"]["selftest"]["greeting"], "kept")
+        resolve(config)  # and the settings accept the key
+        self.write("workbench.toml", "")
+        with self.assertRaises(SettingsError):  # without the declaration, an unknown table is refused as before
+            resolve(wbconfig.load(self.folder))
+
     def test_layers_merge_under_the_machine_folder(self):
         import os
         shared = Path(tempfile.mkdtemp(prefix="wb-layer-"))

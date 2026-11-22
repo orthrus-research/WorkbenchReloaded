@@ -62,6 +62,9 @@ CORE = {
         "layers": {"type": "list", "items": "string", "default": [],
                    "summary": "shared config folders this folder lies over, merged first in this order (only in the "
                               "machine folder's workbench.toml)"},
+        "ignore": {"type": "list", "items": "string", "default": [],
+                   "summary": "files in this config folder that hold other tools' settings, not Workbench config "
+                              "(glob patterns relative to the folder); they are mounted with it but never read as config"},
     },
 }
 

@@ -17,6 +17,7 @@ same folder and then checks it against the core's and the modules' schemas.
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import tomllib
@@ -197,10 +198,31 @@ def layer_folders(folder: Path) -> list[Path]:
     return out
 
 
+def ignored_patterns(folder: Path) -> list[str]:
+    """Files in a config folder that hold other tools' settings rather than Workbench config: ``[core.config] ignore``
+    in the folder's own workbench.toml, glob patterns relative to the folder. They travel with the folder (and its
+    mount in the container) but are never read as config, so a tool can keep its machine settings beside ours."""
+    root = folder / ROOT_FILE
+    if not root.is_file():
+        return []
+    try:
+        data = tomllib.loads(root.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as error:
+        raise ConfigError(f"{ROOT_FILE}: {error}") from None
+    listed = ((data.get("core") or {}).get("config") or {}).get("ignore") or []
+    if not isinstance(listed, list) or not all(isinstance(entry, str) for entry in listed):
+        raise ConfigError(f"{ROOT_FILE}: core.config.ignore must be a list of file patterns")
+    return listed
+
+
 def _merge_folder(config: Config, folder: Path, prefix: str, *, layer: bool, skip: tuple[Path, ...] = ()):
     entries = []
     seen: dict[tuple[str, ...], Path] = {}
+    ignore = ignored_patterns(folder)
     for path in config_files(folder, skip):
+        relative = path.relative_to(folder).as_posix()
+        if any(fnmatch.fnmatchcase(relative, pattern) for pattern in ignore):
+            continue
         namespace = namespace_of(folder, path)
         folded = tuple(part.lower() for part in namespace)
         if folded in seen:
