@@ -138,7 +138,9 @@ def play(ctx: Context, name: str, tour: str | None = None, window: str = "1920x1
          label: str = "play", args: list = (), limit: float = 4 * 3600, profile: str = "",
          collect: list | None = None):
     """One tour on an instance (``play``), or with no tour an open session a person plays until they close the
-    client (``play_open``), stopped at ``limit`` (a finding)."""
+    client (``play_open``). Either is stopped at its limit (a finding), whether or not it prints anything, and a
+    stop or a cancel kills the launcher with the game it started (wb_lab.process), never the launcher alone."""
+    from . import process
     launcher, p = _launcher(ctx), _profile(ctx)
     if not tour and not p.get("play_open"):
         raise ParamError("no tour was given and the instance profile has no play_open (the launcher's command for "
@@ -163,39 +165,33 @@ def play(ctx: Context, name: str, tour: str | None = None, window: str = "1920x1
         raise ParamError("the instance profile has no options_env, so options cannot be given")
     env = _env(ctx, {p["options_env"]: options} if options else None)
     ctx.progress("play", msg=f"{what} as {label}")
-    stopped = False
-    try:
-        done = ctx.run(command, cwd=launcher, env=env, timeout=timeout)
-    except EnvironmentProblem:
-        if tour:
-            raise
-        # An open session that outlives its limit was killed; what it wrote so far is still kept below.
-        stopped, done = True, subprocess.CompletedProcess(command, -1, stdout="", stderr="")
-        ctx.finding(f"open session on {name} reached its limit of {timeout / 3600:g} h and was stopped")
+    done = process.run(ctx, command, cwd=launcher, env=env, timeout=timeout)
+    if done.code is None:  # stopped at its limit; what it wrote so far is still kept below
+        ctx.finding(f"{what} on {name} did not end within {process.span(timeout)}; stopped with what it started")
     out = ctx.out
-    (out / f"{label}-play.log").write_text(done.stdout, encoding="utf-8")
+    (out / f"{label}-play.log").write_text(done.output, encoding="utf-8")
     ctx.output(f"{label}-play-log", out / f"{label}-play.log")
     for relative, kept_as in [*p["collect"], *extra]:
         source = instance / relative
         if source.is_file():
             shutil.copy2(source, out / f"{label}-{kept_as}")
             ctx.output(f"{label}-{kept_as}", out / f"{label}-{kept_as}")
-    captures = re.findall(p["captures_pattern"], done.stdout) if p.get("captures_pattern") else []
+    captures = re.findall(p["captures_pattern"], done.output) if p.get("captures_pattern") else []
     if captures and Path(captures[-1].strip()).is_dir():
         target = out / f"{label}-captures"
         shutil.copytree(captures[-1].strip(), target, dirs_exist_ok=True)
         ctx.output(f"{label}-captures", target)
         ctx.measure("captures", sum(1 for _ in target.glob("*.png")))
-    if stopped:
+    if done.code is None:
         pass  # already a finding
-    elif done.returncode != 0:
+    elif done.code != 0:
         collected = [out / f"{label}-{kept_as}" for _relative, kept_as in [*p["collect"], *extra]]
         texts = [path.read_text(encoding="utf-8", errors="replace") for path in collected if path.is_file()]
-        why = explain(p["failures"], texts + [done.stdout])
-        ctx.finding(f"{what} exited {done.returncode}" + (f": {why}" if why else ""))
+        why = explain(p["failures"], texts + [done.output])
+        ctx.finding(f"{what} exited {done.code}" + (f": {why}" if why else ""))
     else:
         ctx.summary(f"tour {Path(tour).name} played on {name}" if tour else f"open session on {name} ended")
-    return {"instance": name, "exit": done.returncode, "captures": bool(captures), "tour": bool(tour)}
+    return {"instance": name, "exit": done.code, "captures": bool(captures), "tour": bool(tour)}
 
 
 def explain(patterns: list[str], texts: list[str]) -> str | None:
