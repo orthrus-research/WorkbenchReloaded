@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import fnmatch
+import glob
 import hashlib
 import json
 import os
@@ -179,6 +180,12 @@ def validate(config: Config) -> None:
         for need in entry.get("needs", []):
             if need not in jobs:
                 raise ToolError(USAGE, f"{name}: job {job} needs unknown job {need}")
+        artifacts = entry.get("artifacts", [])
+        if not isinstance(artifacts, list) or not all(isinstance(a, str) and a for a in artifacts):
+            raise ToolError(USAGE, f"{name}: job {job} lists its artifacts as glob patterns")
+        if artifacts and "inputs" in entry:
+            raise ToolError(USAGE, f"{name}: job {job} keeps artifacts, so it builds them every run and cannot "
+                                   "be a cached check with inputs")
     for workflow, members in config.workflows.items():
         for member in members:
             if member not in jobs:
@@ -655,7 +662,52 @@ def run_job(
             out.line(tail(log))
             status = "failed"
             break
-    return {"status": status, "steps": steps}
+    result: dict[str, Any] = {"status": status, "steps": steps}
+    if status == "passed" and job.get("artifacts"):
+        try:
+            result["artifacts"] = keep_artifacts(config, name, values, run_dir)
+            out.line(f"  kept {len(result['artifacts'])} artifact(s) of {name}")
+        except ToolError as error:
+            result.update(status="failed", error=error.message)
+            out.line(f"  FAIL {name}: {error.message}")
+    return result
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def keep_artifacts(config: Config, name: str, values: dict[str, Any], run_dir: Path) -> dict[str, dict[str, Any]]:
+    """Copy the files a passed job's ``artifacts`` globs match (relative to the root, or absolute; ``**`` crosses
+    folders) into ``<run>/<job>/artifacts``, each with its SHA-256, so what a run built stays with the run that
+    vouches for it. A pattern that matches no file, or two files of one name, fails the job."""
+    target = run_dir / name / "artifacts"
+    kept: dict[str, dict[str, Any]] = {}
+    for pattern in config.jobs[name]["artifacts"]:
+        expanded = expand_one(pattern, values, f"job {name}, artifacts")
+        found = [Path(p) if Path(p).is_absolute() else config.root / p
+                 for p in glob.glob(expanded, root_dir=config.root, recursive=True)]
+        files = sorted(path for path in found if path.is_file())
+        if not files:
+            raise ToolError(FINDING, f"no file matches its artifact {pattern}")
+        for source in files:
+            if source.name in kept:
+                raise ToolError(FINDING, f"two of its artifacts are named {source.name}")
+            target.mkdir(parents=True, exist_ok=True)
+            destination = target / source.name
+            shutil.copy2(source, destination)
+            kept[source.name] = {
+                "sha256": file_sha256(destination),
+                "bytes": destination.stat().st_size,
+                "from": source.relative_to(config.root).as_posix()
+                if source.is_relative_to(config.root)
+                else str(source),
+            }
+    return kept
 
 
 def run_jobs(

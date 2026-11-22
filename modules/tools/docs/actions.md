@@ -64,6 +64,7 @@ steps = [{ name = "ruff", run = ["{lint_python}", "-m", "ruff", "check", "."] }]
 description = "Build and test"
 locks = ["gradle"]        # no two running jobs hold the same lock
 memory = 6
+artifacts = ["build/libs/*.jar"]   # kept with the run once the steps pass (see Run records)
 steps = [
   { name = "gradle", run = ["./gradlew", "build", "--no-daemon"] },
   { name = "library", run = ["./gradlew", "build"], cwd = "{library}" },
@@ -123,8 +124,15 @@ repository's working tree against its own HEAD, matched against `[[quick.<name>]
 `summary.json` (`orthrus.actions.summary.v1`) holds `runId`, `targets`, `order`, `trees`,
 `treesChanged`, `seconds` and `jobs`, where each job has `status` (`passed`, `failed`,
 `skipped`), `steps` (`name`, `exitCode`, `seconds`, `log`, `timing`), `begun` and `ended` in
-seconds into the run, and `cached` or `inputKey` for pure checks. `--json` returns it as
-`result`.
+seconds into the run, `cached` or `inputKey` for pure checks, and `artifacts` for a job that
+keeps them. `--json` returns it as `result`.
+
+A job's `artifacts` are glob patterns (relative to the root, or absolute; `**` crosses folders)
+for the files it builds. Once its steps pass, each match is copied to
+`<run>/<job>/artifacts/<file name>`, and the summary records it by name with its `sha256`,
+`bytes` and where it came `from`, so the run that vouches for a build also holds it. A pattern
+that matches nothing, or two matches of one name, fails the job. A job that keeps artifacts
+builds them every run, so it cannot also list `inputs`.
 
 `trees` are the trees each repository's working tree would commit, computed through a scratch
 copy of the index, so a run before a commit vouches for that commit. A run during which a tree

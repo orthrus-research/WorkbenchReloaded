@@ -154,6 +154,13 @@ class ConfigTest(Project):
         self.write_config('[jobs.a]\nsteps = [{ name = "a", run = "not a list" }]\n')
         code, document = self.actions("list")
         self.assertEqual(code, cli.USAGE)
+        for extra, expected in (('artifacts = "build/*.jar"', "glob patterns"),
+                                ('artifacts = ["build/*.jar"]\ninputs = ["src/*"]', "cannot be a cached check")):
+            with self.subTest(expected=expected):
+                self.write_config(f'[jobs.a]\n{extra}\nsteps = [{{ name = "a", run = {PASS} }}]\n')
+                with self.assertRaises(cli.ToolError) as raised:
+                    self.load()
+                self.assertIn(expected, raised.exception.message)
 
     def test_a_missing_configuration_is_a_usage_error(self):
         (self.root / "actions.toml").unlink()
@@ -323,6 +330,41 @@ class RunTest(Project):
         self.assertEqual(jobs["lint"]["status"], "failed")
         self.assertEqual(jobs["lint"]["steps"][0]["exitCode"], 3)
         self.assertEqual(jobs["test"], {"status": "skipped", "reason": "needs lint"})
+
+    def test_a_passed_job_keeps_its_artifacts_with_the_run(self):
+        build = (
+            '["{python}", "-c", "import pathlib; p = pathlib.Path(\'.local/out/libs\'); '
+            "p.mkdir(parents=True, exist_ok=True); (p / 'tool.jar').write_bytes(b'jar bytes')\"]"
+        )
+        self.write_config(
+            f"""
+            [jobs.build]
+            artifacts = [".local/out/**/*.jar"]
+            steps = [{{ name = "build", run = {build} }}]
+            [jobs.missing]
+            artifacts = ["nowhere/*.jar"]
+            steps = [{{ name = "build", run = {PASS} }}]
+            """
+        )
+        commit_all(self.root)
+        code, document = self.actions("run", "build")
+        self.assertEqual(code, cli.OK, document["messages"])
+        summary = document["result"]
+        kept = summary["jobs"]["build"]["artifacts"]["tool.jar"]
+        self.assertEqual(kept["from"], ".local/out/libs/tool.jar")
+        self.assertEqual(kept["bytes"], len(b"jar bytes"))
+        copy = self.root / ".local/actions" / summary["runId"] / "build" / "artifacts" / "tool.jar"
+        self.assertEqual(copy.read_bytes(), b"jar bytes")
+        self.assertEqual(kept["sha256"], actions.file_sha256(copy))
+        recorded = json.loads(
+            (self.root / ".local/actions" / summary["runId"] / "summary.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(recorded["jobs"]["build"]["artifacts"], summary["jobs"]["build"]["artifacts"])
+        code, document = self.actions("run", "missing")
+        self.assertEqual(code, cli.FINDING)
+        job = document["result"]["jobs"]["missing"]
+        self.assertEqual(job["status"], "failed")  # its steps passed, but it built nothing it declared
+        self.assertIn("no file matches its artifact nowhere/*.jar", job["error"])
 
     def test_a_command_that_cannot_start_fails_its_step(self):
         self.write_config('[jobs.a]\nsteps = [{ name = "a", run = ["no-such-program-orthrus"] }]\n')
