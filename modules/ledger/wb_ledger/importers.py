@@ -58,8 +58,8 @@ its suffix, and ``@folder`` the name of the folder it is in::
     tick_p95_ms = { path = "scenarios.[name].tick.p95", unit = "ms" }
 
 Paths other than ``require``'s start at the entry. What a measurement's path reaches that is not a number is
-passed over (true and false count 1 and 0); a label, date, field or input path that reaches nothing refuses the
-file. The measurements' source is the reader's name.
+passed over (true and false count 1 and 0), and a field or input that is not there is left out; a label or date
+path that reaches nothing refuses the file. The measurements' source is the reader's name.
 """
 
 from __future__ import annotations
@@ -413,7 +413,13 @@ def read_json(path: Path, chosen: Reader) -> list[store.Record]:
         if label in labels:
             raise Unreadable(f"names run {label} twice")
         labels.add(label)
-        fields = {key: scalar(steps, f"field {key}") for key, steps in chosen.fields.items()}
+        def maybe(steps: list[str], what: str):
+            value = _one(entry, steps, known)
+            if isinstance(value, (dict, list)):
+                raise Unreadable(f"{what}: {'.'.join(steps)} reaches {type(value).__name__}, not a value{where}")
+            return value
+
+        fields = {key: maybe(steps, f"field {key}") for key, steps in chosen.fields.items()}
         if chosen.date:
             day = str(scalar(chosen.date, "date"))[:10]
             if not store.is_date(day):
@@ -422,8 +428,11 @@ def read_json(path: Path, chosen: Reader) -> list[store.Record]:
             day = day_of(path)
         inputs = []
         for key, steps in chosen.inputs.items():
-            value = str(scalar(steps, f"input {key}"))
-            inputs.append({"name": key, "value": value, "sha256": value if store.DIGEST.fullmatch(value) else None})
+            value = maybe(steps, f"input {key}")
+            if value is not None:
+                value = str(value)
+                inputs.append({"name": key, "value": value,
+                               "sha256": value if store.DIGEST.fullmatch(value) else None})
         reached = []
         for metric, (steps, unit) in chosen.measurements.items():
             for parts, value in _walk(entry, steps):

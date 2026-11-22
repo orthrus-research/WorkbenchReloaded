@@ -707,8 +707,12 @@ class Importers(unittest.TestCase):
                                 {"scenario": "flight", "tick": {"p95": 13.5}}, {"tick": {"p95": "n/a"}}]}
         write_json(folder / "025603Z-capture.json", record)
         write_json(folder / "030000Z-other.json", dict(record, schema="other.v2"))
+        older = {key: value for key, value in record.items() if key != "machine"}  # before records named the machine
+        write_json(folder / "031500Z-older.json", older)
         done = self.submit("ledger.import-json", {"reader": "telemetry", "folder": str(folder.parent)}, "finding")
-        self.assertEqual((done.data.files, done.data.runs), (2, 1))
+        self.assertEqual((done.data.files, done.data.runs), (3, 2))
+        run = self.submit("ledger.show", {"ref": "telemetry/11-21/031500Z-older"}).data.run
+        self.assertEqual((run["card"], run["os"]), (None, None))
         self.assertIn("030000Z-other.json: is not what reader telemetry reads: its schema is 'other.v2', not "
                       "'demo.telemetry.v1'", done.summary)
         shown = self.submit("ledger.show", {"ref": "telemetry/11-21/025603Z-capture"})
