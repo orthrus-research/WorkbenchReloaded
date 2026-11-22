@@ -286,8 +286,9 @@ def cmd_status(args) -> int:
 
 def cmd_build(args) -> int:
     try:
-        return compose.build(args.tag)
-    except compose.ComposeError as error:
+        tools = wbconfig.load().get("core.image.tools", []) or []
+        return compose.build(args.tag, [str(t) for t in tools])
+    except (compose.ComposeError, wbconfig.ConfigError) as error:
         print(f"wb: {error}", file=sys.stderr)
         return 3
 

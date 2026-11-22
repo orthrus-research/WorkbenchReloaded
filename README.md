@@ -187,6 +187,11 @@ wb build                           # docker build -f image/Dockerfile -t wb-core
 Run the CLI from a checkout with `bin\wb.cmd` (or `bin/wb`). The config folder is `~/.config/wb`; start from
 `config.example`.
 
+The image holds its JDKs; other toolchains are optional. `image/pins.toml` pins them (`[tool.<name>]`: a download
+and its SHA-256, today Node and Zig), and a machine names the ones its projects need in `[core.image] tools =
+["node"]`: `wb build` builds just those in, checked, with their programs on `PATH`. A toolchain another project needs
+is one more `[tool]` table and `python image/pins.py lock`.
+
 ## License
 
 [Apache License 2.0](LICENSE), except `modules/tools`, which keeps its own license (NRR 1.0). See

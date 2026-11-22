@@ -182,11 +182,23 @@ def down(config: wbconfig.Config):
         docker("compose", "-f", str(path), "down")
 
 
-def build(tag: str = "wb-core:dev") -> int:
+def build(tag: str = "wb-core:dev", tools: list[str] | None = None) -> int:
+    """Builds the image; ``tools`` names optional tools image/pins.toml pins ([tool.<name>]) to build in."""
     root = repo_root()
     if root is None:
         raise ComposeError("wb build needs a Workbench checkout (set WB_REPO)")
-    return subprocess.run(["docker", "build", "-f", str(root / "image" / "Dockerfile"), "-t", tag, str(root)]).returncode
+    tools = list(tools or [])
+    if tools:
+        import tomllib
+        pinned = tomllib.loads((root / "image" / "pins.toml").read_text(encoding="utf-8")).get("tool") or {}
+        unknown = [name for name in tools if name not in pinned]
+        if unknown:
+            raise ComposeError(f"[core.image] tools names {unknown[0]}, which image/pins.toml does not pin "
+                               f"(pinned: {', '.join(sorted(pinned)) or 'none'})")
+    command = ["docker", "build", "-f", str(root / "image" / "Dockerfile"), "-t", tag]
+    if tools:
+        command += ["--build-arg", "TOOLS=" + ",".join(tools)]
+    return subprocess.run([*command, str(root)]).returncode
 
 
 if __name__ == "__main__":  # pragma: no cover
