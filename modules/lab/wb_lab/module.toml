@@ -13,6 +13,11 @@ scripts = { type = "list", items = "string", default = [], summary = "folders wh
 profiles = { type = "object", default = {}, summary = "named instance profiles, one per harness, each a table of profile keys (wb_lab/profile.py), a job picks one with profile=<name>; from = \"<name>\" starts one from another profile (empty: the default), so it writes only the keys it changes" }
 environments = { type = "object", default = {}, summary = "by allow-listed folder: the pip requirements files (relative to it, or absolute) whose environment, made once, runs its Python scripts; other folders' scripts get the lab's interpreter" }
 python_cache = { type = "string", default = "", summary = "where those environments are kept; empty: the user's cache folder (XDG_CACHE_HOME or ~/.cache)/wb/python" }
+metadata = { type = "string", default = "", summary = "where lab.assemble reads a component an instance carries no patch for: a URL template with {uid} and {version} (a launcher metadata server, or a mirror)" }
+asset_base = { type = "string", default = "https://resources.download.minecraft.net/", summary = "where lab.assemble downloads asset objects from, by <first two hex digits>/<SHA-1>" }
+runtime_cache = { type = "string", default = "", summary = "where lab.assemble keeps libraries, client JARs and assets, shared by every runtime; empty: <state>/cache/runtime (put it under a configured root for the host to use what it holds)" }
+library_candidates = { type = "list", items = "string", default = [], summary = "folders lab.assemble searches by file name for a library with the SHA-1 its metadata names before downloading it (a Gradle cache, a launcher's libraries)" }
+asset_candidates = { type = "list", items = "string", default = [], summary = "asset folders (holding objects/ and indexes/) lab.assemble searches before downloading" }
 
 [[command]]
 name = "gpu"
@@ -210,6 +215,21 @@ params.execute = { type = "bool", default = false }
 
 # Dedicated servers need no GPU and no host: these run in the container (wb_lab/server.py).
 params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
+[[command]]
+name = "assemble"
+summary = "Assemble a game runtime from a launcher instance's metadata: libraries by the target's rules, natives, the client JAR and assets fetched against their SHA-1 into a shared cache (or found in candidate folders), the natives unpacked, and runtime.json naming the main class, arguments and class path. Starts nothing."
+handler = "wb_lab.assemble:assemble"
+resources = { cpu = 1 }
+timeout = "2h"
+params.instance = { type = "path.in", summary = "a Prism or MultiMC instance folder, or the .zip it exports (mmc-pack.json, patches/, libraries/)" }
+params.system = { type = "enum", values = ["", "windows", "linux", "osx"], default = "", summary = "the system the runtime is for; empty: the one the job runs on" }
+params.arch = { type = "enum", values = ["", "x86_64", "aarch64", "x86"], default = "", summary = "its architecture; empty: the machine's" }
+params.assets = { type = "bool", default = true, summary = "fetch the asset index and its objects too" }
+result.runtime = { type = "string", optional = true }
+result.main_class = { type = "string", optional = true }
+result.libraries = { type = "int", optional = true }
+result.problems = { type = "list" }
+
 [[command]]
 name = "server"
 summary = "Run a dedicated server from a copy of a stopped server folder: wait until it is ready, send console commands, let it run for ticks, seconds or until a line, stop it gracefully, and keep its console, new crash reports, chosen files and a receipt."
