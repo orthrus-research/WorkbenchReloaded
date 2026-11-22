@@ -101,6 +101,50 @@ class InputSteps(Checkouts):
             profile.merged(self.config)  # two steps of one name
 
 
+class Agreement(Checkouts):
+    """Shared dependencies: each project's pin read from its own file; prefixes agree, anything else does not."""
+
+    def write(self, checkout: Path, text: str):
+        (checkout / "pins.json").write_text(text, encoding="utf-8")
+
+    def configure(self):
+        pins = [{"file": "pins.json", "pattern": r'"lib"\s*:\s*"([0-9a-f]+)"'},
+                {"file": "pins.json", "pattern": r'"lib-commit"\s*=\s*"([0-9a-f]+)"', "checkout": "other"}]
+        self.config["profile"] = dict(BASE, agree={"lib": pins}, checkouts={"other": str(self.other)})
+
+    def test_prefixes_agree_and_other_commits_do_not(self):
+        from wb_lab import inputs
+        self.configure()
+        self.write(self.main, '{"lib": "0c2995e"}')
+        self.write(self.other, '"lib-commit" = "0c2995e6c1d838be8c2b4975eec68b923eb0f1c4"')
+        found = inputs.agreement(self.ctx())
+        self.assertTrue(found["lib"]["agrees"])
+        self.assertEqual(inputs.check_agreement(self.ctx(), False), [])
+        self.write(self.main, '{"lib": "84a58e84e4"}')
+        self.assertFalse(inputs.agreement(self.ctx())["lib"]["agrees"])
+        with self.assertRaises(EnvironmentProblem) as raised:
+            inputs.check_agreement(self.ctx(), False)
+        self.assertIn("lib: launcher pins.json 84a58e84e4, other pins.json 0c2995e6c1d8", str(raised.exception))
+        self.assertEqual(len(inputs.check_agreement(self.ctx(), True)), 1)  # allowed: reported, not refused
+        self.write(self.main, '{"nothing": 1}')
+        with self.assertRaises(EnvironmentProblem):
+            inputs.agreement(self.ctx())  # a pin its pattern cannot find is no agreement
+
+    def test_pins_are_checked(self):
+        cases = [({"lib": [{"file": "a", "pattern": "(x)"}]}, "two or more pins"),
+                 ({"lib": [{"file": "a", "pattern": "x"}, {"file": "b", "pattern": "(x)"}]}, "no group"),
+                 ({"lib": [{"file": "a", "pattern": "(x"}, {"file": "b", "pattern": "(x)"}]}, "not a regular"),
+                 ({"lib": [{"file": "a"}, {"file": "b", "pattern": "(x)"}]}, "is not a pin"),
+                 ({"lib": [{"file": "a", "pattern": "(x)", "checkout": "absent"},
+                           {"file": "b", "pattern": "(x)"}]}, "checkouts name no absent")]
+        for agree, expected in cases:
+            with self.subTest(expected=expected):
+                self.config["profile"] = dict(BASE, agree=agree)
+                with self.assertRaises(profile.ProfileError) as raised:
+                    profile.merged(self.config)
+                self.assertIn(expected, str(raised.exception))
+
+
 class PlayCollect(Checkouts):
     """A play may keep more files than its profile names; what it names must stay inside the instance."""
 

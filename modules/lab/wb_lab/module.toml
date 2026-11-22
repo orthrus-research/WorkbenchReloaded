@@ -76,14 +76,16 @@ params.profile = { type = "string", default = "", summary = "a named instance pr
 [[command]]
 name = "inputs"
 requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
-summary = "Bring a launch set to the state an instance is built from: the instance profile's input steps (pinned dependencies, builds), in order on the host with the profile's environment; stops at the first that fails (a finding)."
+summary = "Bring a launch set to the state an instance is built from: first check that its projects pin the same commits of what they share (the profile's agree; a finding when they disagree), then run the instance profile's input steps (pinned dependencies, builds) in order on the host with the profile's environment; stops at the first that fails (a finding)."
 handler = "wb_lab.inputs:inputs"
 runs_on = ["host"]
 resources = { cpu = 2 }
 timeout = "2h"
 params.steps = { type = "list", items = "string", default = [], summary = "the steps to run, by name; empty: all of them" }
+params.allow_disagreement = { type = "bool", default = false, summary = "run the steps although the launch set's pins disagree" }
 params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 result.steps = { type = "list" }
+result.agreement = { type = "object" }
 
 [[command]]
 name = "migrate-plan"
@@ -161,6 +163,7 @@ params.world = { type = "string", default = "", summary = "a world snapshot labe
 params.replace = { type = "bool", default = false, summary = "replace an instance of the same name built from another recipe" }
 params.allow_writer_change = { type = "bool", default = false, summary = "accept a world written by another build of the profile's world_writer" }
 params.verify = { type = "bool", default = true, summary = "check the instance with the profile's load command, as play would" }
+params.allow_disagreement = { type = "bool", default = false, summary = "build although the launch set's pins disagree (the profile's agree); a finding" }
 result.recipe = { type = "string" }
 result.reused = { type = "bool" }
 params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }

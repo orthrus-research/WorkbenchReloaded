@@ -53,6 +53,13 @@ class Store(unittest.TestCase):
               {{ name = "elsewhere", checkout = "other", run = ["{{python}}", "-c", 'import os; print("cwd=" + os.getcwd())'] }},
               {{ name = "fails", run = ["{{python}}", "-c", 'import sys; print("broken build"); sys.exit(3)'] }},
             ]
+            [modules.lab.profiles.agreeing]
+            from = ""
+            checkouts = {{ cubature = "../Cubature", other = "../Other" }}
+            agree = {{ lib = [
+              {{ file = "pins.json", pattern = '"lib": "([0-9a-f]+)"' }},
+              {{ file = "pins.json", pattern = '"lib": "([0-9a-f]+)"', checkout = "other" }},
+            ] }}
             """
         files = {"modules/lab/profile.toml": fake_riven.PROFILE_TOML}
         probe = Daemon(config, files=files)
@@ -236,6 +243,25 @@ class Store(unittest.TestCase):
         self.assertEqual(self.c.submit("lab.inputs", {"profile": "built", "steps": ["absent"]})
                          .result(timeout=120).outcome, "usage")
         self.assertEqual(self.c.submit("lab.inputs", {}).result(timeout=120).outcome, "usage")  # no steps
+
+    def test_b_pins_that_disagree_are_refused(self):
+        (self.riven / "pins.json").write_text('{"lib": "84a58e84"}', encoding="utf-8")
+        (self.other / "pins.json").write_text('{"lib": "0c2995e6c1d8"}', encoding="utf-8")
+        checked = self.c.submit("lab.inputs", {"profile": "agreeing"}).result(timeout=120)
+        self.assertEqual(checked.outcome, "finding")
+        self.assertIn("lib: launcher pins.json 84a58e84, other pins.json 0c2995e6c1d8", checked.summary)
+        refused = self.ensure("mu", profile="agreeing")
+        self.assertEqual(refused.outcome, "environment")
+        self.assertFalse((self.instances / "mu").exists())  # nothing was built from them
+        allowed = self.ensure("mu", profile="agreeing", allow_disagreement=True)
+        self.assertEqual(allowed.outcome, "finding", allowed.summary)  # built, and said so
+        self.assertTrue((self.instances / "mu").is_dir())
+        self.assertEqual(len(allowed.data.disagreements), 1)
+        (self.riven / "pins.json").write_text('{"lib": "0c2995e"}', encoding="utf-8")
+        agreed = self.c.submit("lab.inputs", {"profile": "agreeing"}).result(timeout=120)
+        self.assertEqual(agreed.outcome, "ok", agreed.summary)
+        self.assertIn("1 shared dependency agree", agreed.summary)
+        self.assertEqual(self.ensure("mu", profile="agreeing").outcome, "ok")  # the same recipe, reused
 
 
 if __name__ == "__main__":

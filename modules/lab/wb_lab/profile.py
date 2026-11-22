@@ -55,6 +55,9 @@ DEFAULTS = {
     "inputs": [],                # lab.inputs' steps, in order: {name, run, checkout}; run is a command template
                                  # with {python} and {cwd}, run in checkout (a name from checkouts; empty: the
                                  # launcher's) with env, and brings the launch set to its state before lab.ensure
+    "agree": {},                 # dependency -> [{file, pattern, checkout}]: where each project of the launch set
+                                 # pins a dependency they share (pattern's group 1 is the commit); lab.inputs reports
+                                 # and lab.ensure refuses pins that disagree
 }
 
 STEP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -118,6 +121,7 @@ def merged(config: dict, name: str = "") -> dict:
         except (re.error, TypeError) as error:
             raise ProfileError(f"the instance profile's failures: {pattern!r} is not a regular expression ({error})") from None
     _check_inputs(profile)
+    _check_agree(profile)
     missing = [key for key in REQUIRED if not profile.get(key)]
     if missing:
         raise ProfileError(f"the instance profile needs {', '.join(missing)} (set [modules.lab.profile]; see "
@@ -144,6 +148,32 @@ def _check_inputs(profile: dict) -> None:
         checkout = step.get("checkout") or ""
         if checkout and checkout not in (profile["checkouts"] or {}):
             raise ProfileError(f"the instance profile's input step {name}: its checkouts name no {checkout}")
+
+
+def _check_agree(profile: dict) -> None:
+    """Each shared dependency names two or more pins, each a file, a pattern with a group for the commit, and the
+    launcher checkout or one the profile's checkouts name."""
+    if not isinstance(profile["agree"], dict):
+        raise ProfileError("the instance profile's agree is a table of dependencies")
+    for dependency, pins in profile["agree"].items():
+        if not isinstance(pins, list) or len(pins) < 2:
+            raise ProfileError(f"the instance profile's agree.{dependency}: two or more pins to compare")
+        for pin in pins:
+            if not isinstance(pin, dict) or set(pin) - {"file", "pattern", "checkout"} or \
+                    not isinstance(pin.get("file"), str) or not isinstance(pin.get("pattern"), str):
+                raise ProfileError(f"the instance profile's agree.{dependency}: {pin!r} is not a pin "
+                                   "(keys: file, pattern, checkout)")
+            try:
+                groups = re.compile(pin["pattern"]).groups
+            except re.error as error:
+                raise ProfileError(f"the instance profile's agree.{dependency}: {pin['pattern']!r} is not a regular "
+                                   f"expression ({error})") from None
+            if groups < 1:
+                raise ProfileError(f"the instance profile's agree.{dependency}: {pin['pattern']!r} has no group for "
+                                   "the commit")
+            checkout = pin.get("checkout") or ""
+            if checkout and checkout not in (profile["checkouts"] or {}):
+                raise ProfileError(f"the instance profile's agree.{dependency}: its checkouts name no {checkout}")
 
 
 def layout(profile: dict) -> Layout:
