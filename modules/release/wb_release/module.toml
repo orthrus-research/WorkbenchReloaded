@@ -1,0 +1,62 @@
+[module]
+name = "release"
+version = "0.1.0"
+summary = "Publish built mod artifacts to GitHub releases, Modrinth, CurseForge and Maven repositories: checked against the publication allow-list, quoted as a plan, sent only after an explicit yes."
+
+[config]
+channels = { type = "object", default = {}, summary = "publishing channels by name: kind (github, modrinth, curseforge, maven), base_url, project, secret, rules, page_url, defaults and the kind's own settings (see wb_release/channels.py)" }
+rules = { type = "object", default = {}, summary = "publication allow-lists by name: java, production, extras, dev_classifiers, dependencies, manifest, versions (see wb_release/rules.py); \"default\" applies when nothing names one" }
+user_agent = { type = "string", default = "workbench-release", summary = "the User-Agent of every request; a service may ask for one that names the publisher" }
+timeout = { type = "duration", default = "120s", min = "1s", max = "1h", summary = "how long a request waits for a channel to answer" }
+
+[[command]]
+name = "check"
+summary = "Check files against the publication allow-list, with no network: production JARs (no dev or sources-only JAR), class versions and JVM attributes against the target, declared dependencies, versions that agree; one finding per violation."
+handler = "wb_release.commands:check"
+resources = { cpu = 1 }
+params.files = { type = "list", items = "path.in", summary = "the files to publish" }
+params.version = { type = "string", optional = true, pattern = "^[0-9A-Za-z][0-9A-Za-z.+_-]{0,99}$", summary = "the version every file must carry; without it, the versions found must agree" }
+params.channel = { type = "string", optional = true, summary = "check as a publish to this channel would: its rules, and for maven its layout and POM" }
+params.rules = { type = "string", optional = true, summary = "a name under [modules.release.rules]; default: the channel's, else \"default\", else the built-in rules" }
+params.java = { type = "int", optional = true, min = 1, max = 99, summary = "the target Java feature version (8, 17, 21), instead of the rules'" }
+params.production = { type = "list", items = "string", optional = true, summary = "file-name globs of the production JARs ({version} is filled in), instead of the rules'" }
+params.extras = { type = "list", items = "string", optional = true, summary = "file-name globs of the other files allowed beside them, instead of the rules'" }
+params.dependencies = { type = "list", items = "string", optional = true, summary = "group:artifact[:version] globs a POM or module file may declare, instead of the rules'" }
+result.violations = { type = "list" }
+result.files = { type = "list" }
+
+[[command]]
+name = "publish"
+summary = "Publish one version's files to one channel after an explicit yes on its plan (every file with its SHA-256 and size, the notes' digest, how it is released); asks again if anything differs when it runs, never publishes over a version the channel holds, and leaves a receipt."
+handler = "wb_release.commands:publish"
+quote = "wb_release.commands:quote_publish"
+spends = true
+timeout = "2h"
+resources = { cpu = 0.5 }
+params.channel = { type = "string", summary = "a name under [modules.release.channels]" }
+params.version = { type = "string", pattern = "^[0-9A-Za-z][0-9A-Za-z.+_-]{0,99}$" }
+params.files = { type = "list", items = "path.in", summary = "exactly the files to publish; the first production JAR is the primary file" }
+params.notes = { type = "path.in", optional = true, summary = "the release notes: a UTF-8 text or Markdown file" }
+params.release_type = { type = "enum", values = ["release", "beta", "alpha"], optional = true, summary = "github, modrinth, curseforge; default: the channel's, else release" }
+params.visibility = { type = "enum", values = ["public", "unlisted", "draft"], optional = true, summary = "github public or draft; modrinth public, unlisted or draft; curseforge and maven public; default: the channel's, else public" }
+params.name = { type = "string", optional = true, summary = "the display name, with {version} and {release_type} filled in; default: the channel's, else {version}" }
+params.tag = { type = "string", optional = true, summary = "github: the release's tag ({version} filled in); default: the channel's, else {version}" }
+params.commit = { type = "string", optional = true, summary = "github: the commit or branch a new tag is made at; default: the channel's, else the repository's default branch" }
+params.game_versions = { type = "list", items = "string", optional = true, summary = "modrinth, curseforge: the game versions (curseforge also takes its own names, such as Java 8 or Client, and ids)" }
+params.loaders = { type = "list", items = "string", optional = true, summary = "modrinth, curseforge: the mod loaders" }
+params.dependencies = { type = "list", items = "string", optional = true, summary = "modrinth, curseforge: relations as type:project, type one of required, optional, embedded, incompatible (curseforge also tool)" }
+result.published = { type = "bool" }
+result.receipt = { type = "object" }
+
+[[command]]
+name = "status"
+summary = "What a channel already holds for a version (the release, its files and their digests), compared with local files when given; read-only."
+handler = "wb_release.commands:status"
+timeout = "10m"
+resources = { cpu = 0.25 }
+params.channel = { type = "string", summary = "a name under [modules.release.channels]" }
+params.version = { type = "string", pattern = "^[0-9A-Za-z][0-9A-Za-z.+_-]{0,99}$" }
+params.files = { type = "list", items = "path.in", default = [], summary = "local files to compare with what the channel holds" }
+params.tag = { type = "string", optional = true, summary = "github: the tag to look for; default: the channel's, else {version}" }
+result.exists = { type = "bool" }
+result.files = { type = "list" }
