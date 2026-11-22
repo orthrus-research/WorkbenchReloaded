@@ -46,6 +46,7 @@ DEFAULTS = {
     "rewrite": [],               # JSON files that hold the instance's own folder and name
     "linkable_dirs": [],         # folders the game only reads: shared by hard link
     "linkable_suffixes": [],     # file suffixes the game only reads: shared by hard link
+    "packs_dir": None,           # where an instance keeps packs (shader or resource packs); unset: packs are refused
     "lab_root": None,            # the checkout's folder of lab items, for lab.migrate
     "lab_items": [],             # [item, what it is] in lab_root, moved by lab.migrate
     "stays": [],                 # lab items that must never move

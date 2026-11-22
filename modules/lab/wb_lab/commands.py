@@ -108,8 +108,10 @@ def queue(ctx: Context):
     return {"lease": {"file": str(lock), "held": held, "owner": owner}, "lanes": lanes}
 
 
-def prepare(ctx: Context, name: str, args: list, seed=None, scale=None, profile: str = ""):
+def prepare(ctx: Context, name: str, args: list, seed=None, scale=None, profile: str = "",
+            packs: list | None = None):
     launcher = _launcher(ctx)
+    _packs(ctx, packs)  # checked before anything runs
     command = _prepare_command(ctx, name, seed, scale, args)
     ctx.progress("prepare", msg=name)
     done = ctx.run(command, cwd=launcher, env=_env(ctx), timeout=40 * 60)
@@ -118,7 +120,8 @@ def prepare(ctx: Context, name: str, args: list, seed=None, scale=None, profile:
     ctx.output("prepare-log", log)
     if done.returncode != 0:
         raise EnvironmentProblem(f"prepare exited {done.returncode}: {done.stdout.splitlines()[-1:] or ''}")
-    ctx.summary(f"instance {name} prepared")
+    _place_packs(ctx, _instances(ctx) / name, packs)
+    ctx.summary(f"instance {name} prepared" + (f" with {len(packs)} pack(s)" if packs else ""))
     return {"instance": name, "exit": done.returncode}
 
 
@@ -479,8 +482,36 @@ def _digest(path: Path) -> str | None:
     return sha256(path) if path.is_file() else None
 
 
-def recipe_inputs(ctx: Context, seed, scale, args: list) -> dict:
-    """Everything the launcher's prepare reads, each file by its SHA-256."""
+def _packs(ctx: Context, packs: list | None) -> dict[str, str]:
+    """The packs a request gives, by file name and SHA-256; refused when the profile has no packs_dir."""
+    if not packs:
+        return {}
+    if not _profile(ctx).get("packs_dir"):
+        raise ParamError("packs need the instance profile's packs_dir (where an instance keeps them)")
+    named = {}
+    for pack in packs:
+        path = Path(pack)
+        digest = _digest(path)
+        if digest is None:
+            raise ParamError(f"packs: {pack} is not a file")
+        if path.name in named:
+            raise ParamError(f"packs: two packs are named {path.name}")
+        named[path.name] = digest
+    return dict(sorted(named.items()))
+
+
+def _place_packs(ctx: Context, instance: Path, packs: list | None):
+    """Copies the packs into the instance's packs_dir, for the game to offer."""
+    if not packs:
+        return
+    target = instance / _profile(ctx)["packs_dir"]
+    target.mkdir(parents=True, exist_ok=True)
+    for pack in packs:
+        shutil.copy2(pack, target / Path(pack).name)
+
+
+def recipe_inputs(ctx: Context, seed, scale, args: list, packs: list | None = None) -> dict:
+    """Everything the launcher's prepare reads, each file by its SHA-256, and the packs laid into the instance."""
     p = _profile(ctx)
     file_flags = set(p["file_flags"])
     files, normal = {}, []
@@ -503,6 +534,9 @@ def recipe_inputs(ctx: Context, seed, scale, args: list) -> dict:
     default = p.get("default_artifact") or {}
     if default.get("path") and default.get("flag") not in [str(a) for a in args]:
         inputs["files"][default["path"]] = _digest(_profile_path(ctx, default["path"]))
+    named = _packs(ctx, packs)
+    if named:  # a recipe without packs keeps the key it always had
+        inputs["packs"] = named
     return inputs
 
 
@@ -536,10 +570,10 @@ def _check_world(ctx: Context, store, instance: Path, label: str, allow_writer_c
 
 
 def ensure(ctx: Context, name: str, args: list, world: str, replace: bool, allow_writer_change: bool, verify: bool,
-           seed=None, scale=None, profile: str = ""):
+           seed=None, scale=None, profile: str = "", packs: list | None = None):
     from .store import MARKER, recipe_of, remove_tree
     store, folder = _store(ctx), _instances(ctx)
-    inputs = recipe_inputs(ctx, seed, scale, args)
+    inputs = recipe_inputs(ctx, seed, scale, args, packs)
     recipe = recipe_of(inputs)
     destination = folder / name
     reused, prepared = False, False
@@ -567,6 +601,7 @@ def ensure(ctx: Context, name: str, args: list, world: str, replace: bool, allow
             if done.returncode != 0:
                 remove_tree(folder / temporary)
                 raise EnvironmentProblem(f"prepare exited {done.returncode}")
+            _place_packs(ctx, folder / temporary, packs)  # in the template, so every instance of the recipe has them
             store.adopt_template(folder / temporary, recipe, inputs)
             prepared = True
         ctx.progress("materialize", msg=f"{name} from recipe {recipe}")

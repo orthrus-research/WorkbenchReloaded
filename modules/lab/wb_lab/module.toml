@@ -48,6 +48,7 @@ params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
 params.seed = { type = "int", optional = true }
 params.scale = { type = "int", optional = true }
 params.args = { type = "list", items = "string", default = [], summary = "further prepare arguments" }
+params.packs = { type = "list", items = "path.in", default = [], summary = "shader or resource packs laid into the instance's packs_dir (the profile's); they are part of its recipe" }
 
 [[command]]
 name = "play"
@@ -147,6 +148,7 @@ params.verify = { type = "bool", default = true, summary = "check the instance w
 result.recipe = { type = "string" }
 result.reused = { type = "bool" }
 params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
+params.packs = { type = "list", items = "path.in", default = [], summary = "shader or resource packs laid into the instance's packs_dir (the profile's); they are part of its recipe" }
 
 [[command]]
 name = "snapshot"
