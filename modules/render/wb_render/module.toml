@@ -63,3 +63,23 @@ params.extensions = { type = "list", items = "string", optional = true, summary 
 params.os_specific = { type = "list", items = "string", optional = true, summary = "extensions never required (on one operating system only); default: the interop handles" }
 result.accepted = { type = "bool" }
 result.checks = { type = "list" }
+
+[[command]]
+name = "gl-run"
+summary = "Run a project's GPU test task (a Gradle test task opening a hidden GL context) on the host under the GPU lease: its JUnit results kept, each failing test named, and the capability report it writes (wb/gl-probe/v1, or a glxinfo dump) judged against a gate."
+handler = "wb_render.glrun:gl_run"
+runs_on = ["host"]
+resources = { gpu = true }
+timeout = "2h"
+params.checkout = { type = "path.in", digest = "git", summary = "the project checkout whose build has the task" }
+params.task = { type = "string", default = "glTest", summary = "the GPU test task" }
+params.project = { type = "string", default = "", summary = "the Gradle subproject that has it; empty: the root project" }
+params.gradle = { type = "list", items = "string", default = [], summary = "the build's command ({checkout} is filled in); empty: the checkout's own wrapper" }
+params.args = { type = "list", items = "string", default = [], summary = "more Gradle arguments" }
+params.junit = { type = "list", items = "string", default = ["**/build/test-results/**/*.xml"], summary = "globs of the JUnit XML results, relative to the checkout; only those the run wrote count" }
+params.report = { type = "string", default = "", summary = "a glob of the capability report the run writes, relative to the checkout; the newest it wrote is read" }
+params.gate = { type = "string", default = "", summary = "a gate under [modules.render.gates] the report must pass" }
+params.deadline = { type = "duration", default = "30m", summary = "the task is stopped after this" }
+params.jdk = { type = "string", default = "26", summary = "the JDK Gradle runs on, as the host names them; empty: the environment's" }
+result.tests = { type = "int", optional = true }
+result.failures = { type = "int", optional = true }

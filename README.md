@@ -48,7 +48,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 | `drive` | workload drivers: what a game session is made to do and see | `tour-lint`, `path`, `path-check`, `gallery` |
 | `frames` | capture and visual verification | `compare`, `measure`, `check`, `quality` |
 | `world` | world saves on disk and generated worlds: reading, comparing, goldens | `read`, `diff`, `digest-diff`, `light-diff`, `golden`, `preview` |
-| `render` | shader packs and GPU qualification | `validate`, `load-verdict`, `gl-gate` |
+| `render` | shader packs, GPU test runs and GPU qualification | `validate`, `load-verdict`, `gl-gate`, `gl-run` |
 | `assets` | assets and resource packs | `generate`, `blockstates`, `texture-metrics` |
 | `content` | content and data: modpack scripts, recipes and placement data | `scripts`, `recipe-graph`, `placement` |
 | `runs` | measurement, statistics and run evidence | `at-commit`, `repeat`, `ab`, `interleaved`, `evidence`, `compare-evidence`, `stats`, `workload-guard` |

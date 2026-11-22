@@ -17,6 +17,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 sys.path.insert(0, str(REPO / "tests"))
 sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(REPO / "modules" / "lab"))  # gl-run uses the lab's process runner, as Workbench installs it
 
 from harness import Daemon  # noqa: E402
 
@@ -577,6 +578,70 @@ class Commands(unittest.TestCase):
         self.assertIn("16,384 MiB or more", refused.summary)
         nothing = self.c.submit("render.gl-gate", {"report": str(self.d.data / "probe.json")}).result(timeout=120)
         self.assertEqual(nothing.outcome, "usage")
+
+
+FAKE_GRADLE = r'''
+import json, pathlib, sys
+fail = "--fail" in sys.argv
+results = pathlib.Path("build/test-results/glTest")
+results.mkdir(parents=True, exist_ok=True)
+cases = '<testcase classname="gl.ReadbackTest" name="rows_are_bottom_up"/>'
+if fail:
+    cases += ('<testcase classname="gl.StateTest" name="restores_read_buffer">'
+              '<failure message="read buffer was GL_BACK, expected GL_FRONT">trace</failure></testcase>')
+(results / "TEST-gl.xml").write_text(
+    f'<testsuite name="gl" tests="{2 if fail else 1}" failures="{1 if fail else 0}" errors="0" skipped="0">{cases}</testsuite>')
+if "--no-report" not in sys.argv:
+    report = pathlib.Path(".local/verification/gl-1")
+    report.mkdir(parents=True, exist_ok=True)
+    (report / "capabilities.json").write_text(json.dumps({
+        "vendor": "NVIDIA Corporation", "renderer": "Test GPU", "version": "4.6.0 NVIDIA 610.88",
+        "profile": "compatibility", "extensions": ["GL_ARB_direct_state_access"]}))
+raise SystemExit(1 if fail else 0)
+'''
+
+
+class GlRun(unittest.TestCase):
+    """render.gl-run with a fake build: results read, failing tests named, the capability report judged."""
+
+    def setUp(self):
+        from wb_render import glrun
+        self.glrun = glrun
+        self.root = Path(tempfile.mkdtemp(prefix="wb-glrun-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        (self.root / "checkout").mkdir()
+        (self.root / "fake_gradle.py").write_text(FAKE_GRADLE, encoding="utf-8")
+        self.gates = {"dsa": {"min_version": "4.5", "extensions": ["GL_ARB_direct_state_access"]},
+                      "mesh": {"min_version": "4.6", "extensions": ["GL_NV_mesh_shader|GL_EXT_mesh_shader"]}}
+
+    def run_gl(self, name, *extra, gate="dsa"):
+        from wb_core.module import Context
+        ctx = Context({"job": "direct", "command": "render.gl-run", "module": "render",
+                       "work": str(self.root / name / "work"), "out": str(self.root / name / "out"),
+                       "module_config": {"gates": self.gates}}, lambda event: None)
+        result = self.glrun.gl_run(ctx, str(self.root / "checkout"), "glTest", "",
+                                   [sys.executable, str(self.root / "fake_gradle.py")], list(extra),
+                                   ["**/build/test-results/**/*.xml"], ".local/verification/gl-*/capabilities.json",
+                                   gate, 60, "")
+        return ctx, result
+
+    def test_a_passing_run_with_a_card_the_gate_accepts(self):
+        ctx, result = self.run_gl("ok")
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        self.assertEqual((result["tests"], result["failures"]), (1, 0))
+        self.assertEqual(result["card"]["renderer"], "Test GPU")
+        self.assertTrue((self.root / "ok" / "out" / "capabilities.json").is_file())
+
+    def test_a_failing_test_is_named(self):
+        ctx, result = self.run_gl("fail", "--fail")
+        self.assertIn("failed: gl.StateTest.restores_read_buffer: read buffer was GL_BACK, expected GL_FRONT",
+                      ctx.findings)
+
+    def test_a_card_the_gate_refuses_and_a_missing_report_are_findings(self):
+        ctx, _ = self.run_gl("mesh", gate="mesh")
+        self.assertTrue(any(f.startswith("gate mesh: not ") for f in ctx.findings), ctx.findings)
+        ctx, _ = self.run_gl("noreport", "--no-report")
+        self.assertTrue(any("wrote no capability report" in f for f in ctx.findings), ctx.findings)
 
 
 if __name__ == "__main__":
