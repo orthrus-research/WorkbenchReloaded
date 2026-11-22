@@ -669,8 +669,7 @@ class Workbench:
                 result["quote"] = event.get("quote")
             elif kind == "done":
                 result.update(outcome=event.get("outcome"), summary=event.get("summary"), data=event.get("data"))
-        process.wait()
-        stderr.join(2)
+        _reap(process, stderr, 2)
         if "outcome" not in result:
             result.update(outcome="environment", summary=f"worker exited {process.returncode} without a result")
         return result
@@ -754,8 +753,7 @@ class Workbench:
             event = _parse(line)
             if event is not None:
                 self._absorb(job, entry, event, collected, result)
-        process.wait()
-        stderr.join(5)
+        _reap(process, stderr, 5)
         if not result:
             result = {"outcome": "environment", "summary": f"worker exited {process.returncode} without a result"}
         if running.cancel_requested and result.get("outcome") != "cancelled" and process.returncode != 0:
@@ -1093,6 +1091,16 @@ def default_prompt(command: Command, quote: dict) -> dict:
     return {"question": f"Approve {command.full}: {what}{money}?",
             "options": [{"label": "Approve", "description": f"Run {command.full} on quote {quote.get('id')}."},
                         {"label": "Decline", "description": "Cancel the job; nothing is spent."}]}
+
+
+def _reap(process: subprocess.Popen, stderr: threading.Thread, wait: float):
+    """Waits for a worker whose output has been read to its end, then closes its pipes (stderr only
+    once its pump is done reading)."""
+    process.wait()
+    stderr.join(wait)
+    process.stdout.close()
+    if not stderr.is_alive():
+        process.stderr.close()
 
 
 def _parse(line: str) -> dict | None:
