@@ -564,7 +564,7 @@ EXTRA = b"made by hand"
 
 
 class Bundles(unittest.TestCase):
-    """vast.lab-inputs, vast.bundle (and its former name) and vast.rent of the result, from a template in a config
+    """vast.lab-inputs, vast.bundle and vast.rent of the result, from a template in a config
     file, against the fake service."""
 
     @classmethod
@@ -615,7 +615,7 @@ class Bundles(unittest.TestCase):
         names = {c["name"]: c for c in self.c.commands()}
         for name in ("vast.bundle", "vast.lab-inputs"):
             self.assertTrue(names[name]["active"], names[name]["reasons"])
-        self.assertEqual(names["vast.bundle"]["aliases"], ["vast.bundle-riven"])
+        self.assertEqual(names["vast.bundle"]["aliases"], [])  # no project's name, even as an alias
 
     def test_lab_inputs_are_built_with_receipts_and_taken_from_the_pin_cache(self):
         out = self.lab()
@@ -737,13 +737,13 @@ class Bundles(unittest.TestCase):
         self.assertIsNone(checked.data.bundle)
         self.assertFalse((self.d.out / "bundle-dry" / "bundle.toml").exists())
 
-    def test_the_former_name_takes_a_folder_already_written(self):
+    def test_a_bundle_takes_a_folder_already_written(self):
         written = self.d.out / "written"
         written.mkdir(exist_ok=True)
         (written / "plan.env").write_text("NAME=inst-01\n", encoding="utf-8")
         (written / "forests.json").write_bytes(b"{}")
-        made = self.c.submit("vast.bundle-riven", {"plan": str(written), "lab": str(self.lab()), "name": "by-hand"},
-                             out=str(written / "made")).result(timeout=120)  # as callers of the former name made it
+        made = self.c.submit("vast.bundle", {"plan": str(written), "lab": str(self.lab()), "name": "by-hand"},
+                             out=str(written / "made")).result(timeout=120)
         self.assertEqual(made.outcome, "ok", made.summary)
         self.assertEqual(made["command"], "vast.bundle")
         folder = written / "made"
@@ -751,7 +751,7 @@ class Bundles(unittest.TestCase):
         self.assertFalse((folder / "files" / "made").exists())  # the out folder inside it is not taken
         self.assertEqual(tomllib.loads((folder / "bundle.toml").read_text(encoding="utf-8"))["name"], "by-hand")
         (written / "plan.env").unlink()
-        missing = self.c.submit("vast.bundle-riven", {"plan": str(written), "lab": str(self.lab())},
+        missing = self.c.submit("vast.bundle", {"plan": str(written), "lab": str(self.lab())},
                                 out=str(written / "made")).result(timeout=120)
         self.assertEqual(missing.outcome, "finding")
         self.assertIn("has no plan.env", missing.summary)

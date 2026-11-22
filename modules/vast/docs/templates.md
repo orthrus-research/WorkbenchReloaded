@@ -10,8 +10,7 @@ how one is made, and three commands use it:
 | `vast.bundle` | makes a bundle: the template's folder, a plan's game steps written as the template declares, the input archives pinned; checked, with a manifest of every file's SHA-256 |
 | `vast.rent` | rents an offer and runs a bundle on it (after an explicit yes on its quote) |
 
-`plan.run machine=rental` calls `vast.bundle` and then `vast.rent` itself. `vast.bundle-riven`, the former name of
-`vast.bundle`, still resolves to it.
+`plan.run machine=rental` calls `vast.bundle` and then `vast.rent` itself.
 
 ## Where a template lives
 
@@ -130,7 +129,7 @@ that exist as outputs of the rental, so a later step reads one as `{steps.<id>.o
 ## The bundle
 
 `vast.bundle template=<name> steps=[...] lab=<folder> --out <folder>` (or `plan=<folder>` already holding the steps
-file and the files it names, as the former name took it) writes:
+file and the files it names, written by hand) writes:
 
 - `files/`: the template's folder, the steps file and the files the steps name; its children go to `/root/bundle`;
 - `bundle.toml`: the input archives by path, each pinned by its SHA-256, then `files/`, the needs and the run;

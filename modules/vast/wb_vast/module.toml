@@ -103,7 +103,6 @@ params.bundle = { type = "path.in" }
 
 [[command]]
 name = "bundle"
-aliases = ["vast.bundle-riven"]
 summary = "Make a rental bundle from a template in config, filled with a plan's game steps and the template's input archives; checked, with a manifest of every file's SHA-256. Rents nothing."
 handler = "wb_vast.commands:bundle"
 requires = { config = ["modules.vast.templates"] }
