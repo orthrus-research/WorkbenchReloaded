@@ -115,7 +115,8 @@ and why; `repo-verify` hashes it all again.
 library by the target's rules, the natives, the client JAR and the assets, each fetched against the SHA-1 its
 metadata names into a shared cache, and `runtime.json` naming the main class, arguments and class path.
 `lab.install-server` installs a dedicated server with its loader's own installer, pinned by SHA-256. `lab.pack` gets
-a release-exact modpack from its Modrinth pack file, every file checked by its SHA-512. `lab.session`
+a release-exact modpack from its pack file, every file checked by the hash the pack names: a Modrinth pack
+directly, a CurseForge pack through CurseForge's API with the machine's key. `lab.session`
 then runs one server and several clients started straight from the runtime, each with an offline name, waits for
 them to join, can kill one on cue, and keeps every console, log and capture; `desktop = "hidden"` keeps the clients
 on a desktop of their own that never takes the input (Windows). `lab.userdev` runs a project's development client

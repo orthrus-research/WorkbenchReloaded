@@ -27,6 +27,9 @@ HITS: list[str] = []
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         HITS.append(self.path)
+        if self.path.startswith("/v1/") and self.headers.get("x-api-key") != "test-key":
+            self.send_error(403)  # the CurseForge API wants its key
+            return
         body = FILES.get(self.path)
         if body is None:
             self.send_error(404)
@@ -132,6 +135,81 @@ class Packs(unittest.TestCase):
             with self.subTest(path=bad):
                 with self.assertRaises(ParamError):
                     self.run_pack("escape", mrpack(self.base, [entry(self.base, bad, BOTH)]))
+
+
+class CurseForgePacks(unittest.TestCase):
+    """A CurseForge pack: each file found through the (fake) API with the machine's key, checked by its SHA-1."""
+
+    MOD = b"a curseforge mod"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="wb-cfpack-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        FILES.clear()
+        HITS.clear()
+        FILES["/files/mod-a.jar"] = self.MOD
+        FILES["/v1/mods/10/files/20"] = json.dumps({"data": {
+            "fileName": "mod-a.jar", "downloadUrl": self.base + "/files/mod-a.jar",
+            "hashes": [{"value": hashlib.sha1(self.MOD).hexdigest(), "algo": 1}, {"value": "x", "algo": 2}]}}).encode()
+        FILES["/v1/mods/11/files/21"] = json.dumps({"data": {"fileName": "kept-back.jar", "downloadUrl": None,
+                                                             "hashes": []}}).encode()
+        (self.root / "key").write_text("test-key\n", encoding="utf-8")
+        self.secrets = {"curseforge_api_key": str(self.root / "key")}
+        self.config = {"pack_cache": str(self.root / "cache"), "curseforge_api": self.base,
+                       "curseforge_hosts": ["127.0.0.1"]}
+
+    def cf_pack(self, files: list[dict]) -> bytes:
+        manifest = {"manifestType": "minecraftModpack", "name": "CF Pack", "version": "2.0", "overrides": "overrides",
+                    "minecraft": {"version": "1.12.2", "modLoaders": [{"id": "forge-14.23.5.2860", "primary": True}]},
+                    "files": files}
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("manifest.json", json.dumps(manifest))
+            archive.writestr("overrides/config/pack.cfg", "from=curseforge\n")
+        return buffer.getvalue()
+
+    def run_pack(self, name: str, data: bytes):
+        source = self.root / f"{name}.zip"
+        source.write_bytes(data)
+        ctx = Context({"job": "direct", "command": "lab.pack", "module": "lab", "work": str(self.root / name / "w"),
+                       "out": str(self.root / name / "out"), "module_config": self.config, "secrets": self.secrets},
+                      lambda e: None)
+        result = pack.pack(ctx, str(source), "client", False)
+        return ctx, result, self.root / name / "out"
+
+    def test_a_curseforge_pack_comes_through_the_api_checked_by_sha1(self):
+        ctx, result, out = self.run_pack("cf", self.cf_pack([{"projectID": 10, "fileID": 20, "required": True}]))
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        self.assertEqual((out / "pack" / "mods" / "mod-a.jar").read_bytes(), self.MOD)
+        self.assertEqual((out / "pack" / "config" / "pack.cfg").read_text(encoding="utf-8"), "from=curseforge\n")
+        receipt = json.loads((out / "receipt.json").read_text(encoding="utf-8"))
+        self.assertEqual((receipt["format"], receipt["dependencies"]["loaders"]),
+                         ("curseforge", {"forge-14.23.5.2860": True}))
+
+    def test_a_file_its_author_keeps_back_is_named(self):
+        ctx, _, _ = self.run_pack("held", self.cf_pack([{"projectID": 11, "fileID": 21, "required": True}]))
+        self.assertTrue(any("kept-back.jar" in f and "download it by hand" in f for f in ctx.findings), ctx.findings)
+
+    def test_the_api_key_is_needed_and_checked(self):
+        from wb_core.module import EnvironmentProblem
+        (self.root / "key").write_text("wrong-key\n", encoding="utf-8")
+        with self.assertRaises(EnvironmentProblem) as refused:
+            self.run_pack("wrong", self.cf_pack([{"projectID": 10, "fileID": 20}]))
+        self.assertIn("refused the key", str(refused.exception))
+        self.secrets = {}
+        with self.assertRaises(EnvironmentProblem) as missing:
+            self.run_pack("nokey", self.cf_pack([{"projectID": 10, "fileID": 20}]))
+        self.assertIn("curseforge_api_key is not mounted", str(missing.exception))
 
 
 if __name__ == "__main__":
