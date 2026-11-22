@@ -158,6 +158,7 @@ class RulesFileTest(unittest.TestCase):
         self.assertEqual(categories(scrub.check_path(".tooling/x", loaded)), ["private-file"])
         self.assertEqual(categories(scrub.check_line(CREDIT, "x", loaded)), ["attribution"])
         self.assertEqual(categories(scrub.check_line("example.chat/share/9", "x", loaded)), ["denied-text"])
+        self.assertEqual(categories(scrub.check_identity("Examplebot <bot@example.com>", "x", loaded)), ["attribution"])
 
     def test_a_named_rules_file_must_exist(self):
         os.environ["ORTHRUS_SCRUB_RULES_FILE"] = str(self.root / "missing.toml")
@@ -218,6 +219,35 @@ class RepositoryTest(unittest.TestCase):
         self.write("b.txt", "clean too\n")
         self.commit(f"Add b\n\n{TRAILER}\n")
         self.assertEqual(self.run_tool("range", f"{base}..HEAD"), 1)
+
+    def test_range_checks_who_made_each_commit_merges_included(self):
+        base = self.commit("Start")
+        self.git("checkout", "-q", "-b", "topic")
+        self.write("notes.txt", f"build in {DRIVE}\n")
+        topic = self.commit("Add notes")
+        self.git("checkout", "-q", "main")
+        self.git("-c", f"user.email={MAIL}", "merge", "-q", "--no-ff", "-m", "Merge topic", "topic")
+        merge = self.git("rev-parse", "HEAD").strip()
+        found = [(f.where, f.category) for f in scrub.check_range(self.root, [f"{base}..HEAD"], rules())]
+        self.assertEqual(
+            found,
+            [
+                (f"{topic[:10]} notes.txt:1", "local-path"),  # once: a merge's diff is not checked again
+                (f"{merge[:10]} author", "personal-data"),
+                (f"{merge[:10]} committer", "personal-data"),
+            ],
+        )
+        self.assertEqual(self.run_tool("range", f"{topic}..HEAD"), 1)
+
+    def test_an_author_the_rules_do_not_credit(self):
+        base = self.commit("Start")
+        self.write("a.txt", "clean\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "--no-verify", "--author", "Examplebot <bot@example.com>", "-m", "Add a")
+        named = rules(credited=scrub.credited_pattern(["examplebot"]))
+        found = scrub.check_range(self.root, [f"{base}..HEAD"], named)
+        self.assertEqual([(f.where.split()[1], f.category) for f in found], [("author", "attribution")])
+        self.assertEqual(scrub.check_range(self.root, [f"{base}..HEAD"], rules()), [])
 
     def test_message_file_ignores_git_comments(self):
         message = self.root / "MSG"
