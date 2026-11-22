@@ -95,6 +95,8 @@ class Database:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
+        self._opened: list[sqlite3.Connection] = []  # every thread's connection, for close()
+        self._opened_lock = threading.Lock()
         self.write_lock = threading.RLock()
         with self.connect() as connection:
             connection.execute("PRAGMA journal_mode=WAL")
@@ -111,7 +113,18 @@ class Database:
             connection.execute("PRAGMA busy_timeout=30000")
             connection.execute("PRAGMA foreign_keys=ON")
             self._local.connection = connection
+            with self._opened_lock:
+                self._opened.append(connection)
         return _Context(connection)
+
+    def close(self) -> None:
+        """Closes every thread's connection, for when nothing uses the database any more (a thread
+        that still does opens a new one)."""
+        with self._opened_lock:
+            opened, self._opened = self._opened, []
+            self._local = threading.local()
+        for connection in opened:
+            connection.close()
 
     def migrate(self, module: str, scripts: list[str]) -> int:
         """Applies the numbered scripts not yet applied for ``module``; returns how many ran."""

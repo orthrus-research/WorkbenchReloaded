@@ -85,5 +85,6 @@ class Daemon:
             self.server.server_close()
         self.workbench.stop(timeout=5)
         self.hub.close()
+        self.workbench.db.close()  # an open database file cannot be deleted on Windows
         if not keep:
             shutil.rmtree(self.root, ignore_errors=True)

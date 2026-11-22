@@ -308,7 +308,7 @@ class Migration(unittest.TestCase):
         database.execute("INSERT INTO ledger_finding (id, date, title, statement, status) "
                          "VALUES ('f-old', '2025-06-04', 'T', 'S', 'established')")
         database.execute("INSERT INTO ledger_finding_run VALUES ('f-old', 1), ('f-old', 2)")
-        database.connect().close()
+        database.close()
         daemon = Daemon(root=root).start()
         try:
             db = daemon.workbench.db
