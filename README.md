@@ -44,7 +44,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 | `mixin` | Mixin and patches: configurations and application verified without the game | `remap-proof`, `apply`, `doctor` |
 | `probe` | probes and harnesses: JVM runs without the game | `jdk-matrix`, `api-consumer` |
 | `source` | formatting and determinism of source | `format`, `strict-math` |
-| `lab` | game instances and sessions: host routines, dedicated servers in the container, runtimes assembled from launcher metadata, and a server with several clients | `ensure`, `snapshot`, `reset`, `instances`, `remove`, `dedupe`, `store-gc`, `play`, `turn`, `script`, `prepare`, `migrate`, `prune-instances`, `gpu`, `queue`, `server`, `server-scenario`, `session`, `assemble`, `install-server` |
+| `lab` | game instances and sessions: host routines, dedicated servers in the container, runtimes assembled from launcher metadata, and a server with several clients | `ensure`, `snapshot`, `reset`, `instances`, `remove`, `dedupe`, `store-gc`, `play`, `turn`, `script`, `prepare`, `migrate`, `prune-instances`, `gpu`, `queue`, `server`, `server-scenario`, `session`, `assemble`, `install-server`, `userdev` |
 | `drive` | workload drivers: what a game session is made to do and see | `tour-lint`, `path`, `path-check`, `gallery` |
 | `frames` | capture and visual verification | `compare`, `measure`, `check`, `quality` |
 | `world` | world saves on disk and generated worlds: reading, comparing, goldens | `read`, `diff`, `digest-diff`, `light-diff`, `golden`, `preview` |

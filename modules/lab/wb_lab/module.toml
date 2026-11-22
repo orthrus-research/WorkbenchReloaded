@@ -231,6 +231,28 @@ result.server = { type = "string", optional = true }
 result.files = { type = "int", optional = true }
 
 [[command]]
+name = "userdev"
+summary = "Run a project's development client (runClient, or another JavaExec task) through its Gradle wrapper in a fresh run folder: inputs hashed before and after, a deadline, the class path it ran on, a receipt the game must write when asked, and every capture kept by SHA-256 with each PNG checked. An exit code alone never passes a run."
+handler = "wb_lab.userdev:userdev"
+runs_on = ["host"]
+resources = { gpu = true }
+timeout = "3h"
+params.checkout = { type = "path.in", digest = "git", summary = "the project checkout whose build runs the client" }
+params.task = { type = "string", default = "runClient", summary = "the dev-run task (a JavaExec task)" }
+params.project = { type = "string", default = "", summary = "the Gradle subproject that has it; empty: the root project" }
+params.gradle = { type = "list", items = "string", default = [], summary = "the build's command ({checkout} is filled in); empty: the checkout's own wrapper" }
+params.args = { type = "list", items = "string", default = [], summary = "more Gradle arguments (-P properties, --offline)" }
+params.system_properties = { type = "object", default = {}, summary = "system properties for the client, beside wb.run.id and wb.run.output (the evidence folder)" }
+params.inputs = { type = "list", items = "string", default = ["src/**", "*.gradle", "*.gradle.kts", "gradle.properties"], summary = "globs of the checkout's files that must not change during the run" }
+params.receipt = { type = "string", default = "", summary = "a file the run must write under evidence/, holding receipt_ok = true; empty: none" }
+params.receipt_ok = { type = "string", default = "passed", summary = "the receipt's key (dotted) that must be true" }
+params.captures = { type = "list", items = "string", default = ["**/*.png"], summary = "globs of what the run leaves in its run and evidence folders to keep in the inventory" }
+params.deadline = { type = "duration", default = "10m", summary = "the run is stopped after this" }
+params.jdk = { type = "string", default = "26", summary = "the JDK Gradle runs on, as the host names them; empty: the environment's" }
+result.exit = { type = "int", optional = true }
+result.captures = { type = "int", optional = true }
+
+[[command]]
 name = "assemble"
 summary = "Assemble a game runtime from a launcher instance's metadata: libraries by the target's rules, natives, the client JAR and assets fetched against their SHA-1 into a shared cache (or found in candidate folders), the natives unpacked, and runtime.json naming the main class, arguments and class path. Starts nothing."
 handler = "wb_lab.assemble:assemble"
