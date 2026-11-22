@@ -7,15 +7,16 @@ startup = "wb_vast.commands:reconcile"
 [config]
 api = { type = "string", default = "https://console.vast.ai/api/v0" }
 image = { type = "string", default = "ubuntu:26.04", summary = "stock image a rental starts from (D21)" }
-min_cores = { type = "float", default = 8, summary = "offers with fewer effective cores are refused (cal-01)" }
+min_cores = { type = "float", default = 8, summary = "offers with fewer effective cores are refused: a small host can starve a build or a game of threads" }
 poll_seconds = { type = "float", default = 20, min = 0.01 }
 search_limit = { type = "int", default = 100, min = 10, max = 500, summary = "rows per search; every row counts against Vast's daily quota of 20,000" }
 daily_rows = { type = "int", default = 20000, summary = "Vast's daily search-row quota (seen 2026-11-21)" }
 market_share = { type = "float", default = 0.3, min = 0.0, max = 1.0, summary = "the market's share of the daily quota, paced over the UTC day; the rest is reserved for work" }
 market_limit = { type = "int", default = 25, min = 5, max = 500, summary = "rows per card per snapshot; cards rotate across snapshots" }
 ssh_retry_seconds = { type = "float", default = 10, min = 0.01 }
-# The reference cards and their stand-ins (Quadrature's PLAN, Steam survey Oct 2026) plus the Turing floor.
-cards = { type = "list", items = "string", default = ["RTX 3050", "RTX 3060", "RTX 4060", "RTX 4060 Ti", "RTX 5060", "RTX 5060 Ti", "RTX 5070", "RTX 2060S", "RTX 2070S", "RTX 2070", "RTX 2060", "RTX 2080"] }
+cards = { type = "list", items = "string", default = [], summary = "the cards offer lookups search and vast.market rotates through; none are built in" }
+templates = { type = "object", default = {}, summary = "bundle templates by name, [modules.vast.templates.<name>]: a folder and its entry script, the input archives and their recipes, how a plan's game steps are written and which results become step outputs (every key: modules/vast/docs/templates.md)" }
+root = { type = "string", default = "", summary = "the host folder a template's relative folder and its recipes' relative repositories are under (a shared config names them relatively)" }
 
 [requires]
 secrets = ["vast_api_key"]
@@ -23,10 +24,10 @@ module = ["ledger"]
 
 [[command]]
 name = "offers"
-summary = "List rentable offers for a card (or the reference cards); rents nothing."
+summary = "List rentable offers for a card (or every configured card); rents nothing."
 handler = "wb_vast.commands:offers"
 requires = { network = ["console.vast.ai:443"] }
-params.gpu = { type = "string", default = "RTX 3060" }
+params.gpu = { type = "string", default = "", summary = "a card; empty: every configured card" }
 params.max_dph = { type = "money", unit = "USD/h", default = 0.30 }
 params.driver_branch = { type = "string", pattern = "^R[0-9]{3}$", optional = true, summary = "e.g. R580" }
 params.min_cores = { type = "float", default = 0 }
@@ -34,7 +35,7 @@ result.offers = { type = "list" }
 
 [[command]]
 name = "market"
-summary = "Record a market snapshot: every listed offer of the reference cards, asked three times."
+summary = "Record a market snapshot: every listed offer of the configured cards, asked three times."
 handler = "wb_vast.commands:market_snapshot"
 requires = { network = ["console.vast.ai:443"] }
 params.max_dph = { type = "money", unit = "USD/h", default = 2.0 }
@@ -101,9 +102,32 @@ handler = "wb_vast.commands:bundle_check"
 params.bundle = { type = "path.in" }
 
 [[command]]
-name = "bundle-riven"
-summary = "Make a riven-tours bundle (calibration 01's shape) from a plan folder and the linux-lab tars."
-handler = "wb_vast.commands:bundle_riven"
-params.plan = { type = "path.in", summary = "folder with plan.env, jars/ and tours" }
-params.lab = { type = "path.in", summary = "folder with riven.tar, cubature.tar, pins.tar, cache.tar" }
-params.name = { type = "string", optional = true }
+name = "bundle"
+aliases = ["vast.bundle-riven"]
+summary = "Make a rental bundle from a template in config, filled with a plan's game steps and the template's input archives; checked, with a manifest of every file's SHA-256. Rents nothing."
+handler = "wb_vast.commands:bundle"
+requires = { config = ["modules.vast.templates"] }
+resources = { cpu = 0.5 }
+params.template = { type = "string", default = "", summary = "a name under [modules.vast.templates]; empty: the only one configured" }
+params.steps = { type = "list", items = "object", default = [], summary = "the game steps to write as the template declares, as plan.run passes them: id, command, role, params" }
+params.values = { type = "object", default = {}, summary = "values the template's steps file may use as {values.<key>}; plan.run passes its [rental] table" }
+params.plan = { type = "path.in", optional = true, summary = "instead of steps: a folder already holding the template's steps file and the files it names, taken as it is" }
+params.lab = { type = "path.in", optional = true, summary = "the folder of the template's input archives (vast.lab-inputs makes them, with receipts)" }
+params.name = { type = "string", optional = true, summary = "the bundle's name; default: the plan folder's, else the template's" }
+params.dry_run = { type = "bool", default = false, summary = "check the template, the steps and the inputs (against their pins and receipts, unhashed) and write nothing" }
+result.bundle = { type = "string" }
+result.problems = { type = "list" }
+result.outputs = { type = "list" }
+
+[[command]]
+name = "lab-inputs"
+summary = "Build the input archives a template declares, each from its pinned commit in a throwaway clean tree by its recipe, with a receipt; archives the pin cache holds are taken from it. Rents nothing."
+handler = "wb_vast.commands:lab_inputs"
+requires = { config = ["modules.vast.templates"], binary = ["git"] }
+resources = { cpu = 2, mem_gb = 4 }
+timeout = "3h"
+params.template = { type = "string", default = "", summary = "a name under [modules.vast.templates]; empty: the only one configured" }
+params.inputs = { type = "list", items = "string", default = [], summary = "the inputs to build, by file name; empty: every input with a recipe" }
+params.cached = { type = "bool", default = true, summary = "take an archive the pin cache holds (by its pinned SHA-256, or as an earlier build of the same recipe made it); false: build again to check it reproduces" }
+params.keep = { type = "bool", default = false, summary = "keep the clean trees after the run" }
+result.archives = { type = "list" }

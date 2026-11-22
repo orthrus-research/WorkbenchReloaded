@@ -8,12 +8,13 @@ clean-up at the next start (S15).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import re
+import shutil
 import sys
-import tarfile
 import time
 import urllib.parse
 from pathlib import Path
@@ -22,7 +23,9 @@ from wb_core.module import Context, EnvironmentProblem, ParamError
 
 from . import bundle as bundles
 from . import market, remote
+from . import template as templates
 from .api import DEFAULT_API, Vast, VastError
+
 
 def label_prefix() -> str:
     """Rentals are labelled wb-<installation>-<job>: the start-up clean-up destroys only this installation's."""
@@ -67,8 +70,12 @@ def client(ctx: Context) -> Vast:
     return Vast(ctx.secret("vast_api_key"), ctx.config.get("api") or DEFAULT_API, recorder, ctx.job)
 
 
-def cards(ctx: Context, card: str | None) -> list[str]:
-    return [card] if card else list(ctx.config.get("cards") or [])
+def cards(ctx: Context, card: str | None = None) -> list[str]:
+    """The card asked for, or the configured cards (``[modules.vast] cards``; none are built in)."""
+    named = [card] if card else list(ctx.config.get("cards") or [])
+    if not named:
+        raise ParamError("no card named and no [modules.vast] cards configured (offers are searched by card)")
+    return named
 
 
 # ----------------------------------------------------------------------------------------------
@@ -82,7 +89,7 @@ def offers(ctx: Context, gpu: str, max_dph: float, driver_branch=None, min_cores
                     key=lambda o: o.get("dph_total", 0))
     for offer in listed[:20]:
         ctx.log.info(market.describe(offer))
-    ctx.summary(f"{len(listed)} offer(s) for {gpu or 'the reference cards'} at or below ${max_dph}/h"
+    ctx.summary(f"{len(listed)} offer(s) for {gpu or 'the configured cards'} at or below ${max_dph}/h"
                 + (f" on {driver_branch}" if driver_branch else ""))
     keep = ("id", "gpu_name", "gpu_ram", "dph_total", "driver_version", "cpu_cores_effective", "cpu_name",
             "reliability", "geolocation", "machine_id", "pcie_bw", "inet_down", "verified")
@@ -229,8 +236,8 @@ def _check_offer(ctx: Context, offer: dict | None, offer_id: str, max_dph: float
         raise EnvironmentProblem(f"offer {offer_id} is gone or above ${max_dph}/h; nothing rented")
     cores = offer.get("cpu_cores_effective") or 0
     if cores < min_cores:
-        raise ParamError(f"offer {offer_id} has {cores} effective cores, under min_cores {min_cores} (2 cores gave "
-                         "Cubature one build thread and a tour that never settled, cal-01); nothing rented")
+        raise ParamError(f"offer {offer_id} has {cores} effective cores, under min_cores {min_cores} (a small host "
+                         "can starve a build or a game of threads; give min_cores= to accept it); nothing rented")
 
 
 # Vast states prices to a few decimals; a bill this close to the quote is the same price, not a rise. It is at most
@@ -263,7 +270,7 @@ def quote_rent(ctx: Context, offer: str, bundle: str, max_dph: float, cap: float
     b = _bundle(ctx, bundle)
     vast = client(ctx)
     min_cores = ctx.config.get("min_cores", 8) if min_cores is None else min_cores
-    found = market.find(vast, offer, list(ctx.config.get("cards") or []), max_dph,
+    found = market.find(vast, offer, cards(ctx), max_dph,
                         storage_gb=disk or b.disk_gb)
     _check_offer(ctx, found, offer, max_dph, min_cores)
     return _quote_for(ctx, found, cap, disk or b.disk_gb, b.upload_bytes(), f"run bundle {b.name} on a rented GPU")
@@ -272,7 +279,7 @@ def quote_rent(ctx: Context, offer: str, bundle: str, max_dph: float, cap: float
 @_guard
 def quote_probe(ctx: Context, offer: str, max_dph: float):
     vast = client(ctx)
-    found = market.find(vast, offer, list(ctx.config.get("cards") or []), max_dph, storage_gb=16)
+    found = market.find(vast, offer, cards(ctx), max_dph, storage_gb=16)
     _check_offer(ctx, found, offer, max_dph, 0)
     return _quote_for(ctx, found, 15 * 60, 16, 0, "an OpenGL feasibility probe (about 10 minutes)")
 
@@ -304,7 +311,7 @@ def rent(ctx: Context, offer: str, bundle: str, max_dph: float, cap: float, min_
     vast = client(ctx)
     min_cores = ctx.config.get("min_cores", 8) if min_cores is None else min_cores
     ctx.progress("find", msg=f"looking up offer {offer} again")
-    found = market.find(vast, offer, list(ctx.config.get("cards") or []), max_dph,
+    found = market.find(vast, offer, cards(ctx), max_dph,
                         storage_gb=disk or b.disk_gb)
     _check_offer(ctx, found, offer, max_dph, min_cores)
     price = float(found.get("dph_total") or 0)
@@ -513,7 +520,7 @@ sleep 3600
 def probe(ctx: Context, offer: str, max_dph: float):
     quote = ctx.quote or {}
     vast = client(ctx)
-    found = market.find(vast, offer, list(ctx.config.get("cards") or []), max_dph, storage_gb=16)
+    found = market.find(vast, offer, cards(ctx), max_dph, storage_gb=16)
     _check_offer(ctx, found, offer, max_dph, 0)
     if float(found.get("dph_total") or 0) > float(quote.get("dph", 0)) + BILLING_SLACK:
         ctx.requote(_quote_for(ctx, found, 15 * 60, 16, 0, "an OpenGL feasibility probe"), "the price rose")
@@ -565,32 +572,260 @@ def bundle_check(ctx: Context, bundle: str):
             "bootstrap": bootstrap_script(b)}
 
 
-def bundle_riven(ctx: Context, plan: str, lab: str, name=None):
-    """Makes a riven-tours bundle (calibration 01's shape): the plan folder (plan.env, jars/, tours) plus the
-    four linux-lab tars, with the run script ported from rent/run.sh."""
-    plan_dir, lab_dir = Path(plan), Path(lab)
-    if not (plan_dir / "plan.env").is_file():
-        raise ParamError(f"{plan} has no plan.env")
-    tars = ["riven.tar", "cubature.tar", "pins.tar", "cache.tar"]
-    missing = [t for t in tars if not (lab_dir / t).is_file()]
-    if missing:
-        raise ParamError(f"{lab} lacks {', '.join(missing)} (make them with linux-lab/pack.sh)")
+# ----------------------------------------------------------------------------------------------
+# bundles and their input archives, made from templates in config (wb_vast.template): no bundle is built in
+def _template(ctx: Context, name: str) -> templates.Template:
+    """A template from ``[modules.vast.templates]``: the one named, or the only one configured."""
+    configured = ctx.config.get("templates") or {}
+    if not name:
+        if len(configured) != 1:
+            raise ParamError(f"name a template: {', '.join(sorted(configured))}" if configured else
+                             "no bundle templates are configured: add [modules.vast.templates.<name>] (see "
+                             "modules/vast/docs/templates.md)")
+        name = next(iter(configured))
+    if name not in configured:
+        raise ParamError(f"no template {name} in [modules.vast.templates] (have: "
+                         f"{', '.join(sorted(configured)) or 'none'})")
+    try:
+        return templates.parse(name, configured[name])
+    except templates.TemplateError as error:
+        raise EnvironmentProblem(str(error)) from None
+
+
+def _host(ctx: Context, value: str, where: str) -> str:
+    """A path from config as the host names it. A relative one (as a shared config writes it) is under the machine's
+    ``[modules.vast] root``."""
+    import ntpath
+    import posixpath
+    windows = len(value) > 2 and value[1] == ":" and value[2] in "\\/"
+    if windows or value.startswith(("/", "\\\\")):
+        return value
+    root = str(ctx.config.get("root") or "")
+    if not root:
+        raise EnvironmentProblem(f"{where} = {value!r} is relative, and [modules.vast] root is not set")
+    return ntpath.join(root, value) if len(root) > 1 and root[1] == ":" else posixpath.join(root, value)
+
+
+def _config_path(ctx: Context, value: str, where: str) -> Path:
+    """A path from config as this process sees it (the container's mount, or the host path itself natively)."""
+    from wb_core.paths import PathError, PathMap
+    from wb_core.settings import Root
+    host = _host(ctx, value, where)
+    roots = [Root(**r) for r in ctx.spec.get("roots", [])]
+    if not roots or ctx.machine == "host":
+        return Path(host)
+    try:
+        return Path(PathMap(roots).resolve(host).container)
+    except PathError as error:
+        raise EnvironmentProblem(f"{where}: {host} is under no configured root ({error})") from None
+
+
+def _readable(ctx: Context, value: str) -> Path:
+    """A host path from a request's values (a step's parameters) as this process can read it."""
+    from wb_core.paths import PathError, PathMap
+    from wb_core.settings import Root
+    roots = [Root(**r) for r in ctx.spec.get("roots", [])]
+    if roots:
+        try:
+            return Path(PathMap(roots).resolve(value).container)
+        except PathError:
+            pass
+    return Path(value)
+
+
+def _digest_of(source: Path | bytes) -> str:
     from wb_core.module import sha256_file
-    name = name or plan_dir.name
-    lines = [f'name = "{name}"', 'purpose = "calibration"', "", "[needs]", 'jdk = ["26"]', "gpu = true",
-             "disk_gb = 32", ""]
-    for tar in tars:
-        lines += ["[[upload]]", f"path = '{ctx.host_path(lab_dir / tar)}'", f'sha256 = "{sha256_file(lab_dir / tar)}"', ""]
-    lines += ["[[upload]]", f"path = '{ctx.host_path(plan_dir)}'", "contents = true", 'exclude = ["out", "windows*"]', "",
-              "[run]", 'script = "run.sh"', 'args = ["/root/bundle"]', 'progress = "^RUN "', 'done = "RUN done"',
-              "failed = '^RUN tour .* exit [^0]'", 'results = ["/root/bundle/results.tar", "/root/run.log"]',
-              'stop = "pkill -f runtime.py"', 'partial = "cd /root/bundle && tar -cf results.tar results"', ""]
-    (ctx.out / "bundle.toml").write_text("\n".join(lines), encoding="utf-8", newline="\n")
-    template = Path(__file__).parent / "templates" / "riven-tours" / "run.sh"
-    (ctx.out / "run.sh").write_text(template.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
-    ctx.output("bundle", ctx.out)
-    ctx.summary(f"bundle {name} written")
-    return {"bundle": ctx.host_path(ctx.out)}
+    return hashlib.sha256(source).hexdigest() if isinstance(source, bytes) else sha256_file(source)
+
+
+def _place(files: dict, relative: str, source: Path | bytes, origin: str, problems: list[str]):
+    """Plans one file of the bundle; two different files for one path are a refusal."""
+    held = files.get(relative)
+    if held is not None and _digest_of(held[0]) != _digest_of(source):
+        problems.append(f"{held[1]} and {origin} both have {relative.removeprefix(bundles.FILES + '/')}, with "
+                        "different bytes")
+        return
+    files.setdefault(relative, (source, origin))
+
+
+def _sidecar(path: Path) -> str | None:
+    try:
+        token = path.read_text(encoding="utf-8").split()[0].lower()
+    except (OSError, IndexError):
+        return None
+    return token if re.fullmatch(r"[0-9a-f]{64}", token) else None
+
+
+def _receipt_of(path: Path) -> tuple[dict | None, str | None]:
+    """The receipt vast.lab-inputs wrote beside an archive, if there is one."""
+    from . import lab_inputs as labinputs  # here, not at the top: the rental commands and the clean-up need no git
+    if not path.is_file():
+        return None, None
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        return None, f"{path.name} is not a receipt ({error})"
+    if not isinstance(receipt, dict) or receipt.get("schema") != labinputs.RECEIPT_SCHEMA:
+        return None, f"{path.name} is not a {labinputs.RECEIPT_SCHEMA} receipt"
+    return receipt, None
+
+
+def _inputs(ctx: Context, chosen: templates.Template, folder: Path | None, dry_run: bool):
+    """The template's input archives in ``folder``, each at its pin and its receipt; with the reasons to refuse."""
+    if not chosen.inputs:
+        return [], []
+    if folder is None:
+        return [], [f"template {chosen.name} takes input archives ({', '.join(chosen.inputs)}): give lab= (a folder "
+                    "holding them, as vast.lab-inputs makes it)"]
+    records, problems = [], []
+    for name, item in chosen.inputs.items():
+        path = folder / name
+        if not path.is_file():
+            problems.append(f"{ctx.host_path(folder)} has no {name}" + (" (vast.lab-inputs makes it)" if item.recipe
+                                                                        else ""))
+            continue
+        receipt, problem = _receipt_of(folder / f"{name}.receipt.json")
+        if problem:
+            problems.append(f"{name}: {problem}")
+            continue
+        claimed = ((receipt or {}).get("archive") or {}).get("sha256") or _sidecar(folder / f"{name}.sha256")
+        digest = None if dry_run else _digest_of(path)
+        actual = digest or claimed
+        if item.sha256 and actual and actual != item.sha256:
+            problems.append(f"{name} is {actual[:12]}, not the {item.sha256[:12]} template {chosen.name} pins")
+            continue
+        if digest and receipt and claimed != digest:
+            problems.append(f"{name} no longer matches its receipt: {name}.receipt.json names {str(claimed)[:12]}, "
+                            f"and it is {digest[:12]}")
+            continue
+        records.append({"name": name, "path": ctx.host_path(path), "to": item.to, "bytes": path.stat().st_size,
+                        "sha256": digest, "pinned": item.sha256,
+                        "receipt": {key: receipt.get(key) for key in ("commit", "tree", "recipe_sha256", "cached")}
+                        if receipt else None})
+    return records, problems
+
+
+def bundle(ctx: Context, template: str, steps: list, values: dict, dry_run: bool, plan=None, lab=None, name=None):
+    chosen = _template(ctx, template)
+    where = f"modules.vast.templates.{chosen.name}"
+    if plan and steps:
+        raise ParamError("give steps (a plan's game steps, as plan.run passes them) or plan (a folder already written "
+                         "for the template), not both")
+    folder = _config_path(ctx, chosen.folder, f"{where}.folder")
+    if not folder.is_dir():
+        raise EnvironmentProblem(f"{where}.folder: {ctx.host_path(folder)} is not a folder")
+    listed, refused = templates.collect(folder, None, [templates.glob_regex(g, f"{where}.exclude")
+                                                       for g in chosen.exclude])
+    if refused:
+        raise EnvironmentProblem(f"{where}.folder holds {refused[0]}, a link or a special file; a bundle holds "
+                                 "regular files only")
+    if chosen.script not in listed:
+        raise EnvironmentProblem(f"{where}.script: {chosen.script} is not in {ctx.host_path(folder)}")
+    out = ctx.out
+    plan_dir = Path(plan) if plan else None
+    label = name or (plan_dir.name if plan_dir else chosen.name)
+    problems: list[str] = []
+    files: dict[str, tuple] = {}
+    for relative in listed:
+        _place(files, f"{bundles.FILES}/{relative}", folder / relative, "the template's folder", problems)
+    if plan_dir is not None:  # a folder already written for the template, taken as it is
+        compiled = templates.Compiled("")
+        compiled.outputs = templates.expand_outputs(chosen, templates.Scope(label, values, {}), problems)
+        if chosen.steps and not (plan_dir / chosen.steps.file).is_file():
+            problems.append(f"{ctx.host_path(plan_dir)} has no {chosen.steps.file} (the steps file template "
+                            f"{chosen.name} takes)")
+        written, links = templates.collect(plan_dir, None, [])
+        problems += [f"the plan folder holds {link}, a link or a special file" for link in links]
+        for relative in written:
+            if not (plan_dir / relative).resolve().is_relative_to(out.resolve()):
+                _place(files, f"{bundles.FILES}/{relative}", plan_dir / relative, "the plan folder", problems)
+    else:
+        compiled = templates.compile_steps(chosen, list(steps), values, label, lambda v: _readable(ctx, v),
+                                           check_files=not dry_run)
+        problems += compiled.problems
+        if chosen.steps:
+            _place(files, f"{bundles.FILES}/{chosen.steps.file}", compiled.text.encode("utf-8"), "the steps file",
+                   problems)
+        for relative, source in compiled.copies.items():
+            _place(files, f"{bundles.FILES}/{relative}", source, "the steps' files", problems)
+    records, refusals = _inputs(ctx, chosen, Path(lab) if lab else None, dry_run)
+    problems += refusals
+    shape = {"name": label, "template": chosen.name, "steps": [s["id"] for s in compiled.steps],
+             "outputs": compiled.outputs, "unpack": chosen.unpack, "dry_run": dry_run}
+    if problems:
+        for problem in problems:
+            ctx.finding(problem)
+        ctx.log.warning("the bundle would be refused" if dry_run else "nothing was written")
+        return {**shape, "bundle": None, "problems": problems, "inputs": records}
+    if dry_run:
+        ctx.summary(f"bundle {label} from template {chosen.name} checks out: {len(files)} file(s), "
+                    f"{len(compiled.steps)} game step(s), {len(records)} input(s)")
+        return {**shape, "bundle": None, "problems": [], "inputs": records}
+    shutil.rmtree(out / bundles.FILES, ignore_errors=True)
+    for stale in ("bundle.toml", bundles.MANIFEST):
+        (out / stale).unlink(missing_ok=True)
+    for relative, (source, _) in sorted(files.items()):
+        target = out / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(source, bytes):
+            target.write_bytes(source)
+        else:
+            shutil.copyfile(source, target)
+    uploads = [{"path": r["path"], "sha256": r["sha256"], "to": r["to"]} for r in records]
+    uploads.append({"path": bundles.FILES, "contents": True})
+    text = bundles.render({"name": label, "template": chosen.name, "purpose": chosen.purpose},
+                          {"jdk": chosen.jdks or None, "gpu": chosen.gpu, "disk_gb": chosen.disk_gb}, uploads,
+                          {"script": f"{bundles.FILES}/{chosen.script}", **chosen.run},
+                          comment=f"made by vast.bundle from template {chosen.name}; {bundles.MANIFEST} holds every "
+                                  "file's SHA-256")
+    (out / "bundle.toml").write_text(text, encoding="utf-8", newline="\n")
+    from wb_build.files import set_digest, write_atomic
+    entries = bundles.listed_files(out)
+    tree = set_digest({e["path"]: e["sha256"] for e in entries})
+    manifest = {"schema": bundles.SCHEMA, **{k: v for k, v in shape.items() if k != "dry_run"}, "files": entries,
+                "files_sha256": tree, "inputs": records}
+    write_atomic(out / bundles.MANIFEST, (json.dumps(manifest, indent=1) + "\n").encode("utf-8"))
+    made = bundles.load(out, lambda v: str(_readable(ctx, v)), verify_uploads=False)
+    ctx.output("bundle", out)
+    ctx.measure("upload_bytes", made.upload_bytes(), "B")
+    ctx.summary(f"bundle {label} from template {chosen.name}: {len(entries)} file(s) and {len(records)} input(s), "
+                f"{made.upload_bytes() / 1e6:.0f} MB to upload, {len(compiled.steps)} game step(s)")
+    return {**shape, "bundle": ctx.host_path(out), "problems": [], "inputs": records, "files": len(entries),
+            "bytes": made.upload_bytes(), "files_sha256": tree}
+
+
+def lab_inputs(ctx: Context, template: str, inputs: list, cached: bool, keep: bool):
+    from . import lab_inputs as labinputs
+    chosen = _template(ctx, template)
+    where = f"modules.vast.templates.{chosen.name}.inputs"
+    names = list(dict.fromkeys(inputs)) or [n for n, i in chosen.inputs.items() if i.recipe]
+    unknown = [n for n in names if n not in chosen.inputs]
+    if unknown:
+        raise ParamError(f"template {chosen.name} has no input {unknown[0]} (it has "
+                         f"{', '.join(chosen.inputs) or 'none'})")
+    by_hand = [n for n in names if chosen.inputs[n].recipe is None]
+    if by_hand:
+        raise ParamError(f'{where}."{by_hand[0]}" has no recipe (repo, commit, artifacts): it is made by hand')
+    if not names:
+        raise ParamError(f"template {chosen.name} declares no input with a recipe")
+    cache = labinputs.pin_cache(ctx)
+    ctx.log.info(f"pin cache: {cache}")
+    results = []
+    for name in names:
+        ctx.check_cancel()
+        item = chosen.inputs[name]
+        try:
+            repo = _config_path(ctx, item.recipe.repo, f'{where}."{name}".repo')
+            results.append(labinputs.build(ctx, chosen.name, item, repo, cache, cached=cached, keep=keep))
+        except ParamError as error:
+            ctx.finding(f"{name}: {error}")
+            results.append({"name": name, "archive": None, "refused": str(error)})
+    kept = [r for r in results if r.get("archive")]
+    reused = sum(1 for r in kept if r.get("cached"))
+    if ctx.outcome == "ok":
+        ctx.summary(f"{len(kept)} archive(s) for template {chosen.name}: {len(kept) - reused} built, {reused} from the "
+                    "pin cache, each with its receipt")
+    return {"template": chosen.name, "folder": ctx.host_path(ctx.out), "archives": results}
 
 
 # ----------------------------------------------------------------------------------------------

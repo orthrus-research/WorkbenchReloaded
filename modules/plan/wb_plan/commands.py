@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import tarfile
-import time
 from pathlib import Path
 
-from wb_core.module import Context, EnvironmentProblem, ParamError
+from wb_core.module import Context, ParamError
 
 from . import plan as plans
 
@@ -99,28 +97,76 @@ def _check(ctx: Context, plan: plans.Plan, machine: str) -> tuple[list[str], lis
                                                                   for s in plan.steps):
         warnings.append("GPU steps produce evidence nothing in the plan scores or records")
     if machine == "rental":
-        for key in ("offer", "max_dph", "lab"):
-            if key not in plan.rental:
-                problems.append(f"a rental plan needs rental.{key}")
-        if "lab" in plan.rental:
-            lab = _local(ctx, plan.rental["lab"])
-            missing = [t for t in ("riven.tar", "cubature.tar", "pins.tar", "cache.tar") if not (lab / t).is_file()]
-            if missing:
-                problems.append(f"rental.lab lacks {', '.join(missing)}")
-        try:
-            plans.plan_env(plan, {}, {str(p.params.get("tour")): Path(str(p.params.get("tour"))).name
-                                      for p in plan.steps if plans.role(registry, p.command) == "play"}, registry)
-        except (plans.PlanError, KeyError) as error:
-            problems.append(f"rental: {error}")
-        try:
-            ctx.host_path(ctx.out)
-            if ctx.host_path(ctx.out) == str(ctx.out) and ctx.spec.get("roots"):
-                problems.append("a rental plan needs --out under a configured rw root, so later steps can read "
-                                "the fetched results")
-        except Exception:  # noqa: BLE001
-            pass
+        problems += _check_rental(ctx, plan, registry)
+        if not _writable_out(ctx):
+            problems.append("a rental plan needs --out under a configured rw root, so later steps can read "
+                            "the fetched results")
     jobs = [[s.id for s in group] for group in plans.groups(plan, registry)]
     return problems, warnings, {"jobs": jobs, "steps": len(plan.steps), "registry": registry}
+
+
+def _writable_out(ctx: Context) -> bool:
+    """Whether the job's out folder is under a configured rw root (always, when none are configured)."""
+    from wb_core.paths import PathError, PathMap
+    from wb_core.settings import Root
+    roots = [Root(**r) for r in ctx.spec.get("roots", [])]
+    if not roots:
+        return True
+    try:
+        PathMap(roots).resolve(str(ctx.out), need_write=True)
+    except PathError:
+        return False
+    return True
+
+
+def _check_rental(ctx: Context, plan: plans.Plan, registry: dict) -> list[str]:
+    """What keeps a plan's game steps from running on a rental: its [rental] table, and whether the bundle template
+    takes them (a vast.bundle check, which writes nothing)."""
+    problems = [f"a rental plan needs rental.{key}" for key in ("offer", "max_dph") if key not in plan.rental]
+    game = plans.game_steps(plan, registry)
+    if not game:
+        problems.append("a rental plan has no game steps: no step's command declares a role (module.toml role = "
+                        "\"prepare\" or \"play\")")
+    for step in game:
+        for ref in plans.references(step.params):
+            if ref.startswith("steps."):
+                problems.append(f"step {step.id}: a game step is written into the rental's bundle before any step "
+                                f"runs, so {{{ref}}} has no value yet")
+    lab = "lab" not in plan.rental or _local(ctx, str(plan.rental["lab"])).is_dir()
+    if not lab:
+        problems.append(f"rental.lab is not a folder: {plan.rental['lab']}")
+    idle = [name for name in ("vast.bundle", "vast.rent") if not (registry.get(name) or {}).get("active")]
+    for name in idle:
+        reasons = "; ".join(r["detail"] for r in (registry.get(name) or {}).get("reasons", [])) or "not installed"
+        problems.append(f"a rental needs {name}, which is not active: {reasons}")
+    if game and lab and not idle:
+        checked = _bundle(ctx, plan, registry, _known_before_running(plan), dry_run=True)
+        if checked.get("state") != "settled" or checked.get("outcome") not in ("ok", "finding"):
+            problems.append(f"rental: the bundle could not be checked: {checked.get('summary')}")
+        else:
+            problems += [f"rental: {p}" for p in (checked.get("data") or {}).get("problems") or []]
+    return problems
+
+
+def _known_before_running(plan: plans.Plan):
+    """Resolves what a check can resolve: inputs; a step's results stay references, for the make to check."""
+    def lookup(ref: str):
+        head, _, rest = ref.partition(".")
+        if head == "inputs" and rest in plan.inputs:
+            return plan.inputs[rest].get("path")
+        return "{" + ref + "}"
+    return lookup
+
+
+def _bundle(ctx: Context, plan: plans.Plan, registry: dict, lookup, *, dry_run: bool, out: str | None = None) -> dict:
+    """Has vast.bundle write (or, with ``dry_run``, check) the plan's game steps as its template declares."""
+    params = {"steps": plans.rental_steps(plan, registry, lookup), "values": plans.rental_values(plan),
+              "name": plan.name, "dry_run": dry_run}
+    if plan.rental.get("template"):
+        params["template"] = str(plan.rental["template"])
+    if plan.rental.get("lab"):
+        params["lab"] = ctx.host_path(_local(ctx, str(plan.rental["lab"])))
+    return _wait(ctx, ctx.call("vast.bundle", out=out, **params))
 
 
 def check(ctx: Context, plan: str, machine=None):
@@ -195,8 +241,11 @@ def run(ctx: Context, plan: str, machine=None):
     registry = shape["registry"]
     remaining = list(loaded.steps)
     if machine == "rental":
-        game = [s for s in remaining if plans.role(registry, s.command)]
-        envelope = _rent(ctx, loaded, game, lookup, registry)
+        game = plans.game_steps(loaded, registry)
+        envelope, refused = _rent(ctx, loaded, lookup, registry)
+        if refused:
+            ctx.finding(f"refused before renting: {refused}")
+            return {"plan": loaded.name, "machine": machine, "ran": ran}
         ran.append({"steps": [s.id for s in game], "job": envelope["job"], "outcome": envelope.get("outcome")})
         if envelope.get("outcome") not in ("ok", "finding") or envelope.get("state") != "settled":
             ctx.finding(f"the rental ended {envelope.get('state')} {envelope.get('outcome')}: {envelope.get('summary')}")
@@ -233,47 +282,29 @@ def run(ctx: Context, plan: str, machine=None):
     return {"plan": loaded.name, "machine": machine, "ran": ran}
 
 
-def _rent(ctx: Context, plan: plans.Plan, game: list, lookup, registry: dict) -> dict:
-    """Compiles the game steps into a riven-tours bundle and runs it with vast.rent (which waits for a yes)."""
-    bundle = ctx.out / "bundle"
-    jars = bundle / "jars"
-    jars.mkdir(parents=True, exist_ok=True)
-    jar_names, tour_names = {}, {}
-    for step in game:
-        params = plans.substitute(step.params, lookup)
-        if plans.role(registry, step.command) == "prepare":
-            for arg in params.get("args", []):
-                local = _local(ctx, str(arg))
-                if str(arg).lower().endswith(".jar") and local.is_file():
-                    shutil.copy2(local, jars / local.name)
-                    jar_names[str(arg)] = f"/root/bundle/jars/{local.name}"
-            step.params = {**step.params, "args": params.get("args", [])}
-        else:
-            local = _local(ctx, str(params["tour"]))
-            if not local.is_file():
-                raise ParamError(f"tour {params['tour']} does not exist")
-            shutil.copy2(local, bundle / local.name)
-            tour_names[str(params["tour"])] = local.name
-            step.params = {**step.params, "tour": str(params["tour"])}
-    env, labels = plans.plan_env(plans.Plan(**{**plan.__dict__, "steps": game}), jar_names, tour_names, registry)
-    (bundle / "plan.env").write_text(env, encoding="utf-8", newline="\n")
-    lab = ctx.host_path(_local(ctx, plan.rental["lab"]))
-    made = _wait(ctx, ctx.call("vast.bundle-riven", out=ctx.host_path(bundle / "made"),
-                               plan=ctx.host_path(bundle), lab=lab, name=plan.name))
-    if made.get("outcome") != "ok":
-        raise EnvironmentProblem(f"could not make the bundle: {made.get('summary')}")
-    rent = {"offer": str(plan.rental["offer"]), "bundle": ctx.host_path(bundle / "made"),
-            "max_dph": plan.rental["max_dph"], "cap": plan.rental.get("cap", "90m")}
+def _rent(ctx: Context, plan: plans.Plan, lookup, registry: dict) -> tuple[dict | None, str | None]:
+    """Writes the game steps into a bundle as the plan's template declares (vast.bundle) and runs it with vast.rent,
+    which waits for a yes. The results the template names become the game steps' outputs. Returns the rental's
+    envelope, or why the bundle was refused (nothing is rented then)."""
+    made = _bundle(ctx, plan, registry, lookup, dry_run=False, out=ctx.host_path(ctx.out / "bundle"))
+    data = made.get("data") or {}
+    if made.get("state") != "settled" or made.get("outcome") != "ok" or not data.get("bundle"):
+        return None, f"the bundle was not made: {made.get('summary')}"
+    rent = {"offer": str(plan.rental["offer"]), "bundle": data["bundle"], "max_dph": plan.rental["max_dph"],
+            "cap": plan.rental.get("cap", "90m")}
     envelope = _wait(ctx, ctx.call("vast.rent", out=ctx.host_path(ctx.out / "rental"), **rent))
-    results = ctx.out / "rental" / "results.tar"
-    if results.is_file():
-        with tarfile.open(results) as archive:
-            archive.extractall(ctx.out / "rental", filter="data")
-        for label in labels:
-            for suffix, name in (("captures", f"{label}-captures"), ("client-latest.log", f"{label}-client-log"),
-                                 ("play.log", f"{label}-play-log")):
-                path = ctx.out / "rental" / "results" / f"{label}-{suffix}"
-                if path.exists():
-                    ctx.output(name, path)
-                    envelope.setdefault("outputs", []).append({"name": name, "host_path": ctx.host_path(path)})
-    return envelope
+    fetched = ctx.out / "rental"
+    for name in data.get("unpack") or []:
+        archive = fetched / name
+        if archive.is_file():
+            try:
+                with tarfile.open(archive) as handle:
+                    handle.extractall(fetched, filter="data")
+            except (tarfile.TarError, OSError) as error:
+                ctx.log.warning(f"could not unpack {name} from the rental: {error}")
+    for output in data.get("outputs") or []:
+        path = fetched / output["path"]
+        if path.exists():
+            ctx.output(output["name"], path)
+            envelope.setdefault("outputs", []).append({"name": output["name"], "host_path": ctx.host_path(path)})
+    return envelope, None

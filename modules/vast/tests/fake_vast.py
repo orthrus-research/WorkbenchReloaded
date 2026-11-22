@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import json
+import os
 import re
+import tarfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -115,8 +118,13 @@ def serve() -> tuple[ThreadingHTTPServer, str]:
     return server, f"http://127.0.0.1:{server.server_address[1]}"
 
 
+RESULTS_ENV = "WB_VAST_FAKE_RESULTS"  # {member: text} as JSON: what every fetched .tar holds
+
+
 class FakeTransport:
-    """Plays a machine: bootstrap prints BOOT ready, the run prints RUN lines, results.tar comes back."""
+    """Plays a machine: bootstrap prints BOOT ready, the run prints RUN lines, results.tar comes back. It runs in the
+    rental job's worker, so a test gives the fetched archives' members through the environment (RESULTS_ENV);
+    without them a line of text stands in for each result."""
 
     def __init__(self, ctx, host, port):
         self.ctx, self.host, self.port = ctx, host, port
@@ -140,10 +148,19 @@ class FakeTransport:
 
     def get(self, remote, local, timeout=1800):
         local.mkdir(parents=True, exist_ok=True)
+        members = json.loads(os.environ.get(RESULTS_ENV) or "{}")
         got = []
         for path in remote:
             target = local / Path(path).name
-            target.write_text(f"fake {path}\n", encoding="utf-8")
+            if path.endswith(".tar") and members:
+                with tarfile.open(target, "w") as archive:
+                    for name, text in sorted(members.items()):
+                        data = text.encode("utf-8")
+                        info = tarfile.TarInfo(name)
+                        info.size = len(data)
+                        archive.addfile(info, io.BytesIO(data))
+            else:
+                target.write_text(f"fake {path}\n", encoding="utf-8")
             got.append(target)
         return got
 
