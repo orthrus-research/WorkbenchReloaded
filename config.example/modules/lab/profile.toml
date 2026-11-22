@@ -21,6 +21,12 @@ world_parts = ["server/world"]
 rewrite = ["instance.json"]                                 # files that hold the instance's own path and name
 linkable_dirs = ["server/libraries"]                        # read-only: shared by hard link
 linkable_suffixes = [".jar"]
+# lab.inputs: steps that bring the launch set to its state before lab.ensure, in order ({python}, {cwd}); a step
+# runs in the launcher checkout, or in one checkouts names. A machine layer can add env values only it knows.
+inputs = [
+  { name = "pins", run = ["{python}", "bin/setup.py"] },
+  { name = "engine", checkout = "engine", run = ["{cwd}/build.sh"] },
+]
 
 [checkouts]                                                 # other checkouts, named in paths as {name}
 engine = "../Engine"

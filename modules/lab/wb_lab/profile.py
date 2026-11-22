@@ -52,7 +52,12 @@ DEFAULTS = {
     "lab_root": None,            # the checkout's folder of lab items, for lab.migrate
     "lab_items": [],             # [item, what it is] in lab_root, moved by lab.migrate
     "stays": [],                 # lab items that must never move
+    "inputs": [],                # lab.inputs' steps, in order: {name, run, checkout}; run is a command template
+                                 # with {python} and {cwd}, run in checkout (a name from checkouts; empty: the
+                                 # launcher's) with env, and brings the launch set to its state before lab.ensure
 }
+
+STEP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class ProfileError(ValueError):
@@ -112,11 +117,33 @@ def merged(config: dict, name: str = "") -> dict:
             re.compile(pattern)
         except (re.error, TypeError) as error:
             raise ProfileError(f"the instance profile's failures: {pattern!r} is not a regular expression ({error})") from None
+    _check_inputs(profile)
     missing = [key for key in REQUIRED if not profile.get(key)]
     if missing:
         raise ProfileError(f"the instance profile needs {', '.join(missing)} (set [modules.lab.profile]; see "
                            "config.example/modules/lab.toml)")
     return profile
+
+
+def _check_inputs(profile: dict) -> None:
+    """Each input step names itself (a plain name: it names its log), runs a non-empty command, and runs in the
+    launcher checkout or one the profile's checkouts name."""
+    if not isinstance(profile["inputs"], list):
+        raise ProfileError("the instance profile's inputs is a list of steps")
+    seen = set()
+    for step in profile["inputs"]:
+        if not isinstance(step, dict) or set(step) - {"name", "run", "checkout"}:
+            raise ProfileError(f"the instance profile's inputs: {step!r} is not a step (keys: name, run, checkout)")
+        name = step.get("name")
+        if not isinstance(name, str) or not STEP_NAME.match(name) or name in seen:
+            raise ProfileError(f"the instance profile's inputs: {name!r} is not a plain, distinct step name")
+        seen.add(name)
+        run = step.get("run")
+        if not isinstance(run, list) or not run or not all(isinstance(part, str) for part in run):
+            raise ProfileError(f"the instance profile's input step {name}: run is a non-empty command template")
+        checkout = step.get("checkout") or ""
+        if checkout and checkout not in (profile["checkouts"] or {}):
+            raise ProfileError(f"the instance profile's input step {name}: its checkouts name no {checkout}")
 
 
 def layout(profile: dict) -> Layout:

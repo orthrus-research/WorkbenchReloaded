@@ -74,6 +74,18 @@ params.collect = { type = "list", items = "list", default = [], summary = "more 
 params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 
 [[command]]
+name = "inputs"
+requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
+summary = "Bring a launch set to the state an instance is built from: the instance profile's input steps (pinned dependencies, builds), in order on the host with the profile's environment; stops at the first that fails (a finding)."
+handler = "wb_lab.inputs:inputs"
+runs_on = ["host"]
+resources = { cpu = 2 }
+timeout = "2h"
+params.steps = { type = "list", items = "string", default = [], summary = "the steps to run, by name; empty: all of them" }
+params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
+result.steps = { type = "list" }
+
+[[command]]
 name = "migrate-plan"
 requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
 summary = "List what moving the launcher's lab items (the profile's lab_root) into the lab home would move (a dry run)."

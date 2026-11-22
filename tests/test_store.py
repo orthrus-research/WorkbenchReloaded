@@ -31,6 +31,8 @@ class Store(unittest.TestCase):
         base = Path(tempfile.mkdtemp(prefix="wb-store-"))
         cls.lab, cls.riven = base / "Lab", fake_riven.make(base / "Riven")
         cls.instances = cls.riven / ".local" / "cubic-standalone"
+        cls.other = base / "Other"  # another checkout the launch set builds
+        cls.other.mkdir()
         cls.mod = base / "Riven" / "under-test.jar"
         cls.mod.write_bytes(b"Q" * 512)
         config = f"""
@@ -43,6 +45,14 @@ class Store(unittest.TestCase):
             [modules.lab.profiles.tours-only]
             from = ""
             play_open = []
+            [modules.lab.profiles.built]
+            from = ""
+            checkouts = {{ other = "../Other" }}
+            inputs = [
+              {{ name = "first", run = ["{{python}}", "-c", 'import pathlib; pathlib.Path("inputs-first.txt").write_text("ran")'] }},
+              {{ name = "elsewhere", checkout = "other", run = ["{{python}}", "-c", 'import os; print("cwd=" + os.getcwd())'] }},
+              {{ name = "fails", run = ["{{python}}", "-c", 'import sys; print("broken build"); sys.exit(3)'] }},
+            ]
             """
         files = {"modules/lab/profile.toml": fake_riven.PROFILE_TOML}
         probe = Daemon(config, files=files)
@@ -210,6 +220,22 @@ class Store(unittest.TestCase):
         refused = self.c.submit("lab.play", {"name": "lambda", "profile": "tours-only"}).result(timeout=120)
         self.assertEqual(refused.outcome, "usage")  # that harness has no open session
         self.assertIn("play_open", refused.summary)
+
+    def test_a_input_steps_run_in_order_in_their_checkouts(self):
+        done = self.c.submit("lab.inputs", {"profile": "built", "steps": ["first", "elsewhere"]}).result(timeout=120)
+        self.assertEqual(done.outcome, "ok", done.summary)
+        self.assertEqual([s["name"] for s in done.data.steps], ["first", "elsewhere"])
+        self.assertEqual((self.riven / "inputs-first.txt").read_text(encoding="utf-8"), "ran")  # the launcher's
+        log = Path(self.output(done, "inputs-elsewhere-log")).read_text(encoding="utf-8")
+        self.assertIn("cwd=" + str(self.other.resolve()), log)  # the other checkout
+        failed = self.c.submit("lab.inputs", {"profile": "built"}).result(timeout=120)
+        self.assertEqual(failed.outcome, "finding")
+        self.assertEqual([(s["name"], s["exit"]) for s in failed.data.steps],
+                         [("first", 0), ("elsewhere", 0), ("fails", 3)])
+        self.assertIn("input step fails exited 3: broken build", failed.summary)
+        self.assertEqual(self.c.submit("lab.inputs", {"profile": "built", "steps": ["absent"]})
+                         .result(timeout=120).outcome, "usage")
+        self.assertEqual(self.c.submit("lab.inputs", {}).result(timeout=120).outcome, "usage")  # no steps
 
 
 if __name__ == "__main__":
