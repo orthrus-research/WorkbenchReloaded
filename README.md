@@ -113,7 +113,9 @@ every clean clone:
   scanning a cache. Every job gets `WB_PIN_CACHE`, a folder of files named by their SHA-256: a tool that builds or
   downloads a pinned file looks there first and stores what it made, so each is made once per machine.
 - **Outputs go under `{run_dir}`**, never into the tree. A file a job writes into the tree changes the tree the run
-  vouches for.
+  vouches for. What a build tool writes inside the tree on its own (`build/libs`) is kept by listing it in the
+  job's `artifacts`: the records then hold each file by SHA-256 beside the run that passed it, where the host can
+  use it.
 - **No init scripts or Maven folders of the project's own** for what public repositories stopped serving: it goes into
   the rescue repository, which every build gets.
 - **Other checkouts are `[repositories.<name>]`, with a `pin`** when the project fixes their commit. A checkout jobs
