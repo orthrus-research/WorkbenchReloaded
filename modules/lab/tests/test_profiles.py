@@ -44,6 +44,27 @@ class NamedProfiles(unittest.TestCase):
         with self.assertRaises(EnvironmentProblem):
             commands._profile(self.ctx("absent"))
 
+    def test_a_profile_may_start_from_another(self):
+        self.config["profiles"]["branch"] = {"from": "", "checkout": str(self.other)}  # the default, elsewhere
+        self.config["profiles"]["runs"] = {"from": "branch", "instances": "runs"}
+        branch = profile.merged(self.config, "branch")
+        self.assertEqual((branch["checkout"], branch["play"]), (str(self.other), BASE["play"]))
+        self.assertEqual(profile.merged(self.config, "runs")["instances"], "runs")
+        self.assertEqual(profile.merged(self.config, "runs")["checkout"], str(self.other))  # through branch
+        self.assertEqual(commands._launcher(self.ctx("branch")), self.other)
+        self.assertIsNone(profile.merged(self.config)["checkout"])  # the default profile is as it was
+        cases = [({"loop": {"from": "loop"}}, "cycle"),
+                 ({"a": {"from": "b"}, "b": {"from": "a"}}, "cycle (a -> b -> a)"),
+                 ({"bad": {"from": 3}}, "from names the profile"),
+                 ({"typo": {"from": "", "chekout": "x"}}, "unknown instance profile key(s) chekout"),
+                 ({"lost": {"from": "absent"}}, "no instance profile absent")]
+        for profiles, expected in cases:
+            with self.subTest(expected=expected):
+                config = dict(self.config, profiles=profiles)
+                with self.assertRaises(profile.ProfileError) as raised:
+                    profile.merged(config, next(iter(profiles)))
+                self.assertIn(expected, str(raised.exception))
+
     def test_another_harness_never_shares_a_recipe(self):
         default = commands.recipe_inputs(self.ctx(), 1, None, [])
         other = commands.recipe_inputs(self.ctx("other"), 1, None, [])

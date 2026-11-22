@@ -3,7 +3,9 @@
 A profile says how a launcher checkout prepares, plays and checks instances, and how its instances are laid out
 (which parts are worlds, which files name the instance, which files the game only reads). It comes from config
 only — ``[modules.lab.profile]``, for example the file ``modules/lab/profile.toml`` in the config folder. Workbench
-ships no launcher's profile: a launcher is supported by writing one, never by changing code.
+ships no launcher's profile: a launcher is supported by writing one, never by changing code. Each harness may have a
+named profile of its own, ``[modules.lab.profiles.<name>]``, which a job picks with ``profile=<name>``; one that
+starts ``from`` another profile (empty: the default) writes only the keys it changes, such as its ``checkout``.
 
 Command templates take ``{python}``, ``{name}``, ``{name_repr}``, ``{tour}`` and ``{window}``. A path in
 ``recipe_files``, ``default_artifact`` or an ``env`` value may start with ``{<checkout>}``, a name from
@@ -69,17 +71,31 @@ class Layout:
         return any(rel.endswith(suffix) for suffix in self.linkable_suffixes)
 
 
+def _keys(config: dict, name: str, seen: tuple[str, ...] = ()) -> dict:
+    """A profile's keys as written: ``[modules.lab] profile`` for no name, else ``[modules.lab.profiles.<name>]`` over
+    the profile its ``from`` names (empty: the default profile), so a harness that differs in a few keys (its
+    checkout) writes only those."""
+    if not name:
+        return dict(config.get("profile") or {})
+    named = config.get("profiles") or {}
+    if name not in named:
+        raise ProfileError(f"no instance profile {name} (known: {', '.join(sorted(named)) or 'none'})")
+    given = dict(named[name] or {})
+    if "from" not in given:
+        return given
+    base = given.pop("from")
+    if not isinstance(base, str):
+        raise ProfileError(f"instance profile {name}: from names the profile it starts from (empty: the default one)")
+    if base in seen + (name,):
+        raise ProfileError(f"instance profile {name}: from makes a cycle ({' -> '.join(seen + (name, base))})")
+    return {**_keys(config, base, seen + (name,)), **given}
+
+
 def merged(config: dict, name: str = "") -> dict:
     """An instance profile over the neutral defaults, checked: ``[modules.lab.profiles.<name>]`` when a name is given
-    (each harness its own), else ``[modules.lab] profile``. Unknown keys and missing required ones are refused with
-    the key's name."""
-    if name:
-        named = config.get("profiles") or {}
-        if name not in named:
-            raise ProfileError(f"no instance profile {name} (known: {', '.join(sorted(named)) or 'none'})")
-        given = named[name] or {}
-    else:
-        given = config.get("profile") or {}
+    (each harness its own; ``from`` starts it from another profile), else ``[modules.lab] profile``. Unknown keys and
+    missing required ones are refused with the key's name."""
+    given = _keys(config, name)
     unknown = sorted(set(given) - set(DEFAULTS))
     if unknown:
         raise ProfileError(f"unknown instance profile key(s) {', '.join(unknown)} (known: {', '.join(DEFAULTS)})")

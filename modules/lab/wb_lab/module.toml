@@ -10,7 +10,7 @@ profile = { type = "object", default = {}, summary = "the instance profile: how 
 keep_worlds = { type = "list", items = "string", default = [], summary = "glob patterns of world snapshots lab.store-gc never removes" }
 keep_instances = { type = "list", items = "string", default = [], summary = "glob patterns of instances lab.prune-instances never removes" }
 scripts = { type = "list", items = "string", default = [], summary = "folders whose scripts lab.script may run" }
-profiles = { type = "object", default = {}, summary = "named instance profiles, one per harness, each a table of profile keys (wb_lab/profile.py), a job picks one with profile=<name>" }
+profiles = { type = "object", default = {}, summary = "named instance profiles, one per harness, each a table of profile keys (wb_lab/profile.py), a job picks one with profile=<name>; from = \"<name>\" starts one from another profile (empty: the default), so it writes only the keys it changes" }
 environments = { type = "object", default = {}, summary = "by allow-listed folder: the pip requirements files (relative to it, or absolute) whose environment, made once, runs its Python scripts; other folders' scripts get the lab's interpreter" }
 python_cache = { type = "string", default = "", summary = "where those environments are kept; empty: the user's cache folder (XDG_CACHE_HOME or ~/.cache)/wb/python" }
 
