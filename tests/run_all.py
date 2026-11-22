@@ -28,6 +28,7 @@ SUITES = [
     ["modules/mixin/tests/test_mixin.py"],
     ["modules/probe/tests/test_probe.py"],
     ["modules/lab/tests/test_server.py"],
+    ["modules/lab/tests/test_profiles.py"],
     ["modules/build/tests/test_build.py"],
     ["modules/toolchain/tests/test_toolchain.py"],
     ["tests/test_sdks.py"],

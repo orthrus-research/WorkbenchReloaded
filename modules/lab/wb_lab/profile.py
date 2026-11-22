@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 
 REQUIRED = ("launcher", "instances", "prepare", "play")
 DEFAULTS = {
+    "checkout": None,            # the launcher's checkout for this profile; unset: [modules.lab] launcher
     "launcher": None,            # the launcher script, relative to the checkout; it must exist there
     "instances": None,           # the folder instances live in, relative to the checkout
     "prepare": None,             # command template that prepares an instance named {name}
@@ -68,10 +69,17 @@ class Layout:
         return any(rel.endswith(suffix) for suffix in self.linkable_suffixes)
 
 
-def merged(config: dict) -> dict:
-    """``[modules.lab] profile`` over the neutral defaults, checked: unknown keys and missing required ones are
-    refused with the key's name."""
-    given = config.get("profile") or {}
+def merged(config: dict, name: str = "") -> dict:
+    """An instance profile over the neutral defaults, checked: ``[modules.lab.profiles.<name>]`` when a name is given
+    (each harness its own), else ``[modules.lab] profile``. Unknown keys and missing required ones are refused with
+    the key's name."""
+    if name:
+        named = config.get("profiles") or {}
+        if name not in named:
+            raise ProfileError(f"no instance profile {name} (known: {', '.join(sorted(named)) or 'none'})")
+        given = named[name] or {}
+    else:
+        given = config.get("profile") or {}
     unknown = sorted(set(given) - set(DEFAULTS))
     if unknown:
         raise ProfileError(f"unknown instance profile key(s) {', '.join(unknown)} (known: {', '.join(DEFAULTS)})")

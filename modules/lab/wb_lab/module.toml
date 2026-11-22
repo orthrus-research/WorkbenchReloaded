@@ -10,6 +10,7 @@ profile = { type = "object", default = {}, summary = "the instance profile: how 
 keep_worlds = { type = "list", items = "string", default = [], summary = "glob patterns of world snapshots lab.store-gc never removes" }
 keep_instances = { type = "list", items = "string", default = [], summary = "glob patterns of instances lab.prune-instances never removes" }
 scripts = { type = "list", items = "string", default = [], summary = "folders whose scripts lab.script may run" }
+profiles = { type = "object", default = {}, summary = "named instance profiles, one per harness, each a table of profile keys (wb_lab/profile.py), a job picks one with profile=<name>" }
 environments = { type = "object", default = {}, summary = "by allow-listed folder: the pip requirements files (relative to it, or absolute) whose environment, made once, runs its Python scripts; other folders' scripts get the lab's interpreter" }
 python_cache = { type = "string", default = "", summary = "where those environments are kept; empty: the user's cache folder (XDG_CACHE_HOME or ~/.cache)/wb/python" }
 
@@ -33,6 +34,7 @@ turn = true
 role = "prepare"
 summary = "Prepare an instance with the launcher's own prepare (the instance profile's command)."
 handler = "wb_lab.commands:prepare"
+params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 runs_on = ["host"]
 timeout = "40m"
 params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
@@ -57,12 +59,14 @@ params.window = { type = "string", default = "1920x1080", pattern = "^[0-9]+x[0-
 params.options = { type = "string", default = "", summary = "JVM options for the client, in the profile's options_env" }
 params.label = { type = "string", default = "play" }
 params.args = { type = "list", items = "string", default = [] }
+params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 
 [[command]]
 name = "migrate-plan"
 requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
 summary = "List what moving the launcher's lab items (the profile's lab_root) into the lab home would move (a dry run)."
 handler = "wb_lab.commands:migrate_plan"
+params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 runs_on = ["host"]
 
 [[command]]
@@ -93,6 +97,7 @@ name = "migrate"
 requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
 summary = "Move the launcher's lab items into the lab home (renames on one volume, a link left at each old path); undo reverses it."
 handler = "wb_lab.commands:migrate"
+params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 runs_on = ["host"]
 resources = { gpu = true, quiet = true }
 timeout = "1h"
@@ -113,6 +118,7 @@ params.execute = { type = "bool", default = false }
 params.keep = { type = "list", items = "string", default = [], summary = "glob patterns of instance names never pruned" }
 params.names = { type = "list", items = "string", default = [], summary = "delete only these (the approved list)" }
 params.expect = { type = "int", optional = true, summary = "refuse unless exactly this many match (the approved count)" }
+params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 
 [[command]]
 name = "ensure"
@@ -133,6 +139,7 @@ params.allow_writer_change = { type = "bool", default = false, summary = "accept
 params.verify = { type = "bool", default = true, summary = "check the instance with the profile's load command, as play would" }
 result.recipe = { type = "string" }
 result.reused = { type = "bool" }
+params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 
 [[command]]
 name = "snapshot"
@@ -140,6 +147,7 @@ requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
 turn = true
 summary = "Keep an instance's generated world (the profile's world parts) as a labelled snapshot."
 handler = "wb_lab.commands:snapshot"
+params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 runs_on = ["host"]
 resources = { gpu = true }
 timeout = "30m"
@@ -158,6 +166,7 @@ timeout = "30m"
 params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
 params.world = { type = "string" }
 params.allow_writer_change = { type = "bool", default = false, summary = "accept a world written by another build of the profile's world_writer" }
+params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 
 [[command]]
 name = "instances"
@@ -165,12 +174,14 @@ requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
 summary = "The instances: built from the store (recipe, world) or legacy full copies; and the store's templates and snapshots."
 handler = "wb_lab.commands:instances"
 runs_on = ["host"]
+params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 
 [[command]]
 name = "remove"
 requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
 summary = "Remove one instance; the store's shared files are untouched."
 handler = "wb_lab.commands:remove"
+params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 runs_on = ["host"]
 resources = { gpu = true }
 params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
@@ -185,6 +196,7 @@ resources = { gpu = true, quiet = true }
 timeout = "6h"
 params.execute = { type = "bool", default = false }
 params.limit = { type = "int", default = 0, min = 0, summary = "at most this many instances (0: all)" }
+params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 
 [[command]]
 name = "store-gc"
@@ -197,6 +209,7 @@ params.days = { type = "int", default = 30, min = 1 }
 params.execute = { type = "bool", default = false }
 
 # Dedicated servers need no GPU and no host: these run in the container (wb_lab/server.py).
+params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 [[command]]
 name = "server"
 summary = "Run a dedicated server from a copy of a stopped server folder: wait until it is ready, send console commands, let it run for ticks, seconds or until a line, stop it gracefully, and keep its console, new crash reports, chosen files and a receipt."

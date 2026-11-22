@@ -18,11 +18,18 @@ from wb_core.module import Context, EnvironmentProblem, ParamError
 from . import profile as profiles
 
 
+def _profile_name(ctx: Context) -> str:
+    """The instance profile a job names (its `profile` param); empty: the default profile."""
+    return str((getattr(ctx, "params", None) or {}).get("profile") or "")
+
+
 def _profile(ctx: Context) -> dict:
+    name = _profile_name(ctx)
     try:
-        return profiles.merged(ctx.config)
+        return profiles.merged(ctx.config, name)
     except ValueError as error:
-        raise EnvironmentProblem(f"modules.lab.profile: {error}") from None
+        where = f"modules.lab.profiles.{name}" if name else "modules.lab.profile"
+        raise EnvironmentProblem(f"{where}: {error}") from None
 
 
 def _lab_items(ctx: Context) -> list[tuple[str, str]]:
@@ -41,9 +48,10 @@ def _python(ctx: Context) -> str:
 def _launcher(ctx: Context) -> Path:
     """The checkout whose launcher prepares and plays instances (``modules.lab.launcher``)."""
     from wb_core.service import REPO_ROOT
-    value = ctx.config.get("launcher")
+    value = _profile(ctx).get("checkout") or ctx.config.get("launcher")
     if not value:
-        raise EnvironmentProblem("modules.lab.launcher is not set (the checkout whose launcher builds instances)")
+        raise EnvironmentProblem("modules.lab.launcher is not set (the checkout whose launcher builds instances), "
+                                 "and the instance profile names no checkout")
     path = Path(value)
     path = path if path.is_absolute() else (REPO_ROOT / path).resolve()
     script = _profile(ctx)["launcher"]
@@ -100,7 +108,7 @@ def queue(ctx: Context):
     return {"lease": {"file": str(lock), "held": held, "owner": owner}, "lanes": lanes}
 
 
-def prepare(ctx: Context, name: str, args: list, seed=None, scale=None):
+def prepare(ctx: Context, name: str, args: list, seed=None, scale=None, profile: str = ""):
     launcher = _launcher(ctx)
     command = _prepare_command(ctx, name, seed, scale, args)
     ctx.progress("prepare", msg=name)
@@ -114,7 +122,7 @@ def prepare(ctx: Context, name: str, args: list, seed=None, scale=None):
     return {"instance": name, "exit": done.returncode}
 
 
-def play(ctx: Context, name: str, tour: str, window: str, options: str, label: str, args: list):
+def play(ctx: Context, name: str, tour: str, window: str, options: str, label: str, args: list, profile: str = ""):
     launcher, p = _launcher(ctx), _profile(ctx)
     if not os.environ.get("WB_TURN_TOKEN"):
         raise EnvironmentProblem("play must run under the GPU lease (wb-host takes it for this routine)")
@@ -161,7 +169,7 @@ def _size(path: Path) -> int:
     return total
 
 
-def migrate_plan(ctx: Context):
+def migrate_plan(ctx: Context, profile: str = ""):
     """A dry run only: moving the lab touches every project's tools and needs the user's go-ahead and a quiet
     moment (lab-and-ci-split.md, step A)."""
     launcher = _launcher(ctx)
@@ -271,7 +279,7 @@ def _lab_home() -> Path:
     return Path(value)
 
 
-def migrate(ctx: Context, execute: bool, items: list, undo: bool):
+def migrate(ctx: Context, execute: bool, items: list, undo: bool, profile: str = ""):
     """lab-and-ci-split step A, reversible: each item is renamed into the lab home (same volume only, never a
     copy) and a link (a junction on Windows, a symlink elsewhere) is left at its old path, so every reader keeps
     working until it is pointed at the lab home. The GPU lease is held throughout, so no turn starts mid-move."""
@@ -376,7 +384,7 @@ def _last_used(folder: Path) -> float:
     return newest
 
 
-def prune_instances(ctx: Context, days: int, execute: bool, keep: list, names: list, expect=None):
+def prune_instances(ctx: Context, days: int, execute: bool, keep: list, names: list, expect=None, profile: str = ""):
     """``names`` limits a deletion to exactly the instances someone approved; ``expect`` refuses one whose count
     has drifted since the dry run that was approved (instances cross the age line as time passes)."""
     import fnmatch
@@ -474,6 +482,8 @@ def recipe_inputs(ctx: Context, seed, scale, args: list) -> dict:
         previous = arg
     inputs = {"schema": 2, "seed": seed, "scale": scale, "args": normal,
               "files": {name: _digest(_profile_path(ctx, name)) for name in p["recipe_files"]}}
+    if _profile_name(ctx):  # another harness's recipe never shares a template; the default profile's keys stand
+        inputs["profile"] = _profile_name(ctx)
     default = p.get("default_artifact") or {}
     if default.get("path") and default.get("flag") not in [str(a) for a in args]:
         inputs["files"][default["path"]] = _digest(_profile_path(ctx, default["path"]))
@@ -510,7 +520,7 @@ def _check_world(ctx: Context, store, instance: Path, label: str, allow_writer_c
 
 
 def ensure(ctx: Context, name: str, args: list, world: str, replace: bool, allow_writer_change: bool, verify: bool,
-           seed=None, scale=None):
+           seed=None, scale=None, profile: str = ""):
     from .store import MARKER, recipe_of, remove_tree
     store, folder = _store(ctx), _instances(ctx)
     inputs = recipe_inputs(ctx, seed, scale, args)
@@ -570,7 +580,7 @@ def ensure(ctx: Context, name: str, args: list, world: str, replace: bool, allow
             "world": world or None, **sizes}
 
 
-def snapshot(ctx: Context, name: str, label: str):
+def snapshot(ctx: Context, name: str, label: str, profile: str = ""):
     store, instance = _store(ctx), _instances(ctx) / name
     if not instance.is_dir():
         raise ParamError(f"no instance {name}")
@@ -581,7 +591,7 @@ def snapshot(ctx: Context, name: str, label: str):
     return {"label": label, "files": len(record["files"]), "bytes": record["bytes"], "key": key}
 
 
-def reset(ctx: Context, name: str, world: str, allow_writer_change: bool):
+def reset(ctx: Context, name: str, world: str, allow_writer_change: bool, profile: str = ""):
     from .store import MARKER
     store, instance = _store(ctx), _instances(ctx) / name
     if not instance.is_dir():
@@ -597,7 +607,7 @@ def reset(ctx: Context, name: str, world: str, allow_writer_change: bool):
     return {"instance": name, "world": world, "bytes": size}
 
 
-def instances(ctx: Context):
+def instances(ctx: Context, profile: str = ""):
     from .store import MARKER
     store, folder = _store(ctx), _instances(ctx)
     built, legacy = [], 0
@@ -616,7 +626,7 @@ def instances(ctx: Context):
     return {"built": built, "legacy": legacy, "templates": templates, "worlds": worlds}
 
 
-def remove(ctx: Context, name: str):
+def remove(ctx: Context, name: str, profile: str = ""):
     from .store import MARKER, remove_tree
     store, instance = _store(ctx), _instances(ctx) / name
     if not instance.is_dir():
@@ -626,7 +636,7 @@ def remove(ctx: Context, name: str):
     return {"removed": name}
 
 
-def dedupe(ctx: Context, execute: bool, limit: int):
+def dedupe(ctx: Context, execute: bool, limit: int, profile: str = ""):
     """Existing full-copy instances keep working exactly as they are; only their identical read-only files
     (libraries, mod jars, natives) become hard links to one stored copy."""
     from .store import MARKER, sha256
@@ -675,7 +685,7 @@ def dedupe(ctx: Context, execute: bool, limit: int):
     return {"instances": len(by_instance), "freed_bytes": freed, "executed": True}
 
 
-def store_gc(ctx: Context, days: int, execute: bool):
+def store_gc(ctx: Context, days: int, execute: bool, profile: str = ""):
     import fnmatch
     import time as _time
     from .store import MARKER, remove_tree
