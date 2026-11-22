@@ -1,7 +1,7 @@
 [module]
 name = "profile"
 version = "0.1.0"
-summary = "Profiling and diagnostics of Java game processes: JFR recordings over time windows, cost charged to the code that incurred it, native memory by owner, and the JFR settings that feed them."
+summary = "Profiling and diagnostics of Java game processes and the GPU they run on: JFR recordings over time windows, cost charged to the code that incurred it, native memory by owner, the JFR settings that feed them, and whole-device GPU telemetry sampled beside a run and read by window."
 
 [[command]]
 name = "jfr"
@@ -86,3 +86,55 @@ result.settings = { type = "string" }
 result.options = { type = "list" }
 result.traced = { type = "list" }
 result.events = { type = "list" }
+
+# No resources: the GPU lease is one lock and gpu = true takes it, so a sampler that held it would wait out, or hold
+# up, the very run it watches; quiet = true would let it share the machine with nothing. Reading the driver's
+# counters needs neither. Inside a turn it runs under the turn's lease, like every step. nvidia-smi is looked up on
+# the host when it runs: a binary requirement would be checked where the daemon runs.
+[[command]]
+name = "gpu-sample"
+turn = true
+summary = "Sample the host's GPUs beside a run: clocks, power and performance state, utilisation, temperature, memory and throttle reasons, for some seconds or until cancelled, as JSON lines with a summary."
+handler = "wb_profile.commands:gpu_sample"
+runs_on = ["host"]
+timeout = "25h"
+params.seconds = { type = "duration", optional = true, min = 0.1, max = "24h", summary = "how long to sample; unset: until cancelled, and a cancel then ends the sampling and keeps the samples" }
+params.period_ms = { type = "int", default = 500, min = 100, max = 60000, summary = "milliseconds between samples" }
+params.device = { type = "int", optional = true, min = 0, summary = "the tool's index of the one device to sample; default every device" }
+params.tool = { type = "enum", values = ["auto", "nvidia-smi"], default = "auto", summary = "the vendor's tool to read; auto: the first on PATH" }
+params.label = { type = "string", default = "gpu", pattern = "^[A-Za-z0-9._-]+$", summary = "names the outputs, <label>-samples.jsonl and <label>-summary.json, so several samplers in one turn keep theirs" }
+result.samples = { type = "int" }
+result.seconds = { type = "float" }
+result.periodMs = { type = "int" }
+result.stopped = { type = "string" }
+result.devices = { type = "list" }
+result.pstates = { type = "object" }
+result.throttledSeconds = { type = "float" }
+result.notes = { type = "list" }
+
+[[command]]
+name = "gpu-report"
+summary = "GPU samples window by window: min, median and max of every metric, time in each performance state, throttling episodes, and a finding for each expectation (performance state, clocks, power) a window breaks."
+handler = "wb_profile.commands:gpu_report"
+deterministic = true
+resources = { cpu = 0.5, mem_gb = 1 }
+timeout = "1h"
+params.samples = { type = "path.in", summary = "profile.gpu-sample's JSON lines, or a saved nvidia-smi --query-gpu CSV" }
+params.windows = { type = "path.in", optional = true, summary = "a JSON list of windows, as profile.jfr reads them; from/to offsets count from the first sample" }
+params.split = { type = "duration", optional = true, min = 0.001, summary = "fixed windows of this length instead of a windows file" }
+params.skip = { type = "duration", default = 0, summary = "leave the samples' first seconds out of the whole or split windows" }
+params.device = { type = "int", optional = true, min = 0, summary = "only this device" }
+params.expect = { type = "object", default = {}, summary = "what a comparable run keeps to: pstate (a state or a list), throttle = false, and min_ or max_ of graphics_clock_mhz, sm_clock_mhz, memory_clock_mhz, power_w, power_limit_w, utilisation_percent, memory_utilisation_percent, temperature_c, memory_used_mib or memory_total_mib" }
+params.expect_file = { type = "path.in", optional = true, summary = "a JSON file of expectations, under the expect param" }
+params.tolerance = { type = "float", default = 0.0, min = 0.0, max = 1.0, summary = "the share of a window's sampled time that may break an expectation before it is a finding" }
+params.columns = { type = "list", items = "string", default = [], summary = "the query fields, in order, of a saved CSV without a header line" }
+params.utc_offset = { type = "string", optional = true, pattern = "^(Z|z|[+-]\\d{2}:?\\d{2})$", summary = "the zone of a saved CSV's times, which nvidia-smi writes in local time without one (e.g. +01:00); needed by windows placed by time" }
+params.top = { type = "int", default = 10, min = 1, max = 1000, summary = "throttling episodes listed in each window, longest first" }
+result.windows = { type = "int" }
+result.seconds = { type = "float" }
+result.samples = { type = "int" }
+result.devices = { type = "list" }
+result.pstates = { type = "object" }
+result.throttledSeconds = { type = "float" }
+result.violations = { type = "int" }
+result.notes = { type = "list" }

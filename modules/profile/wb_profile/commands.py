@@ -1,22 +1,30 @@
-"""profile: typed commands over JFR recordings and a JVM's native memory.
+"""profile: typed commands over JFR recordings, a JVM's native memory and GPU telemetry.
 
-Maps (package prefix -> group or owner, tick stage maps) come as inline objects or JSON files, never as
-built-in names, so nothing about one project lives here. The maps are params rather than module config
-because results are cached on the params and the input files' hashes.
+Maps (package prefix -> group or owner, tick stage maps) and GPU expectations come as inline objects or JSON files,
+never as built-in names, so nothing about one project or one machine lives here. They are params rather than
+module config because results are cached on the params and the input files' hashes.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
+import shutil
+import signal
+import subprocess
+import threading
+import time
 from collections import Counter
+from datetime import timedelta, timezone
 from pathlib import Path
 
 from wb_core.module import Cancelled, Context, EnvironmentProblem, ParamError
 
-from . import analysis, attribution, jfc
+from . import analysis, attribution, gpu, jfc, telemetry
 from . import memory as accounting
+from . import sampler as sampling
 from .owners import Owners, Spec
 from .recording import Span, Stream, export
 from .recording import span as span_of
@@ -281,3 +289,307 @@ def settings(ctx: Context, stages: dict | None = None, stages_file: str | None =
     traced_text = f", tracing {len(traced)} method{'s' if len(traced) != 1 else ''}" if traced else ""
     ctx.summary(f"JFR settings for {len(events)} events{traced_text}: start the JVM with {' '.join(options)}")
     return {"settings": where, "options": options, "traced": traced, "events": sorted(events)}
+
+
+# -- GPU telemetry: shared ------------------------------------------------------------------------------
+GPU_MEASURES = (("graphicsClockMhz", "median", "gpu_graphics_clock_mhz", "MHz"),
+                ("memoryClockMhz", "median", "gpu_memory_clock_mhz", "MHz"),
+                ("powerW", "median", "gpu_power_w", "W"),
+                ("utilisationPercent", "median", "gpu_utilisation_percent", "%"),
+                ("temperatureC", "max", "gpu_temperature_max_c", "°C"),
+                ("memoryUsedMiB", "max", "gpu_memory_used_max_mib", "MiB"))
+FINDINGS_LISTED = 20  # past this many, one finding counts the rest (the report has them all)
+
+
+def _gpu_line(window: dict) -> str:
+    """Each device of a window in words: its name (with its index when there are several) and its headline."""
+    devices = window["devices"]
+    names = [d["name"] or f"device {d['device']}" for d in devices]
+    if len(devices) > 1:
+        names = [f"{name} ({d['device']})" if d["name"] else name for name, d in zip(names, devices)]
+    return "; ".join(f"{name}: {telemetry.headline(d)}" for name, d in zip(names, devices))
+
+
+def _gpu_measures(ctx: Context, windows: list[dict]):
+    for w in windows:
+        for d in w["devices"]:
+            labels = {"window": w["name"], "device": d["device"]}
+            for key, stat, name, unit in GPU_MEASURES:
+                value = (d["metrics"].get(key) or {}).get(stat)
+                if value is not None:
+                    ctx.measure(name, value, unit, **labels)
+            ctx.measure("gpu_throttled_seconds", d["throttle"]["throttledSeconds"], "s", **labels)
+
+
+def _gpu_totals(windows: list[dict]) -> tuple[dict, float]:
+    """Seconds in each performance state and throttled, added over windows and devices."""
+    states, throttled = Counter(), 0.0
+    for w in windows:
+        for d in w["devices"]:
+            for state, entry in d["pstates"].items():
+                states[state] += entry["seconds"]
+            throttled += d["throttle"]["throttledSeconds"]
+    return {state: round(seconds, 3) for state, seconds in states.most_common()}, round(throttled, 3)
+
+
+def _gpu_findings(ctx: Context, chosen: list[Window], windows: list[dict], start: int, end: int,
+                  tolerance: float, report: str):
+    """Findings: a window outside the samples or with gaps in them, and every expectation a window broke."""
+    said, more = 0, 0
+
+    def finding(text: str):
+        nonlocal said, more
+        if said < FINDINGS_LISTED:
+            ctx.finding(text)
+            said += 1
+        else:
+            more += 1
+    for window, entry in zip(chosen, windows):
+        outside = window.start < start or window.end > end
+        if outside:
+            finding(f"window {window.name} reaches outside the samples ({iso(start)} to {iso(end)})")
+        for d in entry["devices"]:
+            where = f"window {window.name}" + (f", device {d['device']}" if len(entry["devices"]) > 1 else "")
+            if not d["coveredSeconds"]:
+                if not outside:
+                    finding(f"{where}: no samples")
+                continue
+            if d["coverage"] < 0.9 and not outside:
+                finding(f"{where}: the samples cover {d['coverage']:.0%} of it "
+                        f"(the longest gap is {d['longestGapSeconds']:,.1f} s)")
+            for violation in d["expectations"]:
+                if violation["finding"]:
+                    finding(f"{where}: {telemetry.describe(violation, tolerance)}")
+    if more:
+        ctx.finding(f"{more} more finding{'s' if more != 1 else ''}: see {report}")
+
+
+# -- profile.gpu-sample ---------------------------------------------------------------------------------
+def _gpu_tool(tool: str):
+    adapters = gpu.adapters()
+    names = list(adapters) if tool == "auto" else [tool]
+    for name in names:
+        executable = shutil.which(adapters[name].EXECUTABLE)
+        if executable:
+            return adapters[name], executable
+    raise EnvironmentProblem(f"{' or '.join(names)} is not on PATH on this machine")
+
+
+def _gpu_query(ctx: Context):
+    def run(args: list[str]) -> tuple[int, str]:
+        ctx.log.debug("$ " + " ".join(args))
+        try:
+            return sampling.run(args)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"{Path(args[0]).name} did not answer in 30 s") from None
+    return run
+
+
+@contextlib.contextmanager
+def _cancel_stops(ctx: Context):
+    """While sampling, a cancel ends the sampling instead of interrupting the handler. The worker sets
+    ctx.cancelled and then interrupts the main thread; that interrupt is taken here, so the samples so far are
+    still summarised and kept. A Ctrl+C in a console cancels the same way."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    taken = threading.Event()
+
+    def take(*_):
+        taken.set()
+        ctx.cancelled.set()
+    previous = signal.signal(signal.SIGINT, take)
+    try:
+        yield
+    finally:
+        deadline = time.monotonic() + 1.0
+        while ctx.cancelled.is_set() and not taken.is_set() and time.monotonic() < deadline:
+            time.sleep(0.02)  # the interrupt that follows a cancel lands here, not on the results
+        signal.signal(signal.SIGINT, previous if previous is not None else signal.default_int_handler)
+
+
+def _sample_until(ctx: Context, sampler: sampling.Sampler, seconds: float | None, period_ms: int) -> str:
+    """Waits for the end of the sampling: the time asked for (once there is a sample), a cancel, or the tool
+    stopping."""
+    began = time.monotonic()
+    deadline = began + seconds if seconds else None
+    first_by = began + max(10.0, 5 * period_ms / 1000)
+    report_at = began + 10
+    while True:
+        now = time.monotonic()
+        if deadline is not None and now >= deadline and sampler.count:
+            return "time"
+        if not sampler.alive():
+            return "tool exited"
+        if not sampler.count and now > first_by:
+            return "no samples"
+        if ctx.cancelled.wait(0.2 if deadline is None or now >= deadline else min(0.2, deadline - now)):
+            return "cancelled"
+        if now >= report_at:
+            ctx.progress("sample", min(1.0, (now - began) / seconds) if seconds else None,
+                         f"{sampler.count:,} samples")
+            report_at = now + 10
+
+
+def gpu_sample(ctx: Context, seconds: float | None = None, period_ms: int = 500, device: int | None = None,
+               tool: str = "auto", label: str = "gpu"):
+    """Samples the host's GPUs beside whatever runs on them. It takes no GPU lease and asks for no quiet machine:
+    the lease is one lock, so a sampler that held it would wait out, or hold up, the run it is there to watch;
+    reading the driver's counters needs neither. Inside a turn it runs under the turn's lease like any step."""
+    adapter, executable = _gpu_tool(tool)
+    ctx.progress("probe", msg=f"{adapter.NAME} at {executable}")
+    try:
+        plan = adapter.plan(executable, _gpu_query(ctx), device)
+    except LookupError as error:
+        raise ParamError(str(error)) from None
+    except (RuntimeError, OSError) as error:
+        raise EnvironmentProblem(f"{adapter.NAME}: {error}") from None
+    devices = [d for d in plan.devices if device is None or d["device"] == device]
+    drivers = sorted({d["driver"] for d in devices if d["driver"]})
+    ctx.machine_info(gpu=", ".join(d["name"] or f"device {d['device']}" for d in devices),
+                     **({"driver": ", ".join(drivers)} if drivers else {}))
+    path, summary = ctx.out / f"{label}-samples.jsonl", f"{label}-summary.json"
+    with _cancel_stops(ctx):  # from here a cancel ends the sampling, and what was sampled is still summarised
+        tap, stopped, code = _record(ctx, adapter, plan, path, seconds, period_ms, device)
+        tail = f": {' | '.join(tap.errors)}" if tap.errors else ""
+        if not tap.samples:
+            if stopped == "cancelled":
+                raise Cancelled()
+            why = f"exited {code}" if code is not None else "gave no samples"
+            raise EnvironmentProblem(f"{adapter.NAME} {why}" + (tail or (f": {tap.examples[0]}" if tap.examples
+                                                                          else "")))
+        series = telemetry.series(tap.samples, period_ms * 1_000_000)
+        start, end = telemetry.bounds(series)
+        chosen = resolve(start, end)
+        windows = telemetry.analyse(series, chosen, origin=start)
+        sampled = (end - start) / 1e9
+        notes = []
+        if plan.missing:
+            notes.append(f"{adapter.NAME} here cannot give {', '.join(plan.missing)}")
+        if tap.unread:
+            notes.append(f"{tap.unread} line{'s' if tap.unread != 1 else ''} of {adapter.NAME} were not samples "
+                         f"(first: {tap.examples[0]})")
+        if stopped == "tool exited":
+            ctx.finding(f"{adapter.NAME} stopped {sampled:,.1f} s in (exit {code}){tail}: the samples end there")
+        _gpu_findings(ctx, chosen, windows, start, end, 0.0, summary)
+        ctx.output(f"{label}-samples", path, "application/x-ndjson")
+        _write(ctx, summary, {
+            "schema": "wb.profile.gpu-sample/1", "samples": {"file": path.name, "format": gpu.SCHEMA,
+                                                             "count": len(tap.samples)},
+            "query": plan.describe(), "periodMs": period_ms, "device": device, "start": iso(start), "end": iso(end),
+            "seconds": round(sampled, 3), "stopped": stopped, "toolExit": code, "unreadLines": tap.unread,
+            "devices": devices, "semantics": telemetry.SEMANTICS, "notes": notes, "windows": windows})
+        _gpu_measures(ctx, windows)
+        if ctx.outcome == "ok":
+            ctx.summary(f"{sampled:,.1f} s every {period_ms} ms, {len(tap.samples):,} samples"
+                        + (", stopped by a cancel" if stopped == "cancelled" else "") + f": {_gpu_line(windows[0])}")
+        pstates, throttled = _gpu_totals(windows)
+        return {"samples": len(tap.samples), "seconds": round(sampled, 3), "periodMs": period_ms,
+                "stopped": stopped, "devices": devices, "pstates": pstates, "throttledSeconds": throttled,
+                "notes": notes}
+
+
+def _record(ctx: Context, adapter, plan, path: Path, seconds: float | None, period_ms: int, device: int | None):
+    """Runs the tool's looping query into the samples file until the sampling ends: (sampler, why, tool's exit)."""
+    with open(path, "w", encoding="utf-8", newline="\n") as sink:
+        def keep(sample: dict):
+            sink.write(gpu.dumps(sample) + "\n")
+            sink.flush()
+        tap = sampling.Sampler(adapter.command(plan, period_ms, device), lambda line: adapter.parse(plan, line), keep)
+        ctx.progress("sample", 0.0 if seconds else None,
+                     f"every {period_ms} ms" + (f" for {seconds:g} s" if seconds else " until cancelled"))
+        try:
+            tap.start()
+        except OSError as error:
+            raise EnvironmentProblem(f"{adapter.NAME} could not start: {error}") from None
+        try:
+            stopped = _sample_until(ctx, tap, seconds, period_ms)
+        finally:
+            code = tap.stop()
+    return tap, stopped, code
+
+
+# -- profile.gpu-report ---------------------------------------------------------------------------------
+def _zone(text: str | None):
+    """The tzinfo of a UTC offset such as +01:00, -0500 or Z; None when not given."""
+    if not text:
+        return None
+    if text.upper() == "Z":
+        return timezone.utc
+    digits = text[1:].replace(":", "")
+    try:
+        return timezone((1 if text[0] == "+" else -1) * timedelta(hours=int(digits[:2]), minutes=int(digits[2:])))
+    except ValueError as error:
+        raise ParamError(f"utc_offset {text}: {error}") from None
+
+
+def _absolute(spec) -> bool:
+    """Whether a windows file places any window by time rather than by offset."""
+    items = spec.get("windows") if isinstance(spec, dict) else spec
+    return any(isinstance(item, dict) and ("start" in item or "end" in item) for item in items or [])
+
+
+def gpu_report(ctx: Context, samples: str, windows: str | None = None, split: float | None = None,
+               skip: float = 0.0, device: int | None = None, expect: dict | None = None,
+               expect_file: str | None = None, tolerance: float = 0.0, columns: list | None = None,
+               utc_offset: str | None = None, top: int = 10):
+    path = Path(samples)
+    if not path.is_file():
+        raise ParamError(f"samples is not a file: {samples}")
+    zone = _zone(utc_offset)
+    try:
+        pairs, notes, source = gpu.load(path.read_text(encoding="utf-8-sig", errors="replace"), columns or [],
+                                        zone or timezone.utc)
+    except ValueError as error:
+        raise ParamError(f"samples: {error}") from None
+    saved_csv = source != gpu.SCHEMA
+    if saved_csv and zone is None:
+        notes.append("the CSV's times have no zone and are read as UTC: give utc_offset to place them")
+    if device is not None:
+        pairs = [pair for pair in pairs if pair[1]["device"] == device]
+        if not pairs:
+            raise ParamError(f"no samples of device {device} in {path.name}")
+    extra = _json(expect_file, "expect_file")
+    if extra is not None and not isinstance(extra, dict):
+        raise ParamError("expect_file holds an object of expectations")
+    try:
+        expected = telemetry.expectations({**(extra or {}), **(expect or {})})
+    except ValueError as error:
+        raise ParamError(f"expect: {error}") from None
+    series = telemetry.series(pairs)
+    start, end = telemetry.bounds(series)
+    spec = _json(windows, "windows")
+    if saved_csv and zone is None and _absolute(spec):
+        raise ParamError("the windows are placed by time and the CSV's times have no zone: give utc_offset "
+                         "(e.g. +01:00), or windows by offset (from/to)")
+    try:
+        chosen = resolve(start, end, spec, split, skip)
+    except ValueError as error:
+        raise ParamError(str(error)) from None
+    result = telemetry.analyse(series, chosen, expected, tolerance, top, origin=start)
+    if not any(r.get("throttleReasons") is not None for _, r in pairs):
+        notes.append("no sample names its throttle reasons: throttling is unknown, not absent")
+    unknown = sorted({r for _, row in pairs for r in row.get("throttleReasons") or [] if gpu.kind(r) == "unknown"})
+    if unknown:
+        notes.append(f"clock event reasons no table names: {', '.join(unknown)}")
+    _gpu_findings(ctx, chosen, result, start, end, tolerance, "gpu-report.json")
+    _write(ctx, "gpu-report.json", {
+        "schema": "wb.profile.gpu-report/1",
+        "source": {"file": path.name, "bytes": path.stat().st_size, "format": source, "samples": len(pairs),
+                   "start": iso(start), "end": iso(end), "seconds": round((end - start) / 1e9, 3),
+                   "devices": [{"device": s.device, "name": s.name, "samples": len(s.times),
+                                "periodMs": round(s.period / 1e6, 3)} for s in series.values()]},
+        "expect": expected, "tolerance": tolerance, "semantics": telemetry.SEMANTICS, "notes": notes,
+        "windows": result})
+    _gpu_measures(ctx, result)
+    seconds = sum(w.seconds for w in chosen)
+    if ctx.outcome == "ok":
+        longest = max(range(len(chosen)), key=lambda i: chosen[i].seconds)
+        named = f"{chosen[longest].name} ({chosen[longest].seconds:,.1f} s) " if len(chosen) > 1 else ""
+        ctx.summary(f"{len(chosen)} window{'s' if len(chosen) != 1 else ''}, {seconds:,.1f} s of "
+                    f"{len(series)} device{'s' if len(series) != 1 else ''}: {named}{_gpu_line(result[longest])}")
+    pstates, throttled = _gpu_totals(result)
+    violations = sum(1 for w in result for d in w["devices"] for v in d["expectations"] if v["finding"])
+    return {"windows": len(chosen), "seconds": round(seconds, 3), "samples": len(pairs),
+            "devices": [{"device": s.device, "name": s.name} for s in series.values()], "pstates": pstates,
+            "throttledSeconds": throttled, "violations": violations, "notes": notes}
