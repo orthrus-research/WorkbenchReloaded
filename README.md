@@ -1,4 +1,10 @@
-# Workbench Reloaded
+<p align="center"><img src=".github/assets/banner.svg" alt="Workbench Reloaded by Orthrus Research" width="100%"></p>
+
+<p align="center">
+<a href="#status"><img alt="Status: in development" src="https://img.shields.io/badge/status-in%20development-000000?style=flat-square&labelColor=000000"></a>
+<a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-000000?style=flat-square&labelColor=000000"></a>
+<a href="https://discord.gg/qCVqhXtSzR"><img alt="Discord" src="https://img.shields.io/badge/discord-join-000000?style=flat-square&labelColor=000000"></a>
+</p>
 
 Rich tooling for Minecraft developers, 1.12.2 first, behind one terse API. Ask Workbench for a command,
 get a promise back at once, and receive one predictable result: a `wb/result/v1` envelope, the same shape for
@@ -17,6 +23,12 @@ import wb
 result = wb.run("frames.compare", reference=ref, candidate=cand, profile="near").result()
 result.outcome, result.data.failed          # "finding", ["07.png"]
 ```
+
+## Status
+
+In development: version 0.1.0 is unreleased, and there are no releases yet;
+[CHANGELOG.md](CHANGELOG.md) lists what it holds. Workbench Reloaded succeeds
+[Workbench](https://github.com/orthrus-research/Workbench).
 
 ## How it fits together
 
@@ -207,7 +219,19 @@ and its SHA-256, today Node and Zig), and a machine names the ones its projects 
 ["node"]`: `wb build` builds just those in, checked, with their programs on `PATH`. A toolchain another project needs
 is one more `[tool]` table and `python image/pins.py lock`.
 
+## Community
+
+Questions and discussion: [Discord](https://discord.gg/qCVqhXtSzR). Bugs and requests: this repository's issues. Security
+reports: [SECURITY.md](https://github.com/orthrus-research/.github/blob/main/SECURITY.md). Pull requests are welcome; see
+[CONTRIBUTING.md](https://github.com/orthrus-research/.github/blob/main/CONTRIBUTING.md).
+
 ## License
 
 [Apache License 2.0](LICENSE), except `modules/tools`, which keeps its own license (NRR 1.0). See
 [NOTICE.md](NOTICE.md).
+
+---
+
+<sub>Workbench Reloaded is an [Orthrus Research](https://orthrus.cc) project ·
+[All projects](https://orthrus.cc/projects) · [Texts](https://orthrus.cc/texts) ·
+[Discord](https://discord.gg/qCVqhXtSzR)</sub>
