@@ -12,7 +12,9 @@ prepare = ["{python}", "tools/runtime.py", "prepare", "--name", "{name}"]
 seed_flag = "--seed"
 scale_flag = "--scale"
 play = ["{python}", "tools/runtime.py", "play", "--name", "{name}", "--tour", "{tour}", "--window", "{window}"]
+play_open = ["{python}", "tools/runtime.py", "play", "--name", "{name}", "--window", "{window}"]
 options_env = "JAVA_TOOL_OPTIONS"
+collect = [["client/logs/latest.log", "client-log"]]
 load = ["{python}", "-c", "import sys; sys.path.insert(0, 'tools'); import runtime; runtime.load({name_repr}); print('VERIFIED')"]
 load_ok = "VERIFIED"
 recipe_files = ["runtime.lock.json", "tools/runtime.py", "tools/checkouts.py", "{cubature}/tools/cubic_standalone.py"]
@@ -37,7 +39,7 @@ cubature = "../Cubature"
 '''
 
 RUNTIME = r'''
-import argparse, json, sys
+import argparse, json, os, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,6 +82,16 @@ def prepare(name, seed, scale_text, args):
     (home / "standalone.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
 
 
+def play(name, tour, window):
+    home, _manifest = load(name)
+    logs = home / "client" / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    what = ("tour " + Path(tour).name) if tour else "open session"
+    (logs / "latest.log").write_text(what + " in " + window + " with " + os.environ.get("JAVA_TOOL_OPTIONS", "") + "\n",
+                                     encoding="utf-8")
+    print("played " + what, flush=True)
+
+
 def load(name):
     home = target(name)
     manifest = json.loads((home / "standalone.json").read_text(encoding="utf-8"))
@@ -100,9 +112,13 @@ if __name__ == "__main__":
     parser.add_argument("--name", required=True)
     parser.add_argument("--seed", type=int, default=8675309)
     parser.add_argument("--scale")
+    parser.add_argument("--tour")
+    parser.add_argument("--window", default="1280x720")
     known, rest = parser.parse_known_args()
     if known.command == "prepare":
         prepare(known.name, known.seed, known.scale, rest)
+    elif known.command == "play":
+        play(known.name, known.tour, known.window)
     else:
         raise SystemExit("unsupported in the fake: " + known.command)
 '''

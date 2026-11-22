@@ -188,6 +188,8 @@ everything the launcher's `prepare` reads into a recipe, prepares one template p
 second: libraries, mod jars and natives are read-only hard links to one stored copy, and only what the game
 writes is the instance's own. `lab.snapshot` keeps a generated world and `lab.reset` restores it, so every run
 can start from the same settled state. `lab.dedupe` turns existing full copies into linked ones in place.
+`lab.play` plays a tour on an instance, or, given no tour, opens a session a person plays until they close the
+client (the profile's `play_open`), under the GPU lease either way.
 
 ## Money
 

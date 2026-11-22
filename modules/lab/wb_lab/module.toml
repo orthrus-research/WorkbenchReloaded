@@ -57,14 +57,15 @@ name = "play"
 requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
 turn = true
 role = "play"
-summary = "Play one tour on an instance on the host's GPU, under the GPU lease; keeps logs and captures."
+summary = "Play on an instance on the host's GPU, under the GPU lease: one tour (the profile's play; up to 90 minutes), or with no tour an open session a person plays until they close the client (the profile's play_open; up to its limit); keeps logs and captures."
 handler = "wb_lab.commands:play"
 runs_on = ["host"]
 resources = { gpu = true, quiet = true }
-timeout = "90m"
+timeout = "12h"
 cancel_grace = "2m"
 params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
-params.tour = { type = "path.in" }
+params.tour = { type = "path.in", optional = true, summary = "the tour to play; none: an open session (the profile's play_open)" }
+params.limit = { type = "duration", default = "4h", min = "1m", max = "12h", summary = "an open session is stopped after this (a finding); a tour has 90 minutes" }
 params.window = { type = "string", default = "1920x1080", pattern = "^[0-9]+x[0-9]+$" }
 params.options = { type = "string", default = "", summary = "JVM options for the client, in the profile's options_env" }
 params.label = { type = "string", default = "play" }

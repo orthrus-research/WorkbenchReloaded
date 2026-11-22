@@ -63,6 +63,18 @@ class ScriptEnvironments(unittest.TestCase):
         self.assertEqual(types.coerce("timeout", spec, spec["default"]), 4 * 3600)
         self.assertGreaterEqual(script.timeout, types.parse_duration(spec["max"]))
 
+    def test_the_manifest_allows_the_longest_open_session(self):
+        from harness import REPO
+        from wb_core import types
+        from wb_core.manifest import parse
+        from wb_lab import commands
+        lab = parse(REPO / "modules" / "lab" / "wb_lab" / "module.toml", "wb_lab")
+        play = next(c for c in lab.commands if c.name == "play")
+        spec = play.params["limit"]
+        self.assertGreaterEqual(play.timeout, types.parse_duration(spec["max"]))
+        self.assertGreaterEqual(play.timeout, commands.TOUR_LIMIT)
+        self.assertTrue(play.params["tour"].get("optional"))
+
 
 class HostRunner(unittest.TestCase):
     @classmethod

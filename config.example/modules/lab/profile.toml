@@ -6,6 +6,7 @@ instances = "instances"
 prepare = ["{python}", "bin/launch.py", "new", "{name}"]
 seed_flag = "--seed"
 play = ["{python}", "bin/launch.py", "run", "{name}", "--route", "{tour}", "--size", "{window}"]
+play_open = ["{python}", "bin/launch.py", "run", "{name}", "--size", "{window}"]  # optional: lab.play with no tour
 options_env = "JAVA_TOOL_OPTIONS"
 load = ["{python}", "bin/launch.py", "check", "{name}"]     # optional: refuse an instance that would not load
 load_ok = "OK"
