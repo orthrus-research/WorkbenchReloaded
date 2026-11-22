@@ -80,8 +80,9 @@ wb ci.matrix checkout=. 'command=["{python}","-m","unittest","discover"]' 'pytho
 ```
 
 A version is found through the `py` launcher on Windows and as `python3.12` elsewhere; an interpreter path is used
-as given. `requirements=[...]` gives each version an environment of its own. Each version's exit, time and output
-are kept, with `matrix.json` over all of them; a failure, or a Python the host lacks, is a finding.
+as given. `requirements=[...]` gives each version an environment of its own; `folder=` runs the command in a folder
+of the checkout and `env=` adds variables (`'env={"PYTHONPATH":"src"}'`). Each version's exit, time and output are
+kept, with `matrix.json` over all of them; a failure, or a Python the host lacks, is a finding.
 
 ### Writing jobs for Workbench
 

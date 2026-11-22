@@ -296,6 +296,10 @@ class Matrix(unittest.TestCase):
         git(cls.repo, "init", "-q", "-b", "main")
         (cls.repo / "requirements.txt").write_text("", encoding="utf-8")
         (cls.repo / "check.py").write_text(CHECK.format(code=0), encoding="utf-8")
+        (cls.repo / "pkg" / "src").mkdir(parents=True)  # a package whose tests run in its folder with src on the path
+        (cls.repo / "pkg" / "src" / "mod.py").write_text('NAME = "from src"\n', encoding="utf-8")
+        (cls.repo / "pkg" / "run.py").write_text('import os\nimport mod\nprint(mod.NAME, os.environ["LANE"])\n',
+                                                 encoding="utf-8")
         git(cls.repo, "add", "-A")
         git(cls.repo, "commit", "-q", "-m", "passes")
         cls.good = git(cls.repo, "rev-parse", "HEAD")
@@ -310,12 +314,15 @@ class Matrix(unittest.TestCase):
         import shutil
         shutil.rmtree(cls.root, ignore_errors=True)
 
-    def run_matrix(self, name, checkout, pythons, commit="", requirements=()):
+    def context(self, name):
         from wb_core.module import Context
-        ctx = Context({"job": "direct", "command": "ci.matrix", "module": "ci", "work": str(self.root / name / "work"),
-                       "out": str(self.root / name / "out"), "module_config": {}}, lambda *a, **k: None)
-        result = self.matrix.matrix(ctx, str(checkout), ["{python}", "check.py"], list(pythons), commit,
-                                    list(requirements), 120)
+        return Context({"job": "direct", "command": "ci.matrix", "module": "ci", "work": str(self.root / name / "work"),
+                        "out": str(self.root / name / "out"), "module_config": {}}, lambda *a, **k: None)
+
+    def run_matrix(self, name, checkout, pythons, commit="", requirements=(), script="check.py", folder="", env=None):
+        ctx = self.context(name)
+        result = self.matrix.matrix(ctx, str(checkout), ["{python}", script], list(pythons), commit,
+                                    list(requirements), 120, folder, env)
         return ctx, result
 
     def test_a_linked_worktree_runs_its_own_head(self):
@@ -341,14 +348,27 @@ class Matrix(unittest.TestCase):
         self.assertEqual(ctx.outcome, "ok", ctx.findings)
         self.assertEqual(result["results"][0]["tail"], [f"on {sys.version.split()[0]} venv"])
 
-    def test_a_command_must_name_the_interpreter(self):
-        from wb_core.module import Context, ParamError
-        ctx = Context({"job": "direct", "command": "ci.matrix", "module": "ci", "work": str(self.root / "p" / "work"),
-                       "out": str(self.root / "p" / "out"), "module_config": {}}, lambda *a, **k: None)
-        with self.assertRaises(ParamError):
-            self.matrix.matrix(ctx, str(self.repo), ["python", "check.py"], [sys.executable], "", [], 60)
-        with self.assertRaises(ParamError):
-            self.matrix.matrix(ctx, str(self.repo), ["{python}", "check.py"], [sys.executable], "nope", [], 60)
+    def test_a_folder_and_env_reach_the_command(self):
+        ctx, result = self.run_matrix("folder", self.repo, [sys.executable], commit=self.good, script="run.py",
+                                      folder="pkg", env={"PYTHONPATH": "src", "LANE": "one"})
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        self.assertEqual(result["results"][0]["tail"], ["from src one"])
+        record = json.loads((self.root / "folder" / "out" / "matrix.json").read_text(encoding="utf-8"))
+        self.assertEqual((record["folder"], record["env"]), ("pkg", ["LANE", "PYTHONPATH"]))
+
+    def test_usage_errors_are_refused_and_leave_no_clone(self):
+        from wb_core.module import ParamError
+        ctx = self.context("usage")
+        for command, commit, requirements, folder in ((["python", "check.py"], "", [], ""),
+                                                      (["{python}", "check.py"], "nope", [], ""),
+                                                      (["{python}", "check.py"], "", [], "../elsewhere"),
+                                                      (["{python}", "check.py"], "", ["missing.txt"], ""),
+                                                      (["{python}", "check.py"], "", [], "nowhere")):
+            with self.subTest(command=command, commit=commit, requirements=requirements, folder=folder):
+                with self.assertRaises(ParamError):
+                    self.matrix.matrix(ctx, str(self.repo), command, [sys.executable], commit, requirements, 60,
+                                       folder)
+                self.assertFalse((self.root / "usage" / "work" / "tree").exists())
 
 
 if __name__ == "__main__":
