@@ -51,6 +51,8 @@ CORE = {
     "image": {
         "name": {"type": "string", "default": "wb-core:dev"},
         "volume": {"type": "string", "default": "wb-state"},
+        "tools": {"type": "list", "items": "string", "default": [],
+                  "summary": "optional tools built into the image (image/pins.toml [tool.<name>]); wb build installs them"},
     },
     "quotes": {
         "ttl": {"type": "duration", "default": "5m", "min": "30s", "max": "30m"},

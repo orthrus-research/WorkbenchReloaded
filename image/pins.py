@@ -30,12 +30,22 @@ def jdk_lock(pins: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def tools_lock(pins: dict) -> str:
+    """The optional tools (``[tool.<name>]``): name sha256 url and the folders of the archive whose programs go on
+    PATH. The image builds in only those the machine's ``[core.image] tools`` names."""
+    lines = ["# generated from image/pins.toml by `python image/pins.py lock`: name sha256 url bin-folders"]
+    for name, item in (pins.get("tool") or {}).items():
+        lines.append(f"{name} {item['sha256']} {item['url']} {','.join(item.get('bin') or ['bin'])}")
+    return "\n".join(lines) + "\n"
+
+
 def apt_list(pins: dict) -> str:
     return "\n".join(["# generated from image/pins.toml"] + pins["apt"]["image"]) + "\n"
 
 
 def outputs(pins: dict) -> dict[Path, str]:
-    return {HERE / "jdks.lock": jdk_lock(pins), HERE / "apt-image.txt": apt_list(pins)}
+    return {HERE / "jdks.lock": jdk_lock(pins), HERE / "apt-image.txt": apt_list(pins),
+            HERE / "tools.lock": tools_lock(pins)}
 
 
 def bootstrap(pins: dict, jdks: list[str], gpu: bool) -> str:
@@ -114,7 +124,8 @@ def main(argv=None) -> int:
         return 0
     if args.action == "verify":
         failed = 0
-        for key, item in list(pins["jdk"].items()) + [("virtualgl", pins["virtualgl"])]:
+        for key, item in (list(pins["jdk"].items()) + [("virtualgl", pins["virtualgl"])]
+                          + [(f"tool {name}", item) for name, item in (pins.get("tool") or {}).items()]):
             actual = sha256_url(item["url"])
             if item.get("sha256") and actual != item["sha256"]:
                 print(f"MISMATCH {key}: pinned {item['sha256']}, got {actual}")

@@ -37,6 +37,21 @@ version = "28-beta+25-ea"
 url = "https://github.com/adoptium/temurin28-binaries/releases/download/jdk-28%2B25-ea-beta/OpenJDK-jdk_x64_linux_hotspot_28_25-ea.tar.gz"
 sha256 = "cc1bf0bb2055818fced61cce28e599ab77a56027bae18f63a7f613dc2543e826"
 
+# Optional tools for repositories outside Minecraft modding. An image builds in only the ones the machine's
+# [core.image] tools names (`wb build` passes them), each checked by its SHA-256 and linked into /opt/tools/bin.
+# bin: the archive's folders whose programs go on PATH.
+[tool.node]
+version = "26.13.1"
+url = "https://nodejs.org/dist/v26.13.1/node-v26.13.1-linux-x64.tar.xz"
+sha256 = "5c063e46bab0fbc1c17cc445d7ff129cbdcd0471be6ed83b6ab864f8143bc864"  # nodejs.org's SHASUMS256.txt
+bin = ["bin"]
+
+[tool.zig]
+version = "0.17.1"
+url = "https://ziglang.org/download/0.17.1/zig-x86_64-linux-0.17.1.tar.xz"
+sha256 = "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a"  # ziglang.org's download index
+bin = ["."]
+
 [virtualgl]
 # For rentals only (the local container never draws on the GPU, S16).
 version = "3.1.1"

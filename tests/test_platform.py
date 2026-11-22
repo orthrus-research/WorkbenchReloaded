@@ -115,5 +115,27 @@ class Links(unittest.TestCase):
             platform.remove_link(target)
 
 
+class ImageTools(unittest.TestCase):
+    """wb build passes the machine's optional tools to the image, and refuses one the pins do not name."""
+
+    def test_named_tools_become_the_build_argument(self):
+        from unittest import mock
+        with mock.patch.object(compose.subprocess, "run") as run, mock.patch.object(compose, "repo_root",
+                                                                                     return_value=REPO):
+            run.return_value.returncode = 0
+            self.assertEqual(compose.build("wb-core:test", ["node", "zig"]), 0)
+            command = run.call_args[0][0]
+            self.assertEqual(command[command.index("--build-arg") + 1], "TOOLS=node,zig")
+            compose.build("wb-core:test")
+            self.assertNotIn("--build-arg", run.call_args[0][0])  # no tools: the image as it always was
+
+    def test_a_tool_the_pins_do_not_name_is_refused(self):
+        from unittest import mock
+        with mock.patch.object(compose, "repo_root", return_value=REPO):
+            with self.assertRaises(compose.ComposeError) as raised:
+                compose.build("wb-core:test", ["cobol"])
+        self.assertIn("cobol, which image/pins.toml does not pin", str(raised.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
