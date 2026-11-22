@@ -1,0 +1,70 @@
+[module]
+name = "content"
+version = "0.1.0"
+summary = "Content and data: modpack scripts, recipes and placement data, read without running the game."
+
+[config]
+rulesets = { type = "object", default = {}, summary = "rule sets for scripts by name: aliases, mappers, not_recipes and ids (keys: wb_content/rules.py)" }
+
+[[command]]
+name = "scripts"
+summary = "Analyse a pack's GroovyScript folder without running it: the load order runConfig.json gives per packmode and side, import cycles, ids declared twice, recipe additions and removals by file and mod, references to absent mods, and a log's errors mapped to script file:line."
+handler = "wb_content.commands:scripts"
+deterministic = true
+resources = { cpu = 1, mem_gb = 1 }
+params.groovy = { type = "path.in", summary = "the groovy folder (the one holding runConfig.json), or a pack or instance folder holding groovy/" }
+params.packmode = { type = "string", default = "", summary = "the packmode whose load order is listed; empty: the one GroovyScript picks (runConfig.json's default, else its first). Defects are looked for in every packmode" }
+params.side = { type = "enum", values = ["client", "server"], default = "client", summary = "the side whose load order is listed (SIDE preprocessors); defects are looked for on both" }
+params.file_system = { type = "enum", values = ["windows", "linux", "macos"], default = "windows", summary = "where the game runs: windows sorts paths by \\ and ignores case, linux sorts by / and matches case, macos sorts by / and ignores case; the others' orders are compared" }
+params.mods = { type = "path.in", optional = true, summary = "the pack's mods: a mods folder of JARs (ids from mcmod.info, mods.toml or fabric.mod.json, else @Mod), one JAR, or a text or JSON file of mod ids; with neither this nor mod_ids, references are not checked" }
+params.mod_ids = { type = "list", items = "string", default = [], summary = "mod ids the pack has besides those in mods" }
+params.platform = { type = "list", items = "string", default = ["minecraft", "forge", "fml", "mcp"], summary = "mod ids the platform provides: never absent" }
+params.scan_classes = { type = "enum", values = ["always", "auto", "never"], default = "always", summary = "read @Mod annotations from every JAR's classes (metadata files are often stale), only from JARs whose metadata names no mod (auto), or never" }
+params.log = { type = "path.in", optional = true, summary = "a log to map back to the scripts: groovy.log or latest.log (.gz too); its errors are findings" }
+params.ruleset = { type = "string", default = "", summary = "a rule set under [modules.content.rulesets]" }
+params.rules = { type = "path.in", optional = true, summary = "a TOML or JSON file of rules laid over the rule set: aliases, mappers, not_recipes, ids (keys: wb_content/rules.py)" }
+result.files = { type = "int" }
+result.order = { type = "list" }
+result.cycles = { type = "list" }
+result.duplicates = { type = "list" }
+result.recipes = { type = "object" }
+result.missing = { type = "list" }
+result.log = { type = "object", optional = true }
+result.report = { type = "string" }
+
+[[command]]
+name = "recipe-graph"
+summary = "Read a recipe dump as a graph of items: dead ends (inputs no recipe makes), cycles and those nothing outside leads into, and items only removed recipes made that active ones still need."
+handler = "wb_content.commands:recipe_graph"
+deterministic = true
+resources = { cpu = 1, mem_gb = 2 }
+params.recipes = { type = "path.in", summary = "the dump: JSON lines or a JSON array (.gz too), one recipe each: type, id, source, inputs, outputs, removed (keys: wb_content/recipes.py)" }
+params.obtainable = { type = "list", items = "string", default = [], summary = "globs of the items the world supplies without a recipe (ores, drops, loot); given, dead ends and closed cycles are findings" }
+params.ignore = { type = "list", items = "string", default = [], summary = "globs of items left out of the graph" }
+params.types = { type = "list", items = "string", default = [], summary = "globs of the recipe types read; empty: every type" }
+result.recipes = { type = "int" }
+result.items = { type = "int" }
+result.dead_ends = { type = "list" }
+result.cycles = { type = "list" }
+result.removed_only = { type = "list" }
+result.report = { type = "string" }
+
+[[command]]
+name = "placement"
+summary = "Placement statistics from a CSV of points, per kind: density, nearest-neighbour spread, the Clark-Evans ratio and the quadrat index of dispersion, with their significance."
+handler = "wb_content.commands:placement"
+deterministic = true
+resources = { cpu = 1, mem_gb = 1 }
+params.points = { type = "path.in", summary = "a CSV with a header row, one point per row" }
+params.x = { type = "string", default = "x", summary = "the column of east-west coordinates" }
+params.z = { type = "string", default = "z", summary = "the column of north-south coordinates" }
+params.kind = { type = "string", default = "kind", summary = "the column naming each point's kind; a CSV without it is one kind" }
+params.area = { type = "list", items = "float", optional = true, summary = "x1,z1,x2,z2: the rectangle sampled, x1 <= x < x2; points outside it are left out (default: the points' bounding box, which understates it)" }
+params.quadrat = { type = "float", default = 32, min = 1, summary = "the side of a quadrat, in blocks" }
+params.edge = { type = "enum", values = ["donnelly", "none"], default = "donnelly", summary = "the edge correction of the Clark-Evans expectation" }
+params.kinds = { type = "list", items = "string", default = [], summary = "only these kinds; empty: every kind" }
+params.min_points = { type = "int", default = 5, min = 2, summary = "the fewest points a kind needs for its Clark-Evans ratio" }
+params.expect = { type = "object", default = {}, summary = "ranges by kind (* for every kind, (all) for all points together): { tree = { clark_evans = [0.9, 1.3], dispersion = [0, 1.5] } }; a measure outside its range is a finding (measures: wb_content/placement.py)" }
+result.points = { type = "int" }
+result.kinds = { type = "object" }
+result.report = { type = "string" }
