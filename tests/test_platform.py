@@ -46,6 +46,29 @@ class Compose(unittest.TestCase):
         self.assertEqual(service["environment"]["WB_API_LISTEN"], "127.0.0.1")
         self.assertEqual(service["environment"]["WB_HOST_URL"], "http://127.0.0.1:7378")
 
+    def test_folders_workbench_writes_in_an_rw_root_are_given_to_its_user(self):
+        out, src = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
+        (self.folder / "paths.toml").write_text(
+            f"[roots.out]\nhost = '{out}'\ncontainer = '/mnt/out'\nmode = 'rw'\n"
+            f"[roots.src]\nhost = '{src}'\ncontainer = '/mnt/src'\nmode = 'ro'\n", encoding="utf-8")
+        modules = self.folder / "modules"
+        modules.mkdir()
+        (modules / "ci.toml").write_text("pin_cache = '/mnt/out/cache/pins'\nrecords = '/mnt/out/ci/records'\n",
+                                         encoding="utf-8")
+        (modules / "toolchain.toml").write_text("pin_cache = '/mnt/out/cache/pins'\n", encoding="utf-8")
+        environment = compose.generate(wbconfig.load(self.folder), self.run,
+                                       platform.Profile("windows", "desktop"))["services"]["wb"]["environment"]
+        self.assertEqual(environment["WB_OWNED_DIRS"], "/mnt/out/cache/pins:/mnt/out/ci/records")
+        # A ro root, a root itself, a relative path and an escape are never given away.
+        (modules / "toolchain.toml").write_text("", encoding="utf-8")
+        for value in ("/mnt/src/cache", "/mnt/out", "cache/pins", "/mnt/out/../src"):
+            (modules / "ci.toml").write_text(f"pin_cache = '{value}'\n", encoding="utf-8")
+            self.assertEqual(compose.owned_dirs(wbconfig.load(self.folder)), [], value)
+        (modules / "ci.toml").write_text("", encoding="utf-8")
+        environment = compose.generate(wbconfig.load(self.folder), self.run,
+                                       platform.Profile("windows", "desktop"))["services"]["wb"]["environment"]
+        self.assertNotIn("WB_OWNED_DIRS", environment)
+
 
 class ToolPaths(unittest.TestCase):
     def test_posix_and_windows_host_paths_are_translated(self):

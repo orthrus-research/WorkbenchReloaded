@@ -11,9 +11,9 @@ excludes = { type = "list", items = "string", default = [], summary = "ignore pa
 tool_env = { type = "object", default = {}, summary = "environment for ci.scrub and ci.actions, the absorbed tools: e.g. ORTHRUS_SCRUB_TERMS_FILE and ORTHRUS_SCRUB_RULES_FILE, a private terms file and rules file kept in the machine's config folder (in the container under /etc/wb), never in a repository" }
 git_config = { type = "object", default = {}, summary = "the host's system and global git settings a working-tree run applies, by key (core.autocrlf, ...), for a container that cannot read them; the repository's own config still wins. Empty: git's own config" }
 workdir = { type = "string", default = "", summary = "where clean trees are built; empty: <state>/ci/trees" }
-records = { type = "string", default = "", summary = "where run records are kept, one folder per project; empty: <state>/ci/records" }
+records = { type = "string", default = "", summary = "where run records are kept, one folder per project; inside an rw root, given to Workbench's user at container start; empty: <state>/ci/records" }
 gradle_home = { type = "string", default = "", summary = "a Gradle home that survives the container, whose init.d serves toolchain's rescue repository and substitutions to every build (written each run); empty: <state>/cache/gradle" }
-pin_cache = { type = "string", default = "", summary = "the shared cache of pinned files by SHA-256 (WB_PIN_CACHE in every job); empty: <state>/cache/pins" }
+pin_cache = { type = "string", default = "", summary = "the shared cache of pinned files by SHA-256 (WB_PIN_CACHE in every job); inside an rw root, given to Workbench's user at container start; empty: <state>/cache/pins" }
 python_cache = { type = "string", default = "", summary = "where projects' Python environments are cached by requirements; empty: <state>/cache/python" }
 
 [[command]]

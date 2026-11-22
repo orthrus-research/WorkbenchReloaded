@@ -16,11 +16,14 @@ import secrets as pysecrets
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import config as wbconfig
 
 DEFAULT_PORT = 7377
+STATE = "/var/lib/wb"
+# Settings naming a folder Workbench itself writes, as a container path: the entrypoint gives each to Workbench's user.
+OWNED_SETTINGS = ("modules.ci.pin_cache", "modules.ci.records", "modules.toolchain.pin_cache")
 
 
 class ComposeError(Exception):
@@ -60,6 +63,27 @@ def ensure_host_token(run: Path) -> Path:
     return path
 
 
+def owned_dirs(config: wbconfig.Config) -> list[str]:
+    """The folders OWNED_SETTINGS name inside an rw root or the state volume: never a root itself, and nothing under a
+    ro root. A folder made on the host, or by root, does not belong to the user Workbench runs as, so a job could not
+    write there; the entrypoint, still root, makes each one and gives it and its contents to that user (WB_OWNED_DIRS)."""
+    writable, readonly = [PurePosixPath(STATE)], []
+    for name, root in (config.table("paths").get("roots") or {}).items():
+        mount = PurePosixPath(wbconfig.root_mount(name, root))
+        (writable if root.get("mode", "ro") == "rw" else readonly).append(mount)
+    owned = []
+    for key in OWNED_SETTINGS:
+        value = config.get(key)
+        if not isinstance(value, str) or not value.startswith("/"):
+            continue  # empty: the default under the state volume, which the entrypoint already owns
+        path = PurePosixPath(value)
+        if ".." in path.parts or any(path.is_relative_to(base) for base in readonly):
+            continue
+        if any(path != base and path.is_relative_to(base) for base in writable) and str(path) not in owned:
+            owned.append(str(path))
+    return owned
+
+
 def generate(config: wbconfig.Config, run: Path, profile=None, warnings: list | None = None) -> dict:
     """The compose document for this machine's platform profile (see wb.platform). A configured secret whose file
     is missing is left out with a warning: the commands that need it show as inactive, the rest of Workbench runs."""
@@ -74,7 +98,7 @@ def generate(config: wbconfig.Config, run: Path, profile=None, warnings: list | 
         raise ComposeError(f"core.api.publish = {publish!r}: Workbench is published on loopback only (D3)")
     image = (core.get("image") or {}).get("name", "wb-core:dev")
     volume = (core.get("image") or {}).get("volume", "wb-state")
-    volumes = [f"{volume}:/var/lib/wb"]
+    volumes = [f"{volume}:{STATE}"]
     if config.folder:
         volumes.append(f"{config.folder}:/etc/wb:ro")
     layer_mounts = [f"/etc/wb-layers/{index}" for index in range(len(config.layers))]
@@ -113,6 +137,9 @@ def generate(config: wbconfig.Config, run: Path, profile=None, warnings: list | 
         "stop_grace_period": "2m",
         "labels": {"cc.orthrus.wb.profile": f"{profile.os}/{profile.docker}"},
     }
+    owned = owned_dirs(config)
+    if owned:
+        service["environment"]["WB_OWNED_DIRS"] = ":".join(owned)  # the container's own path separator
     if profile.os == "linux" and hasattr(os, "getuid"):
         # Bind-mounted roots belong to this user; the image's entrypoint runs Workbench as them (image/entrypoint.sh).
         service["environment"]["WB_UID"] = str(os.getuid())
