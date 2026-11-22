@@ -606,8 +606,10 @@ def _check_world(ctx: Context, store, instance: Path, label: str, allow_writer_c
 
 
 def ensure(ctx: Context, name: str, args: list, world: str, replace: bool, allow_writer_change: bool, verify: bool,
-           seed=None, scale=None, profile: str = "", packs: list | None = None):
+           seed=None, scale=None, profile: str = "", packs: list | None = None, allow_disagreement: bool = False):
+    from .inputs import check_agreement
     from .store import MARKER, recipe_of, remove_tree
+    disagree = check_agreement(ctx, allow_disagreement)  # before anything is built from them
     store, folder = _store(ctx), _instances(ctx)
     inputs = recipe_inputs(ctx, seed, scale, args, packs)
     recipe = recipe_of(inputs)
@@ -663,8 +665,10 @@ def ensure(ctx: Context, name: str, args: list, world: str, replace: bool, allow
     ctx.summary(f"instance {name} {how} (recipe {recipe}" + (f", world {world}" if world else "") + ")"
                 + (f"; {sizes['linked_bytes'] / 1e6:.0f} MB shared, {sizes['copied_bytes'] / 1e6:.0f} MB own"
                    if not reused else ""))
+    if disagree:
+        ctx.finding("built although the launch set's pins disagree: " + "; ".join(disagree))
     return {"instance": name, "recipe": recipe, "reused": reused, "prepared_template": prepared,
-            "world": world or None, **sizes}
+            "world": world or None, "disagreements": disagree, **sizes}
 
 
 def snapshot(ctx: Context, name: str, label: str, profile: str = ""):

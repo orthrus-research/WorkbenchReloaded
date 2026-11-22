@@ -190,7 +190,9 @@ writes is the instance's own. `lab.snapshot` keeps a generated world and `lab.re
 can start from the same settled state. `lab.dedupe` turns existing full copies into linked ones in place.
 `lab.play` plays a tour on an instance, or, given no tour, opens a session a person plays until they close the
 client (the profile's `play_open`), under the GPU lease either way. `lab.inputs` runs the profile's input steps
-first (pinned dependencies, the builds an instance is made from), in their checkouts, in order.
+first (pinned dependencies, the builds an instance is made from), in their checkouts, in order. A launch set whose
+projects pin different commits of what they share (the profile's `agree`) is reported there and refused by
+`lab.ensure`.
 
 ## Money
 

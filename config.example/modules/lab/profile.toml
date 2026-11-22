@@ -27,6 +27,12 @@ inputs = [
   { name = "pins", run = ["{python}", "bin/setup.py"] },
   { name = "engine", checkout = "engine", run = ["{cwd}/build.sh"] },
 ]
+# What the launch set's projects share, and where each pins it (group 1: the commit). lab.inputs reports pins that
+# disagree and lab.ensure refuses them (allow_disagreement=true builds anyway, as a finding).
+agree = { physics = [
+  { file = "launch.lock", pattern = 'physics@([0-9a-f]{7,40})' },
+  { checkout = "engine", file = "build.lock", pattern = '"physics": "([0-9a-f]{7,40})"' },
+] }
 
 [checkouts]                                                 # other checkouts, named in paths as {name}
 engine = "../Engine"
