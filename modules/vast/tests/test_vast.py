@@ -279,6 +279,14 @@ pathlib.Path("build", "out.txt").write_bytes(b"made from " + pathlib.Path("VERSI
 """
 
 
+COPY = b"""import pathlib
+here = pathlib.Path(__file__).resolve().parent
+pathlib.Path("build").mkdir(exist_ok=True)
+pathlib.Path("build", "beside.txt").write_bytes((here / "data.txt").read_bytes())
+pathlib.Path("build", "folder.txt").write_text(pathlib.Path.cwd().name, encoding="utf-8")
+"""
+
+
 def make_repo(folder: Path) -> str:
     """A checkout with tracked tools (one executable), and a step that makes a file the tree does not track."""
     (folder / "tools").mkdir(parents=True)
@@ -421,6 +429,17 @@ class Templates(unittest.TestCase):
             ({**base, "outputs": {"{prepare.id}-{play.id}": "x"}}, "reads play and prepare"),
             ({"folder": "x", "steps": {"file": "s.json", "roles": {"play": 1}, "values": {"A": "1"}}},
              "values are for env"),
+            ({"folder": "x", "inputs": {"a.tar": {"repo": "App", "commit": "abcdef0", "artifacts": ["x"],
+                                                   "beside": {"Engine": {"repo": "Engine"}}}}}, "missing commit"),
+            ({"folder": "x", "inputs": {"a.tar": {"repo": "App", "commit": "abcdef0", "artifacts": ["x"],
+                                                   "beside": {"Engine": {"repo": "Engine", "commit": "main"}}}}},
+             "pin it, a branch moves"),
+            ({"folder": "x", "inputs": {"a.tar": {"repo": "work/App", "commit": "abcdef0", "artifacts": ["x"],
+                                                   "beside": {"App": {"repo": "Other", "commit": "abcdef0"}}}}},
+             "the recipe's own tree is the folder App"),
+            ({"folder": "x", "inputs": {"a.tar": {"repo": "App", "commit": "abcdef0", "artifacts": ["x"],
+                                                   "beside": {"../up": {"repo": "Engine", "commit": "abcdef0"}}}}},
+             "a folder name beside the tree"),
         ]
         for raw, expected in cases:
             with self.subTest(expected=expected):
@@ -516,6 +535,47 @@ class Archives(unittest.TestCase):
                 self.assertFalse((ctx.out / "app.tar").exists())
         with self.assertRaises(ParamError):  # a commit the checkout lacks
             self.build(self.input(commit="f" * 40), self.root / "pins-none")
+
+    def test_checkouts_beside_the_tree_are_clean_trees_at_their_commits(self):
+        engine = self.root / "engine"
+        engine.mkdir()
+        git(engine, "init", "-q", "-b", "main")
+        (engine / "data.txt").write_bytes(b"engine one\n")
+        (engine / "copy.py").write_bytes(COPY)
+        git(engine, "add", "-A")
+        git(engine, "commit", "-q", "-m", "one")
+        first = git(engine, "rev-parse", "HEAD")
+        (engine / "data.txt").write_bytes(b"engine two\n")
+        git(engine, "commit", "-q", "-am", "two")
+        second = git(engine, "rev-parse", "HEAD")
+
+        def built(commit: str) -> tuple[Context, dict]:
+            item = self.input(steps=["{python} ../engine/copy.py", "{python} {beside.engine}/copy.py"],
+                              artifacts=["build"], beside={"engine": {"repo": str(engine), "commit": commit[:10]}})
+            ctx = self.context()
+            return ctx, lab_inputs.build(ctx, "t", item, self.repo, self.root / "pins-beside", cached=False,
+                                         keep=False, beside={"engine": engine})
+
+        ctx, one = built(first)
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        with tarfile.open(ctx.out / "app.tar") as archive:  # the steps found it as ../engine and as {beside.engine}
+            self.assertEqual(archive.extractfile("build/beside.txt").read(), b"engine one\n")
+            self.assertEqual(archive.extractfile("build/folder.txt").read(), b"app")  # the tree has the repo's name
+        receipt = json.loads((ctx.out / "app.tar.receipt.json").read_text(encoding="utf-8"))
+        self.assertEqual(receipt["beside"]["engine"]["commit"], first)
+        self.assertEqual(receipt["recipe"]["beside"], {"engine": {"repo": str(engine), "commit": first[:10]}})
+        self.assertEqual(one["beside"]["engine"]["commit"], first)
+        ctx, two = built(second)
+        with tarfile.open(ctx.out / "app.tar") as archive:
+            self.assertEqual(archive.extractfile("build/beside.txt").read(), b"engine two\n")
+        self.assertNotEqual(one["recipe_sha256"], two["recipe_sha256"])  # the key holds the checkout's commit
+        plain = lab_inputs.recipe_key("app.tar", self.input().recipe, self.commit)
+        self.assertEqual(plain, lab_inputs.recipe_key("app.tar", self.input().recipe, self.commit, {}))
+        self.assertEqual(git(engine, "status", "--porcelain"), "")  # both checkouts were only read
+        self.assertEqual(git(self.repo, "status", "--porcelain"), "")
+        with self.assertRaises(ParamError):  # a recipe that names a checkout beside it, given none
+            lab_inputs.build(self.context(), "t", self.input(beside={"engine": {"repo": "e", "commit": first[:10]}}),
+                             self.repo, self.root / "pins-beside", cached=False, keep=False)
 
     def test_the_pin_cache_is_the_one_toolchain_uses(self):
         ctx = self.context()
@@ -722,6 +782,28 @@ class Bundles(unittest.TestCase):
         self.assertEqual(refused.outcome, "finding")
         self.assertIn("run.sh has Windows line endings (CRLF)", refused.summary)
         self.assertFalse((self.d.out / "bundle-crlf" / "bundle.toml").exists())
+
+    def test_an_archive_the_recipe_no_longer_makes_is_refused(self):
+        lab = self.d.out / "lab-stale"
+        shutil.copytree(self.lab(), lab, dirs_exist_ok=True)
+        path = lab / "app.tar.receipt.json"
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        cases = [(dict(receipt, commit="0" * 40), "app.tar was built at 000000000000, not the"),
+                 (dict(receipt, recipe_sha256="0" * 64), "app.tar was built by another recipe"),
+                 (dict(receipt, beside={"engine": {"commit": "1" * 40}}), "beside.engine, which the template no "
+                                                                            "longer names"),
+                 (None, "app.tar has no receipt, and the template pins no sha256 for it")]
+        for changed, expected in cases:
+            with self.subTest(expected=expected):
+                if changed is None:
+                    path.unlink()
+                else:
+                    path.write_text(json.dumps(changed), encoding="utf-8")
+                refused = self.bundle("bundle-stale", lab=str(lab))
+                self.assertEqual(refused.outcome, "finding")
+                self.assertIn(expected, refused.summary)
+                self.assertIn("build it again (vast.lab-inputs template=tours)", refused.summary)
+                self.assertFalse((self.d.out / "bundle-stale" / "bundle.toml").exists())
 
     def test_a_drifted_input_or_a_changed_bundle_is_refused(self):
         lab = self.d.out / "lab-drifted"

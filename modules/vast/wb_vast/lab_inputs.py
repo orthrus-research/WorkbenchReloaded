@@ -2,7 +2,9 @@
 
 An input with a recipe is built in a throwaway clean tree: a shared clone of its repository at the pinned commit, so
 the checkout is only read (as ``runs.at-commit`` and ``toolchain.rebuild`` do), where the recipe's steps run in
-order. A step may name ``{python}`` (Workbench's interpreter) and ``{tree}`` (the clean tree); it gets every JDK as
+order. A recipe's ``beside`` checkouts are clean trees too, each at its own pinned commit in the folder next to the
+tree it names (``../Cubature``), for steps that read a sibling checkout the way a project's own tools expect. A step
+may name ``{python}`` (Workbench's interpreter), ``{tree}`` (the clean tree) and ``{beside.<name>}``; it gets every JDK as
 ``JAVA_HOME_<major>_X64`` (and ``JAVA_HOME`` for the recipe's ``jdk``), ``WB_PIN_CACHE`` and the recipe's ``env``.
 The files the recipe's ``artifacts`` globs match, relative to its ``base`` folder and less its ``exclude``, are
 packed into a tar whose bytes depend on their paths, modes and contents and on the commit alone: sorted entries, no
@@ -116,11 +118,14 @@ def resolve(ctx: Context, repo: Path, commit: str) -> tuple[str, str, int]:
     return sha, tree, moment
 
 
-def recipe_key(name: str, recipe: Recipe, commit: str) -> str:
-    """What an archive is made from: its name, the full commit and the recipe's steps, globs, JDK and environment."""
+def recipe_key(name: str, recipe: Recipe, commit: str, beside: dict[str, str] | None = None) -> str:
+    """What an archive is made from: its name, the full commit, the full commits of the checkouts beside it, and the
+    recipe's steps, globs, JDK and environment. (A recipe with nothing beside keeps the key it always had.)"""
     material = {"schema": RECEIPT_SCHEMA, "input": name, "commit": commit, "steps": recipe.steps,
                 "base": recipe.base, "artifacts": recipe.artifacts, "exclude": recipe.exclude, "jdk": recipe.jdk,
                 "env": recipe.env}
+    if beside:
+        material["beside"] = dict(sorted(beside.items()))
     return hashlib.sha256(canonical(material).encode("utf-8")).hexdigest()
 
 
@@ -216,16 +221,26 @@ def listing(archive: Path) -> list[dict]:
 # ---------------------------------------------------------------------------------------------
 # building one input
 
-def build(ctx: Context, template: str, item: Input, repo: Path, cache: Path, *, cached: bool, keep: bool) -> dict:
+def build(ctx: Context, template: str, item: Input, repo: Path, cache: Path, *, cached: bool, keep: bool,
+          beside: dict[str, Path] | None = None) -> dict:
     """Makes ``item``'s archive in the out folder by its recipe, or takes it from the pin cache; refusals are
-    findings, and then nothing is kept."""
+    findings, and then nothing is kept. ``beside`` names the checkout of each of the recipe's ``beside`` entries."""
     recipe = item.recipe
     commit, tree_hash, moment = resolve(ctx, repo, recipe.commit)
-    key = recipe_key(item.name, recipe, commit)
+    besides = {}
+    for name, entry in recipe.beside.items():
+        path = (beside or {}).get(name)
+        if path is None:
+            raise ParamError(f"{item.name}: no checkout given for beside.{name}")
+        full, tree_of, _ = resolve(ctx, path, entry.commit)
+        besides[name] = {"path": path, "commit": full, "tree": tree_of}
+    key = recipe_key(item.name, recipe, commit, {n: b["commit"] for n, b in besides.items()})
     target = ctx.out / item.name
     result = {"name": item.name, "commit": commit, "tree": tree_hash, "pinned": item.sha256, "recipe_sha256": key,
               "sha256": None, "bytes": None, "cached": False, "matched": None, "archive": None, "receipt": None,
               "steps": []}
+    if besides:
+        result["beside"] = {n: {"commit": b["commit"], "tree": b["tree"]} for n, b in besides.items()}
     stored = _stored(ctx, key)
     if cached:
         digest = item.sha256 or ((stored or {}).get("archive") or {}).get("sha256")
@@ -234,17 +249,25 @@ def build(ctx: Context, template: str, item: Input, repo: Path, cache: Path, *, 
                 receipt = dict(stored)
             else:  # pinned and cached, built elsewhere: the receipt is made from the archive itself
                 receipt = _receipt(ctx, template, item, repo, key, (commit, tree_hash, moment),
-                                   [{"step": s, "exit": None} for s in recipe.steps], listing(target), target)
+                                   [{"step": s, "exit": None} for s in recipe.steps], listing(target), target,
+                                   besides)
             receipt.update(cached=True, pinned=item.sha256, matched=None if item.sha256 is None else True)
             ctx.log.info(f"{item.name}: {digest[:12]} from the pin cache, not built")
             return _publish(ctx, item, target, receipt, result)
-    tree = ctx.work / "trees" / item.name
+    parent = ctx.work / "trees" / item.name  # the tree and the checkouts beside it, as siblings
+    tree = parent / recipe.folder
     made = ctx.work / "archives" / item.name
     ctx.progress("clone", msg=f"{item.name}: {commit[:12]} from {ctx.host_path(repo)}")
     try:
+        shutil.rmtree(parent, ignore_errors=True)  # a tree kept by an earlier keep=true
         checkouts.clone_at(ctx, repo, commit, tree)
-        env = _env(ctx, recipe, cache)
         replacements = {"{python}": sys.executable, "{tree}": str(tree)}
+        for name, entry in besides.items():
+            ctx.progress("clone", msg=f"{item.name}: beside.{name} {entry['commit'][:12]} from "
+                                      f"{ctx.host_path(entry['path'])}")
+            checkouts.clone_at(ctx, entry["path"], entry["commit"], parent / name)
+            replacements[f"{{beside.{name}}}"] = str(parent / name)
+        env = _env(ctx, recipe, cache)
         steps = result["steps"]
         for index, step in enumerate(recipe.steps, start=1):
             ctx.check_cancel()
@@ -287,26 +310,32 @@ def build(ctx: Context, template: str, item: Input, repo: Path, cache: Path, *, 
                         f"{item.sha256[:12]}; nothing was kept")
             return {**result, "sha256": digest, "matched": False}
         copy_verified(made, target, digest)
-        receipt = _receipt(ctx, template, item, repo, key, (commit, tree_hash, moment), steps, entries, target)
+        receipt = _receipt(ctx, template, item, repo, key, (commit, tree_hash, moment), steps, entries, target,
+                           besides)
         _to_cache(ctx, cache, target, digest)
         write_atomic(_index(ctx) / f"{key}.json", (json.dumps(receipt, indent=1) + "\n").encode("utf-8"))
         return {**_publish(ctx, item, target, receipt, result), "kept": ctx.host_path(tree) if keep else None}
     finally:
         made.unlink(missing_ok=True)
         if not keep:
-            shutil.rmtree(tree, ignore_errors=True)
+            shutil.rmtree(parent, ignore_errors=True)
 
 
 def _receipt(ctx: Context, template: str, item: Input, repo: Path, key: str, at: tuple[str, str, int],
-             steps: list[dict], entries: list[dict], archive: Path) -> dict:
+             steps: list[dict], entries: list[dict], archive: Path, besides: dict | None = None) -> dict:
     recipe = item.recipe
     commit, tree, moment = at
     digest = sha256_file(archive)
+    beside = {name: {"repo": ctx.host_path(b["path"]), "commit": b["commit"], "tree": b["tree"]}
+              for name, b in (besides or {}).items()}
+    named = {"beside": {n: {"repo": b.repo, "commit": b.commit} for n, b in recipe.beside.items()}} \
+        if recipe.beside else {}
     return {"schema": RECEIPT_SCHEMA, "template": template, "input": item.name,
             "recipe": {"repo": ctx.host_path(repo), "commit": recipe.commit, "steps": recipe.steps,
                        "base": recipe.base, "artifacts": recipe.artifacts, "exclude": recipe.exclude,
-                       "jdk": recipe.jdk, "env": recipe.env},
+                       "jdk": recipe.jdk, "env": recipe.env, **named},
             "recipe_sha256": key, "commit": commit, "tree": tree, "time": moment, "steps": steps,
+            **({"beside": beside} if beside else {}),
             "files": entries, "files_sha256": set_digest({e["path"]: e["sha256"] for e in entries}),
             "archive": {"name": item.name, "sha256": digest, "bytes": archive.stat().st_size, "format": FORMAT},
             "pinned": item.sha256, "matched": None if item.sha256 is None else digest == item.sha256,

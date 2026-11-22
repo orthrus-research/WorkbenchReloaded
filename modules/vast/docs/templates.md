@@ -53,6 +53,7 @@ base = ""             # the folder of the tree those paths are relative to (defa
 exclude = []          # globs to leave out
 jdk = "26"            # JAVA_HOME for the steps (every JDK is JAVA_HOME_<major>_X64)
 env = {}              # more environment for the steps
+beside = { Engine = { repo = "Engine", commit = "e4b8a1c0..." } }   # checkouts the steps read next to the tree
 ```
 
 An input with none of the recipe keys is made by hand and only checked (its pin, when it has one). A recipe needs
@@ -63,6 +64,12 @@ interpreter, `{tree}` the clean tree; each gets `WB_PIN_CACHE`), then a tar of t
 only on their paths, modes and contents and on the commit: sorted entries, no folder entries, the commit's time,
 owner 0, and the mode git records (a file the steps made is 0755 when executable, else 0644). Links are refused.
 `cached=false` builds again to check an archive still reproduces; `keep=true` keeps the trees.
+
+**Checkouts beside the tree.** A project whose tools find another checkout next to their own (`../Engine`) names it
+in `beside`: each entry is a clean tree of its `repo` at its pinned `commit`, in the folder of that name next to the
+recipe's tree, which is itself named as its repository is (a build that reads its folder's name sees what it sees in
+the checkout). A step may also name one as `{beside.<name>}`. Their full commits are part of the recipe's key and of
+the receipt, so moving one builds the archive again.
 
 Beside each archive go `<name>.sha256` and the receipt `<name>.receipt.json` (`wb.lab-input.v1`): the recipe and
 its digest, the full commit and its tree, each step with its exit code, every file's size, mode and SHA-256, the
@@ -138,7 +145,10 @@ file and the files it names, written by hand) writes:
 
 Before writing, every reason to refuse is a finding and nothing is written: a step of a role the template does not
 take or a count it does not take, a parameter in `same` that differs, a named file that is missing, a field nothing
-gives, an input missing from `lab`, not its pin or not its receipt's archive, two different files for one path.
+gives, an input missing from `lab`, not its pin or not its receipt's archive, two different files for one path. An
+input with a recipe must be what that recipe makes now: its receipt names the template's commit, the same checkouts
+beside it at their commits, and the recipe's key (its steps, globs, JDK and environment); one without a receipt is
+taken only when the template pins its SHA-256. Otherwise the refusal says to build it again with `vast.lab-inputs`.
 `dry_run=true` checks all of it, inputs by their receipts and `.sha256` files, and writes nothing; `plan.check` does
 this for a rental plan. Loading a bundle (`vast.bundle-check`, `vast.rent`) refuses one whose files changed or
 gained a file since its manifest was written, and an input that no longer matches its pin.
