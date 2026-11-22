@@ -670,6 +670,30 @@ def _receipt_of(path: Path) -> tuple[dict | None, str | None]:
     return receipt, None
 
 
+def _stale(name: str, item: templates.Input, receipt: dict | None) -> str | None:
+    """Why an archive in the lab folder is not what the template's recipe makes now, or None: built at another
+    commit, beside other checkouts, or by other steps, globs, JDK or environment. An archive without a receipt is
+    taken only when the template pins its SHA-256, which then vouches for its bytes."""
+    from . import lab_inputs as labinputs
+    recipe = item.recipe
+    if receipt is None:
+        return None if item.sha256 else "has no receipt, and the template pins no sha256 for it"
+    built = str(receipt.get("commit") or "")
+    if not built.startswith(recipe.commit):
+        return f"was built at {built[:12] or 'an unknown commit'}, not the {recipe.commit[:12]} the template names"
+    beside = {n: str((b or {}).get("commit") or "") for n, b in (receipt.get("beside") or {}).items()}
+    for n, entry in recipe.beside.items():
+        if not beside.get(n, "").startswith(entry.commit):
+            return (f"was built with beside.{n} at {beside.get(n, '')[:12] or 'nothing'}, not the "
+                    f"{entry.commit[:12]} the template names")
+    extra = sorted(set(beside) - set(recipe.beside))
+    if extra:
+        return f"was built with beside.{extra[0]}, which the template no longer names"
+    if labinputs.recipe_key(name, recipe, built, beside) != receipt.get("recipe_sha256"):
+        return "was built by another recipe (its steps, globs, JDK or environment have changed since)"
+    return None
+
+
 def _inputs(ctx: Context, chosen: templates.Template, folder: Path | None, dry_run: bool):
     """The template's input archives in ``folder``, each at its pin and its receipt; with the reasons to refuse."""
     if not chosen.inputs:
@@ -697,6 +721,10 @@ def _inputs(ctx: Context, chosen: templates.Template, folder: Path | None, dry_r
         if digest and receipt and claimed != digest:
             problems.append(f"{name} no longer matches its receipt: {name}.receipt.json names {str(claimed)[:12]}, "
                             f"and it is {digest[:12]}")
+            continue
+        stale = _stale(name, item, receipt) if item.recipe else None
+        if stale:
+            problems.append(f"{name} {stale}; build it again (vast.lab-inputs template={chosen.name})")
             continue
         records.append({"name": name, "path": ctx.host_path(path), "to": item.to, "bytes": path.stat().st_size,
                         "sha256": digest, "pinned": item.sha256,
@@ -818,7 +846,10 @@ def lab_inputs(ctx: Context, template: str, inputs: list, cached: bool, keep: bo
         item = chosen.inputs[name]
         try:
             repo = _config_path(ctx, item.recipe.repo, f'{where}."{name}".repo')
-            results.append(labinputs.build(ctx, chosen.name, item, repo, cache, cached=cached, keep=keep))
+            beside = {n: _config_path(ctx, b.repo, f'{where}."{name}".beside.{n}.repo')
+                      for n, b in item.recipe.beside.items()}
+            results.append(labinputs.build(ctx, chosen.name, item, repo, cache, cached=cached, keep=keep,
+                                           beside=beside))
         except ParamError as error:
             ctx.finding(f"{name}: {error}")
             results.append({"name": name, "archive": None, "refused": str(error)})

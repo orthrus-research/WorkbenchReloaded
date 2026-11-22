@@ -35,7 +35,8 @@ STEPS_SCHEMA = "wb.bundle-steps.v1"
 TEMPLATE_KEYS = ("summary", "folder", "script", "exclude", "purpose", "needs", "run", "inputs", "steps", "outputs")
 NEEDS_KEYS = ("jdk", "gpu", "disk_gb")
 RUN_KEYS = ("args", "progress", "done", "failed", "results", "stop", "partial", "unpack")
-RECIPE_KEYS = ("repo", "commit", "steps", "artifacts", "base", "exclude", "jdk", "env")
+RECIPE_KEYS = ("repo", "commit", "steps", "artifacts", "base", "exclude", "jdk", "env", "beside")
+BESIDE_KEYS = ("repo", "commit")
 INPUT_KEYS = ("sha256", "to") + RECIPE_KEYS
 STEPS_KEYS = ("file", "format", "roles", "same", "files", "values")
 FILE_KEYS = ("role", "param", "match", "into", "write")
@@ -201,9 +202,18 @@ def _string(value) -> str:
 # the template
 
 @dataclass
+class Beside:
+    """A checkout a recipe's steps read beside their tree: a clean tree of ``repo`` at ``commit``, in the folder
+    ``../<name>`` (as ``ci.run`` places a project's ``[repositories]``)."""
+    repo: str
+    commit: str
+
+
+@dataclass
 class Recipe:
-    """How vast.lab-inputs builds an input: steps in a clean tree of ``repo`` at ``commit``, then the files the
-    ``artifacts`` globs match (relative to ``base``, less ``exclude``) packed into a tar."""
+    """How vast.lab-inputs builds an input: steps in a clean tree of ``repo`` at ``commit`` (with the ``beside``
+    checkouts next to it), then the files the ``artifacts`` globs match (relative to ``base``, less ``exclude``)
+    packed into a tar."""
     repo: str
     commit: str
     steps: list[str]
@@ -212,6 +222,13 @@ class Recipe:
     exclude: list[str] = field(default_factory=list)
     jdk: str = ""
     env: dict[str, str] = field(default_factory=dict)
+    beside: dict[str, Beside] = field(default_factory=dict)
+
+    @property
+    def folder(self) -> str:
+        """The clean tree's folder name: the repository's own, so a build that reads it (a Gradle root project's
+        name) sees what it sees in the checkout."""
+        return PurePosixPath(self.repo.replace("\\", "/").rstrip("/")).name or "tree"
 
 
 @dataclass
@@ -361,8 +378,30 @@ def _input(name: str, raw, where: str) -> Input:
                         exclude=[_glob_text(g, f"{where}.exclude") for g in
                                  _list(table.get("exclude", []), f"{where}.exclude")],
                         jdk=str(table.get("jdk") or ""),
-                        env={str(k): str(v) for k, v in _table(table.get("env", {}), f"{where}.env").items()})
+                        env={str(k): str(v) for k, v in _table(table.get("env", {}), f"{where}.env").items()},
+                        beside=_beside(table.get("beside", {}), f"{where}.beside"))
+        if recipe.folder in recipe.beside:
+            raise TemplateError(f"{where}.beside.{recipe.folder}: the recipe's own tree is the folder {recipe.folder}; "
+                                "a checkout beside it needs another name")
     return Input(name=name, sha256=pinned, to=to if to.endswith("/") else to + "/", recipe=recipe)
+
+
+def _beside(raw, where: str) -> dict[str, Beside]:
+    """``beside = { <folder> = { repo, commit } }``: the checkouts a recipe's steps find next to their tree."""
+    out = {}
+    for name, value in _table(raw, where).items():
+        at = f"{where}.{name}"
+        if not NAME.fullmatch(str(name)):
+            raise TemplateError(f"{at}: a folder name beside the tree (letters, digits and . _ + -)")
+        entry = _table(value, at)
+        _known(entry, BESIDE_KEYS, at)
+        missing = [key for key in BESIDE_KEYS if not entry.get(key)]
+        if missing:
+            raise TemplateError(f"{at}: a checkout beside the tree needs repo and commit (missing {', '.join(missing)})")
+        if not COMMIT.fullmatch(str(entry["commit"])):
+            raise TemplateError(f"{at}.commit: a commit, 7 to 64 hex digits (pin it, a branch moves)")
+        out[str(name)] = Beside(repo=_text_value(entry["repo"], f"{at}.repo"), commit=str(entry["commit"]).lower())
+    return out
 
 
 def _steps(raw, where: str) -> Steps:
