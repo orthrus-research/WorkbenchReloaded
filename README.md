@@ -109,6 +109,28 @@ host (the repository then lives under a root, such as the out root). Gradle asks
 versions it holds, so it never stands in for what a public repository still serves. `repo-list` shows what it holds
 and why; `repo-verify` hashes it all again.
 
+## The Gradle plugin
+
+`sdk/gradle` is a Gradle plugin, `cc.orthrus.wb`, with two task types. `WbTask` runs a Workbench command and fails
+the build on the outcomes in `failOn`, keeping the settled envelope. `WbRun` runs an entry point on a class path the
+build prepares, a mod build's remapped configurations included, with no game client or server: it refuses to start
+when a `pin(file, sha256)` no longer matches or a class in `singleProvider` comes from none or several class path
+entries, and keeps a receipt (`build/wb/<task>.run.json`) of the main class, arguments, JVM, every class path entry
+with its SHA-256, and the exit code. `sdk/gradle/sample` uses both.
+
+A build applies it from an included build, `pluginManagement { includeBuild('<checkout>/sdk/gradle') }`, or by id
+and version from the rescue repository. Its JAR is the same bytes from the same sources and JDK on every machine, so
+it goes in like any other file:
+
+```
+gradle -p sdk/gradle jar
+wb run toolchain.repo-add coordinates=cc.orthrus:wb-gradle-plugin:0.1.0 plugins=cc.orthrus.wb \
+  file=sdk/gradle/build/libs/wb-gradle-plugin-0.1.0.jar sha256=<its SHA-256> reason="the Workbench Gradle plugin, built from this checkout"
+```
+
+Then `plugins { id 'cc.orthrus.wb' version '0.1.0' }` works in every build that reads the repository: those
+`ci.run` runs, and builds on the host once `toolchain.repo-init gradle_home=...` has written its init script.
+
 ## Config layers
 
 A machine's config folder can lie over shared folders: `[core.config] layers = [...]` in its `workbench.toml`. A

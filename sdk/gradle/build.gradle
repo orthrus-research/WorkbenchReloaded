@@ -17,10 +17,18 @@ gradlePlugin {
             id = 'cc.orthrus.wb'
             implementationClass = 'cc.orthrus.wb.gradle.WbPlugin'
             displayName = 'Workbench Reloaded'
-            description = 'Run Workbench commands as Gradle tasks and gate builds on their outcomes.'
+            description = 'Run Workbench commands as Gradle tasks and gate builds on their outcomes; run entry points ' +
+                    'on a prepared class path with a receipt (WbRun).'
         }
     }
 }
 
 // Bytecode for Java 17 from whatever JDK runs Gradle: any modern build can apply the plugin.
 tasks.withType(JavaCompile).configureEach { options.release = 17 }
+
+// The same JAR from the same sources and JDK on every machine, so a local repository can hold it by its SHA-256
+// (toolchain.repo-add never replaces bytes it holds).
+tasks.withType(AbstractArchiveTask).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
