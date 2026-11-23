@@ -44,9 +44,25 @@ def _allowed(url: str, hosts: list[str]) -> bool:
                                                                 for h in hosts)
 
 
-def _download(ctx: Context, url: str, digest: str, target: Path):
+class _Hops(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect only to an allowed host: the list governs every hop, not just the first URL."""
+
+    def __init__(self, hosts: list[str]):
+        self.hosts = hosts
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _allowed(newurl, self.hosts):
+            raise EnvironmentProblem(f"{req.full_url} redirects to {newurl}, a host outside store_hosts")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open(url: str, hosts: list[str]):
+    return urllib.request.build_opener(_Hops(hosts)).open(url, timeout=60)
+
+
+def _download(ctx: Context, url: str, digest: str, target: Path, hosts: list[str]):
     hasher = hashlib.sha256()
-    with urllib.request.urlopen(url, timeout=60) as response, open(target, "wb") as handle:
+    with _open(url, hosts) as response, open(target, "wb") as handle:
         while True:
             block = response.read(1 << 20)
             if not block:
@@ -104,7 +120,7 @@ def fetch(ctx: Context, revision: str = "", only: list | None = None, unpack: bo
             ctx.progress("fetch", msg=f"{item['what']} ({name})")
             with tempfile.TemporaryDirectory(dir=root) as scratch:
                 downloaded = Path(scratch) / name
-                _download(ctx, item["url"], item["sha256"], downloaded)
+                _download(ctx, item["url"], item["sha256"], downloaded, hosts)
                 store.put(root, downloaded, item["sha256"], pins)
             fetched.append(item["what"])
         else:

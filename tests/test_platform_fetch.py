@@ -73,11 +73,11 @@ class Fetch(unittest.TestCase):
                         "module_config": {"store": str(self.store), "store_hosts": hosts,
                                           "pin_cache": str(base / "pins")}}, lambda *a, **k: None)
 
-    def serve(self, url, timeout=0):
+    def serve(self, url, hosts=()):
         return io.BytesIO(self.bodies[url])
 
     def test_fetched_once_kept_by_digest_and_unpacked(self):
-        with mock.patch("urllib.request.urlopen", self.serve):
+        with mock.patch.object(self.platform, "_open", self.serve):
             first = self.platform.fetch(self.context(["example.org"]))
             again = self.platform.fetch(self.context(["example.org"]))
         self.assertEqual(len(first["fetched"]), 3)
@@ -88,14 +88,22 @@ class Fetch(unittest.TestCase):
         self.assertTrue((self.store / "gradle" / "9.8.1").is_dir())
 
     def test_a_host_outside_the_list_fetches_nothing(self):
-        with mock.patch("urllib.request.urlopen", self.serve), self.assertRaises(ParamError) as raised:
+        with mock.patch.object(self.platform, "_open", self.serve), self.assertRaises(ParamError) as raised:
             self.platform.fetch(self.context(["downloads.example.org"]))
         self.assertIn("store_hosts", str(raised.exception))
         self.assertFalse((self.store / "files").exists())
 
+    def test_a_redirect_to_a_host_outside_the_list_is_refused(self):
+        hops = self.platform._Hops(["example.org"])
+        request = __import__("urllib.request").request.Request("https://dist.example.org/gradle-9.zip")
+        with self.assertRaises(EnvironmentProblem) as raised:
+            hops.redirect_request(request, None, 302, "Found", {}, "https://elsewhere.test/gradle-9.zip")
+        self.assertIn("outside store_hosts", str(raised.exception))
+        self.assertIsNotNone(hops.redirect_request(request, None, 302, "Found", {}, "https://cdn.example.org/g.zip"))
+
     def test_other_bytes_keep_nothing(self):
         self.bodies["https://dist.example.org/gradle-9.zip"] = b"tampered"
-        with mock.patch("urllib.request.urlopen", self.serve), self.assertRaises(EnvironmentProblem):
+        with mock.patch.object(self.platform, "_open", self.serve), self.assertRaises(EnvironmentProblem):
             self.platform.fetch(self.context(["example.org"]), only=["gradle"])
         self.assertFalse((self.store / "gradle").exists())
 
