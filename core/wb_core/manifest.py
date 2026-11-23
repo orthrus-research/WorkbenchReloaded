@@ -23,7 +23,7 @@ VOLATILE = {"network", "disk", "host", "lease"}
 MODULE_KEYS = {"name", "version", "summary", "startup", "profiles"}
 COMMAND_KEYS = {"name", "summary", "handler", "deterministic", "spends", "quote", "runs_on", "requires",
                 "params", "result", "resources", "version", "timeout", "cancel_grace", "schedulable", "turn",
-                "role", "aliases"}
+                "role", "aliases", "inline"}
 ROLES = {"prepare", "play"}  # what a step is to a plan that compiles its game steps for another machine
 
 
@@ -52,6 +52,7 @@ class Command:
     turn: bool = False          # may run inside a turn: several host routines under one held lease
     role: str | None = None     # prepare or play: how a plan compiles this step for a rental
     aliases: list[str] = field(default_factory=list)  # former full names that still resolve to this command
+    inline: bool = False        # a running job may call it in its own reservation, with no job of its own
 
     @property
     def full(self) -> str:
@@ -61,7 +62,7 @@ class Command:
         return {"name": self.full, "module": self.module, "summary": self.summary, "version": self.version,
                 "deterministic": self.deterministic, "spends": self.spends, "runs_on": self.runs_on,
                 "requires": self.requires, "resources": self.resources, "turn": self.turn, "role": self.role,
-                "aliases": self.aliases,
+                "aliases": self.aliases, "inline": self.inline,
                 "params": types.object_schema(self.params), "result": types.object_schema(self.result)
                 if self.result else {"type": "object"}}
 
@@ -148,9 +149,18 @@ def parse(path: Path, package: str) -> Module:
         if raw.get("spends") and not raw.get("quote"):
             raise ManifestError(f"{where}: a command that spends must name its quote handler")
         resources = dict(raw.get("resources", {}))
-        unknown = set(resources) - {"cpu", "mem_gb", "gpu", "quiet"}
+        unknown = set(resources) - {"cpu", "mem_gb", "gpu", "quiet", "quiet_if", "locks"}
         if unknown:
             raise ManifestError(f"{where}: unknown resources {sorted(unknown)}")
+        for key in ("quiet_if", "locks"):
+            names = resources.get(key, [])
+            if not isinstance(names, list) or not all(isinstance(v, str) and v for v in names):
+                raise ManifestError(f"{where}: resources.{key} is a list of names")
+        for param in resources.get("quiet_if", []):
+            if param not in (raw.get("params") or {}):
+                raise ManifestError(f"{where}: resources.quiet_if names {param!r}, which is not a param")
+        if raw.get("inline") and (raw.get("spends") or runs_on != ["container"] or raw.get("turn")):
+            raise ManifestError(f"{where}: an inline command runs in the container, spends nothing and takes no turn")
         timeout = raw.get("timeout")
         if raw.get("role") is not None and raw["role"] not in ROLES:
             raise ManifestError(f"{where}: role must be one of {sorted(ROLES)}")
@@ -172,7 +182,8 @@ def parse(path: Path, package: str) -> Module:
             timeout=types.parse_duration(timeout) if timeout is not None else None,
             cancel_grace=types.parse_duration(raw.get("cancel_grace", 30)),
             schedulable=bool(raw.get("schedulable", not raw.get("spends", False))),
-            turn=bool(raw.get("turn", False)), role=raw.get("role"), aliases=aliases))
+            turn=bool(raw.get("turn", False)), role=raw.get("role"), aliases=aliases,
+            inline=bool(raw.get("inline", False))))
     return module
 
 

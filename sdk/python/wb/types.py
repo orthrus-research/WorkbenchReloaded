@@ -17,6 +17,7 @@ class EnvelopeDict(TypedDict, total=False):
     params_hash: str | None
     state: Literal["new", "queued", "awaiting_approval", "running", "settled", "cancelled", "interrupted"]
     phase: str | None
+    waiting: dict | None
     outcome: Literal["ok", "finding", "usage", "environment"] | None
     code: int | None
     summary: str | None
@@ -38,4 +39,4 @@ class EnvelopeDict(TypedDict, total=False):
 
 
 SCHEMA_ID = "https://orthrus.cc/schemas/wb/result/v1"
-FIELDS = ['approval', 'cache', 'children', 'code', 'command', 'command_version', 'cost', 'data', 'findings', 'inputs', 'job', 'logs', 'machine', 'measurements', 'module', 'module_version', 'outcome', 'outputs', 'params', 'params_hash', 'parent', 'phase', 'reasons', 'schema', 'state', 'summary', 'timings', 'toolchain']
+FIELDS = ['approval', 'cache', 'children', 'code', 'command', 'command_version', 'cost', 'data', 'findings', 'inputs', 'job', 'logs', 'machine', 'measurements', 'module', 'module_version', 'outcome', 'outputs', 'params', 'params_hash', 'parent', 'phase', 'reasons', 'schema', 'state', 'summary', 'timings', 'toolchain', 'waiting']

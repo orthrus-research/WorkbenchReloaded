@@ -178,6 +178,12 @@ class Client:
         envelope = Envelope(self.request("POST", "/v1/jobs", body, headers))
         return Job(self, envelope["job"], envelope)
 
+    def call_inline(self, job_id: str, command: str, params: dict | None = None, timeout: float = 600) -> dict:
+        """Runs an inline command for the running job ``job_id`` in that job's reservation, and returns
+        {command, outcome, summary, data}. Only commands marked inline in their manifest can be called this way."""
+        return self.request("POST", f"/v1/jobs/{job_id}/call", {"command": command, "params": params or {}},
+                            timeout=timeout)
+
     def job(self, job_id: str) -> "Job":
         return Job(self, job_id, None)
 

@@ -35,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 from collections.abc import Iterable
@@ -53,6 +54,7 @@ DEFAULT_SHARE = 0.25
 DEFAULT_MEMORY = 4.0
 MEMORY_FRACTION = 0.75
 TIMING = "timing "
+PIPE_GRACE = 5.0  # seconds a step's output is still read after its process exited
 HOOK_MARKER = "orthrus-tools actions gate"
 HOOK = """#!/bin/sh
 # Installed by `orthrus-tools actions gate install`: refuses a push whose commits have not
@@ -602,16 +604,33 @@ def run_step(
             stream.write(f"cannot start {command[0]}: {error}\n")
             return 127, time.monotonic() - started, timings
         assert process.stdout is not None
-        for line in process.stdout:
-            stream.write(line)
-            if line.startswith(TIMING):
-                try:
-                    timings.append(json.loads(line[len(TIMING) :]))
-                except ValueError:
-                    pass
-            if echo is not None:
-                echo(line.rstrip("\n"))
+        lock = threading.Lock()
+
+        def pump() -> None:
+            try:
+                for line in process.stdout:
+                    with lock:
+                        stream.write(line)
+                    if line.startswith(TIMING):
+                        try:
+                            timings.append(json.loads(line[len(TIMING) :]))
+                        except ValueError:
+                            pass
+                    if echo is not None:
+                        echo(line.rstrip("\n"))
+            except (OSError, ValueError):
+                pass
+
+        # A step ends when its process exits: a process it started that keeps the pipe open (a Gradle daemon)
+        # gets a few seconds to finish writing and is then left behind, never waited for.
+        reader = threading.Thread(target=pump, name="step-output", daemon=True)
+        reader.start()
         code = process.wait()
+        reader.join(PIPE_GRACE)
+        with lock:
+            if reader.is_alive():
+                stream.write("\n(the step exited; output a process it started still holds open is not kept)\n")
+            stream.flush()
     return code, time.monotonic() - started, timings
 
 

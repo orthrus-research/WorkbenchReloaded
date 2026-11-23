@@ -83,6 +83,7 @@ class Running:
     mem: float
     exclusive: set[str]
     quiet: bool
+    locks: set[str] = field(default_factory=set)
     process: subprocess.Popen | None = None
     host_run: str | None = None
     cancel_requested: float | None = None
@@ -125,6 +126,9 @@ class Workbench:
         self.python = worker_python or sys.executable
         self.cond = threading.Condition()
         self.running: dict[str, Running] = {}
+        self.waiting: dict[str, dict] = {}  # queued job -> {reason, since}: why the dispatcher has not started it
+        self.stalled: list[dict] = []       # queued jobs nothing can start while every running job waits on them
+        self.inline_calls = 0
         self.quoting: set[str] = set()
         self.seq: dict[str, int] = {}
         self.stopping = threading.Event()
@@ -315,6 +319,39 @@ class Workbench:
             self._start_quote(job, entry)
         return self.envelope(job)
 
+    def call_inline(self, parent: str, command: str, params: dict | None) -> dict:
+        """Runs an inline command for a running job, in that job's reservation: no job of its own, so it can never
+        queue behind the jobs that wait for its caller. Returns {command, outcome, summary, data}."""
+        row = self.db.one("SELECT state FROM job WHERE id = ?", (parent,))
+        if row is None:
+            raise NotFound(f"unknown job {parent}")
+        if parent not in self.running:
+            raise Conflict(f"{parent} is not running, so it cannot call a command inline")
+        entry = self.entry(command)
+        if not entry.command.inline:
+            raise BadRequest(f"{entry.command.full} is not an inline command; submit it as a job")
+        if not entry.activation.active:
+            reasons = "; ".join(r.detail for r in entry.activation.reasons)
+            return {"command": entry.command.full, "outcome": "environment", "summary": f"not active: {reasons}",
+                    "data": {}}
+        try:
+            checked = types.validate(entry.command.params, params or {})
+            translated, out = self._translate(entry.command, checked, None)
+        except types.ValueError_ as error:
+            return {"command": entry.command.full, "outcome": "usage",
+                    "summary": f"invalid parameter {error.field}: {error.detail}", "data": {}}
+        with self.cond:
+            self.inline_calls += 1
+            name = f"{parent}-inline-{self.inline_calls}"
+        started = time.time()
+        result = self._run_worker_sync(name, entry, translated, out, mode="run", handler=entry.command.handler,
+                                       log_job=parent)
+        self.add_event(parent, "log", {"level": "INFO" if result.get("outcome") == "ok" else "WARNING",
+                                       "msg": f"called {entry.command.full} inline: {result.get('outcome')} in "
+                                              f"{time.time() - started:.1f}s"})
+        return {"command": entry.command.full, "outcome": result.get("outcome"), "summary": result.get("summary"),
+                "data": result.get("data") or {}}
+
     def _translate(self, command: Command, checked: dict, out: str | None) -> tuple[dict, str | None]:
         translated = dict(checked)
         for name, spec in command.params.items():
@@ -474,8 +511,26 @@ class Workbench:
             if item.thread:
                 item.thread.join(max(0.1, end - time.time()))
 
+    def _descendants(self, job: str) -> list[str]:
+        out, frontier = [], [job]
+        while frontier and len(out) < 10000:
+            marks = ",".join("?" * len(frontier))
+            frontier = [r["id"] for r in self.db.query(f"SELECT id FROM job WHERE parent IN ({marks})", frontier)]
+            out.extend(frontier)
+        return out
+
+    def _cancel_descendants(self, job: str, why: str):
+        """A job that ends takes every job it started with it: a child left queued or running would hold the
+        machine for nobody."""
+        for child in self._descendants(job):
+            row = self.db.one("SELECT state FROM job WHERE id = ?", (child,))
+            if row and row["state"] not in TERMINAL:
+                self.add_event(child, "log", {"level": "WARNING", "msg": f"cancelled: {why} ({job})"})
+                self.cancel(child)
+
     def recover(self):
-        """D10: jobs left running by a stopped daemon are interrupted; their workers are killed."""
+        """D10: jobs left running by a stopped daemon are interrupted; their workers are killed. A queued job whose
+        parent is no longer running is cancelled, since nothing waits for it."""
         for row in self.db.query("SELECT id, worker_pid, module FROM job WHERE state = 'running'"):
             if row["worker_pid"]:
                 _kill_pid(row["worker_pid"])
@@ -483,6 +538,11 @@ class Workbench:
                             (time.time(), "interrupted by a Workbench restart", row["id"]))
             self.add_event(row["id"], "state", {"state": "interrupted"})
             self.hub.warning("interrupted by a restart", job=row["id"], module=row["module"])
+        for row in self.db.query("SELECT c.id FROM job c JOIN job p ON p.id = c.parent "
+                                 "WHERE c.state NOT IN ('settled', 'cancelled', 'interrupted') "
+                                 "AND p.state IN ('settled', 'cancelled', 'interrupted')"):
+            self.db.execute("UPDATE quote SET status = 'void' WHERE job = ? AND status = 'open'", (row["id"],))
+            self._set_state(row["id"], "cancelled", settled=time.time(), summary="cancelled: its parent had ended")
         for row in self.db.query("SELECT j.id, j.command FROM job j WHERE j.state = 'queued' AND j.id IN "
                                  "(SELECT job FROM quote WHERE status IN ('open', 'expired', 'replaced')) "
                                  "AND j.id NOT IN (SELECT job FROM approval)"):
@@ -507,42 +567,86 @@ class Workbench:
             except Exception as error:  # noqa: BLE001
                 self.hub.error(f"startup hook failed: {error}", module=module.name)
 
-    def _resources(self, command: Command, machine: str) -> tuple[float, float, set[str], bool]:
+    def _resources(self, command: Command, machine: str, params: dict | None = None
+                   ) -> tuple[float, float, set[str], bool, set[str]]:
+        """What a job claims: CPU and memory on the container, exclusive keys (the GPU), quiet, and named locks.
+        ``quiet_if`` names params that make a run a measurement when set; a lock may name a param as ``{name}``."""
         res = command.resources
+        params = params or {}
         cpu = float(res.get("cpu", 1)) if machine == "container" else 0.0
         mem = float(res.get("mem_gb", 0.5)) if machine == "container" else 0.0
         exclusive = {f"gpu@{machine}"} if res.get("gpu") else set()
-        return cpu, mem, exclusive, bool(res.get("quiet"))
+        quiet = bool(res.get("quiet")) or any(params.get(name) not in (None, "", False) for name in
+                                               res.get("quiet_if", []))
+        locks = {str(lock).format_map(_Params(params)) for lock in res.get("locks", [])}
+        return cpu, mem, exclusive, quiet, locks
 
-    def _ancestors(self, job: str) -> set[str]:
-        out, current = set(), job
+    def _lineage(self, job: str) -> list[str]:
+        """The job's parent, its parent's parent and so on, nearest first."""
+        out, current = [], job
         for _ in range(32):
             row = self.db.one("SELECT parent FROM job WHERE id = ?", (current,))
             if not row or not row["parent"]:
                 break
             current = row["parent"]
-            out.add(current)
+            out.append(current)
         return out
 
-    def _fits(self, machine: str, cpu: float, mem: float, exclusive: set[str], quiet: bool,
-              job: str | None = None) -> bool:
-        waiting = self._ancestors(job) if job else set()  # a parent waiting on this child holds nothing back
+    def _ancestors(self, job: str) -> set[str]:
+        return set(self._lineage(job))
+
+    def _blocker(self, machine: str, cpu: float, mem: float, exclusive: set[str], quiet: bool,
+                 job: str | None = None, locks: set[str] | None = None) -> str | None:
+        """Why a job cannot start now, or None when it can. A parent waiting on this child holds nothing back."""
+        waiting = self._ancestors(job) if job else set()
         others = [r for r in self.running.values() if r.job not in waiting]
-        used_cpu = sum(r.cpu for r in others)
-        used_mem = sum(r.mem for r in others)
-        held = set().union(*[r.exclusive for r in others]) if others else set()
         # The container runs on the host: for a measurement's quiet they are one machine.
         on_machine = [r for r in others if r.machine == machine or {r.machine, machine} <= LOCAL_MACHINES]
-        if any(r.quiet for r in on_machine):
-            return False
+        measuring = [r.job for r in on_machine if r.quiet]
+        if measuring:
+            return f"quiet: {measuring[0]} is a measurement"
         if quiet and on_machine:
-            return False
-        if exclusive & held:
-            return False
+            return f"quiet: waiting for {len(on_machine)} job(s) on this machine to end"
+        for r in others:
+            if exclusive & r.exclusive:
+                return f"{sorted(exclusive & r.exclusive)[0].split('@')[0]} held by {r.job}"
+        for r in others:
+            if (locks or set()) & r.locks:
+                return f"lock {sorted((locks or set()) & r.locks)[0]} held by {r.job}"
         if machine == "container" and others:
+            used_cpu = sum(r.cpu for r in others)
+            used_mem = sum(r.mem for r in others)
             if used_cpu + cpu > self.cpu_budget + 1e-9 or used_mem + mem > self.mem_budget + 1e-9:
-                return False
-        return True
+                return (f"budget: {used_cpu:g} of {self.cpu_budget:g} CPU and {used_mem:g} of {self.mem_budget:g} GB "
+                        f"in use; this job needs {cpu:g} and {mem:g}")
+        return None
+
+    def _fits(self, machine: str, cpu: float, mem: float, exclusive: set[str], quiet: bool,
+              job: str | None = None, locks: set[str] | None = None) -> bool:
+        return self._blocker(machine, cpu, mem, exclusive, quiet, job, locks) is None
+
+    def _wait_reason(self, job: str, reason: str | None):
+        """Records why a queued job waits, once per change, as an event and in its envelope."""
+        if reason is None:
+            self.waiting.pop(job, None)
+            return
+        if self.waiting.get(job, {}).get("reason") == reason:
+            return
+        self.waiting[job] = {"reason": reason, "since": time.time()}
+        self.add_event(job, "waiting", {"reason": reason})
+
+    def _queue(self) -> list[dict]:
+        """Queued jobs in the order they are considered: a descendant of a running job first, so it never waits
+        behind jobs that wait for its own ancestor; then by when the job's root was submitted, then its own."""
+        order = []
+        for row in self.db.query("SELECT id, command, machine, params, submitted FROM job WHERE state = 'queued'"):
+            lineage = self._lineage(row["id"])
+            under_running = any(a in self.running for a in lineage)
+            root = self.db.one("SELECT submitted FROM job WHERE id = ?", (lineage[-1],)) if lineage else None
+            started = root["submitted"] if root else row["submitted"]
+            order.append(((0 if under_running else 1, started, row["submitted"]), dict(row), under_running))
+        order.sort(key=lambda item: item[0])
+        return [dict(row, under_running=under) for _, row, under in order]
 
     def _dispatch_loop(self):
         while not self.stopping.is_set():
@@ -550,28 +654,64 @@ class Workbench:
                 self.cond.wait(0.5)
                 if self.stopping.is_set():
                     return
-                rows = self.db.query("SELECT id, command, machine FROM job WHERE state = 'queued' ORDER BY submitted")
-                blocked: set[str] = set()
-                for row in rows:
-                    if row["id"] in self.quoting or row["id"] in self.running:
-                        continue
-                    entry = self.registry.get(row["command"])
-                    if entry is None:
-                        continue
-                    if entry.command.spends and self.approved_quote(row["id"]) is None:
-                        continue
-                    cpu, mem, exclusive, quiet = self._resources(entry.command, row["machine"])
-                    key = row["machine"] + ("|" + ",".join(sorted(exclusive)) if exclusive else "")
-                    if key in blocked:
-                        continue  # first in, first out per resource
-                    if not self._fits(row["machine"], cpu, mem, exclusive, quiet, row["id"]):
-                        blocked.add(key)
-                        continue
-                    running = Running(row["id"], row["machine"], cpu, mem, exclusive, quiet)
-                    self.running[row["id"]] = running
-                    running.thread = threading.Thread(target=self._run_job, args=(row["id"], entry, running),
-                                                      name=f"job-{row['id']}", daemon=True)
-                    running.thread.start()
+                self._dispatch_once()
+
+    def _dispatch_once(self):
+        """One pass over the queue (under self.cond): start what fits, record why the rest waits."""
+        blocked: dict[str, str] = {}
+        queued, started = 0, 0
+        rows = self._queue()
+        for gone in set(self.waiting) - {row["id"] for row in rows}:
+            self.waiting.pop(gone, None)  # started, cancelled or settled since
+        for row in rows:
+            job = row["id"]
+            if job in self.quoting or job in self.running:
+                continue
+            queued += 1
+            entry = self.registry.get(row["command"])
+            if entry is None:
+                self._wait_reason(job, f"{row['command']} is not a known command")
+                continue
+            if entry.command.spends and self.approved_quote(job) is None:
+                self._wait_reason(job, "approval")
+                continue
+            params = json.loads(row["params"]) if row["params"] else {}
+            cpu, mem, exclusive, quiet, locks = self._resources(entry.command, row["machine"], params)
+            key = row["machine"] + ("|" + ",".join(sorted(exclusive)) if exclusive else "")
+            if key in blocked and not row["under_running"]:
+                self._wait_reason(job, f"behind {blocked[key]}")
+                continue  # first in, first out per resource; a running job's descendants go ahead
+            reason = self._blocker(row["machine"], cpu, mem, exclusive, quiet, job, locks)
+            if reason is not None:
+                self._wait_reason(job, reason)
+                if not row["under_running"]:
+                    blocked.setdefault(key, job)
+                continue
+            self._wait_reason(job, None)
+            started += 1
+            running = Running(job, row["machine"], cpu, mem, exclusive, quiet, locks)
+            self.running[job] = running
+            running.thread = threading.Thread(target=self._run_job, args=(job, entry, running),
+                                              name=f"job-{job}", daemon=True)
+            running.thread.start()
+        self._check_stalled(queued, started)
+
+    def _check_stalled(self, queued: int, started: int):
+        """Nothing can move: jobs are queued, none started, and every running job has a queued descendant (it waits
+        for one). Health names them; the dispatcher itself never cancels anything."""
+        stalled: list[dict] = []
+        if queued and not started and self.running:
+            waiting_parents = set()
+            for job, info in self.waiting.items():
+                if info["reason"] != "approval":
+                    waiting_parents |= self._ancestors(job)
+            if set(self.running) <= waiting_parents:
+                stalled = [{"job": job, "reason": info["reason"], "since": iso(info["since"])}
+                           for job, info in self.waiting.items() if info["reason"] != "approval"]
+        if stalled and not self.stalled:
+            self.hub.error(f"stalled: {len(stalled)} queued job(s) cannot start while every running job waits "
+                           "on them", module="core")
+        self.stalled = stalled
 
     def _schedule_loop(self):
         due: dict[str, float] = {}
@@ -651,11 +791,12 @@ class Workbench:
         return process
 
     def _run_worker_sync(self, job: str, entry: Entry, params: dict, out: str | None, *, mode: str,
-                         handler: str, record: bool = True) -> dict:
+                         handler: str, record: bool = True, log_job: str | None = None) -> dict:
         Path(self.state / "jobs" / job).mkdir(parents=True, exist_ok=True)
         process = self._spawn(self._spec(job, entry, params, out, mode, handler, None))
         result: dict = {}
-        stderr = threading.Thread(target=self._pump_stderr, args=(process, job, entry.module.name), daemon=True)
+        stderr = threading.Thread(target=self._pump_stderr, args=(process, log_job or job, entry.module.name),
+                                  daemon=True)
         stderr.start()
         for line in process.stdout:
             event = _parse(line)
@@ -664,7 +805,7 @@ class Workbench:
             kind = event.get("kind")
             if kind == "log":
                 self.hub.emit(event.get("level", "INFO"), event.get("msg", ""), module=entry.module.name,
-                              job=job if record else None)
+                              job=(log_job or job) if record else None)
             elif kind == "quote":
                 result["quote"] = event.get("quote")
             elif kind == "done":
@@ -717,6 +858,7 @@ class Workbench:
             outcome = result.get("outcome", "environment")
             summary = result.get("summary")
             data = result.get("data") or {}
+            reasons = list(result.get("reasons") or [])
             if outcome == "ok" and command.result:
                 try:
                     types.validate({k: dict(v, optional=True) if "default" not in v else v
@@ -730,6 +872,8 @@ class Workbench:
             self.hub.error(f"job failed in the core: {error}", job=job, module=entry.module.name)
             outcome, summary = "environment", f"{type(error).__name__}: {error}"
         finally:
+            if not requoted:
+                self._cancel_descendants(job, "its parent ended")  # before the parent's reservation is released
             with self.cond:
                 self.running.pop(job, None)
                 self.cond.notify_all()
@@ -854,7 +998,8 @@ class Workbench:
                 phase, began = collected.last_phase
                 collected.phases[phase] = round(collected.phases.get(phase, 0) + ts - began, 3)
                 collected.last_phase = None
-            result.update(outcome=event.get("outcome"), summary=event.get("summary"), data=event.get("data"))
+            result.update(outcome=event.get("outcome"), summary=event.get("summary"), data=event.get("data"),
+                          reasons=event.get("reasons") or [])
 
     # ------------------------------------------------------------------------------------------
     # inputs, cache, artifacts
@@ -966,7 +1111,8 @@ class Workbench:
             self.cond.notify_all()
         envelope = self.envelope(job)
         self.db.execute("UPDATE job SET envelope = ? WHERE id = ?", (dumps(dict(envelope, _extra=extra)), job))
-        if state == "settled" and row["cache_key"] and outcome in ("ok", "finding") and not cache_hit:
+        timed_out = bool((data or {}).get("timed_out"))  # a run stopped at its limit says nothing about its inputs
+        if state == "settled" and row["cache_key"] and outcome in ("ok", "finding") and not cache_hit and not timed_out:
             self.db.execute("INSERT OR REPLACE INTO cache VALUES (?, ?, ?)", (row["cache_key"], job, time.time()))
         self.add_event(job, "state", {"state": state, "outcome": outcome})
         level = "INFO" if outcome in ("ok", None) else "WARNING"
@@ -1003,13 +1149,16 @@ class Workbench:
             phase = "preparing"  # dispatched: digesting its inputs or checking the cache, holding its resources
         else:
             phase = None
+        waiting = self.waiting.get(job) if state == "queued" else None
+        if waiting:
+            waiting = {"reason": waiting["reason"], "since": iso(waiting["since"])}
         return {
             "schema": SCHEMA,
             "job": job,
             "command": row["command"], "command_version": row["command_version"],
             "module": row["module"], "module_version": row["module_version"],
             "params": json.loads(row["params"]), "params_hash": row["params_hash"],
-            "state": state, "phase": phase,
+            "state": state, "phase": phase, "waiting": waiting,
             "outcome": row["outcome"], "code": row["code"],
             "summary": row["summary"],
             "reasons": extra.get("reasons", []),
@@ -1091,6 +1240,12 @@ def default_prompt(command: Command, quote: dict) -> dict:
     return {"question": f"Approve {command.full}: {what}{money}?",
             "options": [{"label": "Approve", "description": f"Run {command.full} on quote {quote.get('id')}."},
                         {"label": "Decline", "description": "Cancel the job; nothing is spent."}]}
+
+
+class _Params(dict):
+    """A job's params for a lock template: a param that is not set names nothing."""
+    def __missing__(self, key):
+        return ""
 
 
 def _reap(process: subprocess.Popen, stderr: threading.Thread, wait: float):

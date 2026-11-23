@@ -37,6 +37,10 @@ class Cancelled(Exception):
     pass
 
 
+class TimedOut(Exception):
+    """A tool was stopped at its limit: outcome ``finding`` with reason kind timeout, and never cached."""
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -213,34 +217,26 @@ class Context:
     def run(self, args: list, *, cwd=None, env: dict | None = None, timeout: float | None = None,
             check: bool = False, log_output: bool = True, phase: str | None = None,
             capture: bool = True) -> subprocess.CompletedProcess:
-        """Runs a tool; its output lines go to the job log; cancelling the job kills it."""
+        """Runs a tool until it exits; its output lines go to the job log; cancelling the job kills it and everything
+        it started. A ``timeout`` holds even when the tool prints nothing; reaching it raises TimedOut. A grandchild
+        that keeps the output pipe open (a Gradle daemon) does not keep the call waiting."""
+        from . import process as processes
         args = [str(a) for a in args]
         self.log.debug("$ " + " ".join(args))
-        merged_env = dict(os.environ, **(env or {}))
-        process = subprocess.Popen(args, cwd=cwd, env=merged_env, stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True,
-                                   encoding="utf-8", errors="replace")
-        lines: list[str] = []
-        watcher = threading.Thread(target=self._kill_on_cancel, args=(process,), daemon=True)
-        watcher.start()
-        deadline = time.monotonic() + timeout if timeout else None
-        with process.stdout:  # closed however the read ends, so no pipe outlives the call
-            for line in process.stdout:
-                line = line.rstrip("\n")
-                if capture:
-                    lines.append(line)
-                if log_output:
-                    self.log.debug(line)
-                if deadline and time.monotonic() > deadline:
-                    process.kill()
-                    process.wait()
-                    raise EnvironmentProblem(f"{args[0]} exceeded {timeout:.0f} s")
-        code = process.wait()
-        if self.cancelled.is_set():
+        try:
+            done = processes.run(args, cwd=cwd, env=dict(os.environ, **(env or {})), timeout=timeout,
+                                 cancelled=self.cancelled, on_line=self.log.debug if log_output else None,
+                                 capture=capture)
+        except processes.StartError as error:
+            raise EnvironmentProblem(str(error)) from None
+        if done.cancelled or self.cancelled.is_set():
             raise Cancelled()
-        result = subprocess.CompletedProcess(args, code, "\n".join(lines), "")
-        if check and code != 0:
-            raise EnvironmentProblem(f"{Path(args[0]).name} exited {code}: " + "\n".join(lines[-5:]))
+        if done.timed_out:
+            raise TimedOut(f"{Path(args[0]).name} was stopped at its limit of {timeout:.0f} s")
+        result = subprocess.CompletedProcess(args, done.code, done.output, "")
+        if check and done.code != 0:
+            raise EnvironmentProblem(f"{Path(args[0]).name} exited {done.code}: "
+                                     + "\n".join(done.output.splitlines()[-5:]))
         return result
 
     def _kill_on_cancel(self, process):
@@ -264,6 +260,13 @@ class Context:
             if self.cancelled.is_set():
                 job.cancel()
                 raise Cancelled()
+
+    def call_inline(self, command: str, **params) -> dict:
+        """Runs an inline command (one its manifest marks inline) inside this job's reservation and returns
+        {command, outcome, summary, data}. It has no job of its own, so it never queues."""
+        from wb.client import Client
+        client = Client(os.environ.get("WB_URL"), os.environ.get("WB_TOKEN"))
+        return client.call_inline(self.job, command, params)
 
 
 def canonical(value) -> str:

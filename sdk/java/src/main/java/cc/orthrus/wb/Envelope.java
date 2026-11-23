@@ -65,6 +65,11 @@ public final class Envelope {
         return Json.asString(raw.get("phase"));
     }
 
+    /** why a queued job has not started: budget, behind <job>, gpu or lock <name> held by <job>, quiet, approval */
+    public java.util.Map<String, Object> waiting() {
+        return Json.asMap(raw.get("waiting"));
+    }
+
     /** outcome */
     public String outcome() {
         return Json.asString(raw.get("outcome"));

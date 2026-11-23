@@ -74,6 +74,40 @@ def checkout(ctx: Context, repo: str):
     return {"head": head}
 
 
+def nest(ctx: Context, text: str, hold: float, inline: bool, sleep: float):
+    if hold:
+        ctx.sleep(hold)
+    if inline:
+        called = ctx.call_inline("selftest.inline-echo", text=text)
+        ctx.summary(f"inline call {called['outcome']}")
+        return {"inner": None, "inner_outcome": called["outcome"], "text": (called.get("data") or {}).get("text")}
+    inner = ctx.call("selftest.sleep", seconds=sleep) if sleep else ctx.call("selftest.echo", fresh=True, text=text)
+    ctx.summary(f"inner job {inner['job']} {inner['outcome']}")
+    return {"inner": inner["job"], "inner_outcome": inner["outcome"]}
+
+
+def orphan(ctx: Context, seconds: float):
+    import os
+    import subprocess
+    import sys
+    flags = {}
+    if os.name == "nt":
+        flags["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008  # DETACHED_PROCESS
+    else:
+        flags["start_new_session"] = True
+    child = subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({seconds})"],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **flags)
+    ctx.summary(f"left process {child.pid} running")
+    return {"pid": child.pid}
+
+
+def tool(ctx: Context, seconds: float, limit: float):
+    import sys
+    ctx.run([sys.executable, "-c", f"import time; time.sleep({seconds})"], timeout=limit, check=True)
+    ctx.summary(f"the tool slept {seconds:g} s")
+    return {"seconds": seconds}
+
+
 def chain(ctx: Context, text: str):
     inner = ctx.call("selftest.echo", text=text)
     ctx.summary(f"inner job {inner['job']} {inner['outcome']}")

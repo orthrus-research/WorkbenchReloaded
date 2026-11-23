@@ -241,9 +241,9 @@ class Ci(unittest.TestCase):
         served = result.data.repository
         self.assertEqual((served["substitutions"], served["versions"]), (1, 0))
         self.assertEqual(served["script"], hashlib.sha256(script.encode("utf-8")).hexdigest())
-        asked = self.c.job(served["job"]).refresh()
-        self.assertEqual((asked.command, asked.outcome, asked.parent), ("toolchain.repo-init", "ok", result.job))
-        self.assertEqual(asked.params["machine"], "container")
+        # Asked inline, in the run's own reservation: no child job that could queue behind the run's peers.
+        self.assertNotIn("job", served)
+        self.assertEqual(result.children, [])
 
     def test_hook_installs_and_restores(self):
         sys.path.insert(0, str(REPO / "modules" / "tools"))

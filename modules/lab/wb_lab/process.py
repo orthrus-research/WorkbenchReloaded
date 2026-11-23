@@ -1,6 +1,5 @@
-"""Owning a child process: killed together with what it started (outside Windows it leads a session of its own),
-bounded by a timeout that holds even when it prints nothing, and (``Console``) read line by line while commands
-are written to it.
+"""The lab's processes: tools run to an end or a limit through the core (wb_core.process), and (``Console``) an
+interactive process read line by line while commands are written to it.
 
 Cancelling a job sets ``ctx.cancelled``; every wait here polls it, so a cancelled job stops its process too.
 """
@@ -18,22 +17,10 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from wb_core import process as processes
 from wb_core.module import Cancelled, Context, EnvironmentProblem
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-
-_PRCTL = None
-if sys.platform.startswith("linux"):
-    try:
-        import ctypes
-        _PRCTL = ctypes.CDLL(None, use_errno=True).prctl
-    except (OSError, AttributeError):
-        _PRCTL = None
-
-
-def _die_with_parent():  # runs in the child between fork and exec
-    _PRCTL(1, signal.SIGKILL)  # PR_SET_PDEATHSIG: a worker killed outright takes its server with it
-
 
 def span(seconds: float) -> str:
     """A duration for a message: 2.5 s, 40 s, 15 min, 4 h."""
@@ -46,42 +33,9 @@ def span(seconds: float) -> str:
     return f"{seconds / 3600:.1f}".removesuffix(".0") + " h"
 
 
-def start(args: list, *, cwd, env: dict, stdin: bool, owned: bool = False) -> subprocess.Popen:
-    """Starts ``args`` with stdout and stderr merged into one text pipe. Outside Windows it leads a session of its
-    own, so ``kill_tree`` reaches what it starts; ``owned`` (Linux) also kills it when this process dies."""
-    kwargs: dict = {}
-    if os.name != "nt":
-        kwargs["start_new_session"] = True
-        if owned and _PRCTL is not None:
-            kwargs["preexec_fn"] = _die_with_parent
-    try:
-        return subprocess.Popen([str(a) for a in args], cwd=cwd, env=env,
-                                stdin=subprocess.PIPE if stdin else subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", **kwargs)
-    except OSError as error:
-        raise EnvironmentProblem(f"cannot start {Path(str(args[0])).name}: {error}") from None
-
-
-def kill_tree(process: subprocess.Popen):
-    """Kills the process and everything it started, then reaps it. Outside Windows that is its whole session,
-    which may outlive it (a launch script's JVM), so the group is killed even after the process has exited."""
-    if os.name == "nt":
-        if process.poll() is None:
-            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True)
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except OSError:
-            pass
-    if process.poll() is None:
-        try:
-            process.kill()
-        except OSError:
-            pass
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        pass
+# Starting, owning and killing processes is the core's (wb_core.process); the lab keeps its console and its spans.
+start = processes.start
+kill_tree = processes.kill_tree
 
 
 @dataclass
@@ -94,38 +48,17 @@ class Ran:
 
 def run(ctx: Context, args: list, *, cwd, timeout: float, env: dict | None = None) -> Ran:
     """Runs a tool to the end or to ``timeout``, whichever comes first, its output going to the job log as it
-    comes. Cancelling the job kills it."""
+    comes. Cancelling the job kills it and everything it started."""
     args = [str(a) for a in args]
     ctx.log.debug("$ " + " ".join(args))
-    started = time.monotonic()
-    process = start(args, cwd=cwd, env=dict(os.environ, **(env or {})), stdin=False)
-    lines: list[str] = []
-
-    def pump():
-        for line in process.stdout:
-            lines.append(line.rstrip("\n"))
-            ctx.log.debug(lines[-1])
-
-    reader = threading.Thread(target=pump, name="tool-output", daemon=True)
-    reader.start()
-    code: int | None = None
     try:
-        while True:
-            try:
-                code = process.wait(timeout=0.25)
-                break
-            except subprocess.TimeoutExpired:
-                if ctx.cancelled.is_set():
-                    raise Cancelled() from None
-                if time.monotonic() - started > timeout:
-                    break
-    finally:
-        if process.poll() is None:  # the timeout, a cancel, or an interrupt
-            kill_tree(process)
-    reader.join(5)
-    if not reader.is_alive():  # a grandchild still holding the pipe keeps the reader; closing under it would race
-        process.stdout.close()
-    return Ran(code, "\n".join(lines), round(time.monotonic() - started, 3))
+        done = processes.run(args, cwd=cwd, env=dict(os.environ, **(env or {})), timeout=timeout,
+                             cancelled=ctx.cancelled, on_line=ctx.log.debug)
+    except processes.StartError as error:
+        raise EnvironmentProblem(str(error)) from None
+    if done.cancelled:
+        raise Cancelled()
+    return Ran(done.code, done.output, done.seconds)
 
 
 @dataclass

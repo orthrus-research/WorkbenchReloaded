@@ -6,6 +6,12 @@
   requirement; durable jobs with quotes and approval; scheduling by GPU lease, CPU budget and quiet machine;
   one worker process per job; caching of deterministic commands; `/v1` on localhost with a token; Minecraft-style
   logs with a JSONL sidecar; retention.
+- Admission that cannot deadlock: a running job's descendants go ahead of the queue, a job that ends cancels
+  them, every queued job says why it waits (`waiting` in the envelope), health names stalled jobs. Commands may
+  declare named locks and `quiet_if` params, and `inline` commands a running job calls in its own reservation.
+- A tool runs until its process exits, not its pipe; deadlines fire without output; nothing a job started
+  outlives it (a Job Object on Windows, a child subreaper on Linux); a run stopped at its limit is a finding with
+  reason kind timeout, never cached.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,
   ledger, vast, ci, release, plan, frames, tools (the former standalone tools, 0.6.0), selftest.
 - The lab reads a profile's checkouts at a ref, each from a snapshot fixed at its commit for the whole job

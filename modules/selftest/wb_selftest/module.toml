@@ -81,3 +81,38 @@ handler = "wb_selftest.commands:echo"
 resources = { quiet = true }
 params.text = { type = "string", default = "ping" }
 params.times = { type = "int", default = 1, min = 1, max = 100 }
+
+[[command]]
+name = "nest"
+summary = "Hold a CPU reservation, then call selftest.echo as a child job and wait for it (the shape of ci.run calling a helper)."
+handler = "wb_selftest.commands:nest"
+resources = { cpu = 1 }
+params.text = { type = "string", default = "nested" }
+params.hold = { type = "duration", default = "0s", max = "1m", summary = "wait this long before calling the child" }
+params.inline = { type = "bool", default = false, summary = "call selftest.inline-echo inline instead of a child job" }
+params.sleep = { type = "duration", default = "0s", max = "1m", summary = "the child is selftest.sleep for this long instead of echo" }
+
+[[command]]
+name = "inline-echo"
+summary = "Like echo, but called inline by a running job, in that job's reservation."
+handler = "wb_selftest.commands:echo"
+inline = true
+params.text = { type = "string", default = "ping" }
+params.times = { type = "int", default = 1, min = 1, max = 100 }
+result.text = { type = "string" }
+result.greeting = { type = "string" }
+
+[[command]]
+name = "orphan"
+summary = "Start a process that detaches from this job and outlives it unless the job's processes are killed when it ends."
+handler = "wb_selftest.commands:orphan"
+params.seconds = { type = "duration", default = "60s", max = "10m" }
+result.pid = { type = "int" }
+
+[[command]]
+name = "tool"
+summary = "Run a tool that sleeps, under a limit (a cached command, to check a run stopped at its limit is never cached)."
+handler = "wb_selftest.commands:tool"
+deterministic = true
+params.seconds = { type = "float", default = 1.0, min = 0, max = 600 }
+params.limit = { type = "float", default = 60.0, min = 0.1, max = 3600 }

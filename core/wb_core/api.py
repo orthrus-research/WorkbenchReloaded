@@ -167,7 +167,7 @@ def health(h: Handler, query):
     active = sum(1 for e in wb.registry.values() if e.activation.active)
     h._send(200, {"ok": True, "version": __version__, "image": wb.image_digest, "install": wb.install_id, "uptime_s": round(time.time() - wb.started),
                   "modules": sorted(wb.modules), "commands": {"active": active, "total": len(wb.registry)},
-                  "running": len(wb.running), "host": host})
+                  "running": len(wb.running), "stalled": wb.stalled, "host": host})
 
 
 @route("GET", r"/v1/commands")
@@ -224,6 +224,17 @@ def approve(h: Handler, query, job_id):
     if not body.get("quote"):
         raise ApiError(400, "quote is required: approve one exact quote")
     h._send(200, h.server.workbench.approve(job_id, body["quote"], body.get("via", "direct")))
+
+
+@route("POST", r"/v1/jobs/(j_\w+)/call")
+def call_inline(h: Handler, query, job_id):
+    body = h._body()
+    if not body.get("command"):
+        raise ApiError(400, "command is required")
+    unknown = set(body) - {"command", "params"}
+    if unknown:
+        raise ApiError(400, f"unknown fields {sorted(unknown)}")
+    h._send(200, h.server.workbench.call_inline(job_id, body["command"], body.get("params") or {}))
 
 
 @route("POST", r"/v1/jobs/(j_\w+)/cancel")

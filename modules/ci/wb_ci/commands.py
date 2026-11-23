@@ -218,18 +218,20 @@ def _gradle_home(ctx: Context) -> tuple[Path, dict]:
 def _serve_repository(ctx: Context, home: Path) -> dict:
     """Gives every build of the run toolchain's rescue repository and substitutions: the init script
     ``toolchain.repo-init`` makes for builds in this container, from toolchain's config and the repository's receipts,
-    asked afresh each run and kept in the Gradle home's ``init.d``. With nothing to serve, the home keeps none."""
-    envelope = ctx.call("toolchain.repo-init", machine="container")
-    if envelope.get("state") != "settled" or envelope.get("outcome") != "ok":
-        raise EnvironmentProblem(f"toolchain.repo-init ({envelope.get('job')}) ended "
-                                 f"{envelope.get('outcome') or envelope.get('state')}: {envelope.get('summary')}")
-    data = envelope.get("data") or {}
+    asked afresh each run (inline, in this job's reservation, so it never queues) and kept in the Gradle home's
+    ``init.d``, rewritten only when it changed. With nothing to serve, the home keeps none."""
+    called = ctx.call_inline("toolchain.repo-init", machine="container")
+    if called.get("outcome") != "ok":
+        raise EnvironmentProblem(f"toolchain.repo-init ended {called.get('outcome')}: {called.get('summary')}")
+    data = called.get("data") or {}
     target = home / "init.d" / REPOSITORY_SCRIPT
     if data.get("script"):
-        write_atomic(target, data["script"].encode("utf-8"))
+        script = data["script"].encode("utf-8")
+        if not target.is_file() or target.read_bytes() != script:
+            write_atomic(target, script)
     else:
         target.unlink(missing_ok=True)
-    return {"job": envelope.get("job"), "script": data.get("sha256"), "versions": len(data.get("held") or []),
+    return {"script": data.get("sha256"), "versions": len(data.get("held") or []),
             "substitutions": len(data.get("substitutions") or {})}
 
 

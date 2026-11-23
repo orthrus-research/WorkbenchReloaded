@@ -61,7 +61,8 @@ role = "play"
 summary = "Play on an instance on the host's GPU, under the GPU lease: one tour (the profile's play; up to 90 minutes), or with no tour an open session a person plays until they close the client (the profile's play_open; up to its limit); keeps logs and captures."
 handler = "wb_lab.commands:play"
 runs_on = ["host"]
-resources = { gpu = true, quiet = true }
+# A tour is a measurement and needs a quiet machine; an open session only needs the GPU.
+resources = { gpu = true, quiet_if = ["tour"] }
 timeout = "12h"
 cancel_grace = "2m"
 params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }

@@ -21,7 +21,8 @@ name = "run"
 summary = "Run a project's jobs from a clean clone (pinned repositories at their pins), keeping the records in Workbench; their Gradle builds get toolchain's rescue repository."
 handler = "wb_ci.commands:run"
 requires = { binary = ["git"], module = ["toolchain"] }
-resources = { cpu = 4, mem_gb = 8 }
+# One run of a project at a time: a second waits here instead of failing on the engine's run lock.
+resources = { cpu = 4, mem_gb = 8, locks = ["ci:{project}"] }
 timeout = "3h"
 params.project = { type = "string", summary = "a name under [modules.ci.projects]" }
 params.commit = { type = "string", default = "HEAD", summary = "the commit to run; worktree: the checkout's working tree as it would be committed" }

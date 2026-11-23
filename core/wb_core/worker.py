@@ -59,7 +59,8 @@ def main() -> int:
     os.environ.update(spec.get("env", {}))
     emit = _channel()
 
-    from wb_core.module import Cancelled, Context, EnvironmentProblem, ParamError, QuoteChanged
+    from wb_core import process as processes
+    from wb_core.module import Cancelled, Context, EnvironmentProblem, ParamError, QuoteChanged, TimedOut
 
     ctx = Context(spec, emit)
     try:
@@ -76,6 +77,18 @@ def main() -> int:
         _thread.interrupt_main()
     threading.Thread(target=control, daemon=True).start()
 
+    owner = processes.own_tree()  # everything the handler starts dies with this job
+    emit({"kind": "log", "ts": time.time(), "level": "DEBUG", "msg": f"process ownership: {owner}"})
+    try:
+        return _handle(spec, ctx, emit, Cancelled, EnvironmentProblem, ParamError, QuoteChanged, TimedOut)
+    finally:
+        killed = processes.kill_descendants()
+        if killed:
+            emit({"kind": "log", "ts": time.time(), "level": "WARNING",
+                  "msg": f"stopped {killed} process(es) the job left running"})
+
+
+def _handle(spec, ctx, emit, Cancelled, EnvironmentProblem, ParamError, QuoteChanged, TimedOut) -> int:
     mode = spec.get("mode", "run")
     started = time.time()
     try:
@@ -98,6 +111,11 @@ def main() -> int:
         return 0
     except (KeyboardInterrupt, Cancelled):
         emit({"kind": "done", "ts": time.time(), "outcome": "cancelled", "summary": "cancelled", "data": {}})
+        return 0
+    except TimedOut as error:
+        emit({"kind": "done", "ts": time.time(), "outcome": "finding", "summary": str(error),
+              "data": {"timed_out": True}, "reasons": [{"kind": "timeout", "name": spec.get("command", ""),
+                                                        "detail": str(error), "fix": None}]})
         return 0
     except ParamError as error:
         emit({"kind": "done", "ts": time.time(), "outcome": "usage", "summary": str(error), "data": {}})
