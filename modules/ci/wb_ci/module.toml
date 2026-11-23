@@ -143,3 +143,15 @@ params.projects = { type = "object", summary = "{name: {commit, branch?, url?}}:
 params.deadline = { type = "float", default = 600, min = 5, summary = "seconds the publish has to be confirmed" }
 params.caller = { type = "string", default = "" }
 result.state = { type = "string" }
+
+[[command]]
+name = "store-platform"
+summary = "Fetch the platform a Set revision names into the Store: each JDK build for Linux and Windows and the Gradle distribution, by URL and SHA-256 from hosts in store_hosts only, kept by digest and unpacked into jdks/<build>/<os>/ and gradle/<version>/."
+handler = "wb_ci.platform:fetch"
+aliases = ["store.platform"]
+resources = { cpu = 1, mem_gb = 1, locks = ["store-platform"] }
+timeout = "2h"
+params.revision = { type = "string", default = "", summary = "the Set revision; empty: the head wb last exported" }
+params.only = { type = "list", items = "string", default = [], summary = "only these: a JDK major (26), major:os (8:windows) or gradle" }
+params.unpack = { type = "bool", default = true }
+result.fetched = { type = "list" }
