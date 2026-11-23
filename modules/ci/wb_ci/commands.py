@@ -390,7 +390,8 @@ def _gradle_launcher(ctx: Context, work: Path, revision: str) -> tuple[Path, str
     jdks = []
     for major, jdk in sorted((platform.get("jdk") or {}).items()):
         jdks += [str(p) for p in sorted((root / "jdks" / str(jdk.get("build")) / system).glob("*")) if p.is_dir()]
-    args = [str(found[0]), f"-Pset.dir={sets / revision}", f"-Pset.store={root}",
+    # Through sh off Windows: a distribution unpacked from a zip may carry no execute bit on bin/gradle.
+    args = [*([] if os.name == "nt" else ["sh"]), str(found[0]), f"-Pset.dir={sets / revision}", f"-Pset.store={root}",
             f"-Pset.plugins={(root / 'plugins').resolve().as_uri()}",
             "-Pset.exact=true", "-Porg.gradle.java.installations.auto-detect=false",
             "-Porg.gradle.java.installations.auto-download=false"]
@@ -399,7 +400,7 @@ def _gradle_launcher(ctx: Context, work: Path, revision: str) -> tuple[Path, str
     launcher.write_text(GRADLE_LAUNCHER.format(args=args), encoding="utf-8")
     # The same values for a ./gradlew a step script starts: Gradle reads org.gradle.project.* system properties from
     # GRADLE_OPTS as the build's properties, so that build resolves the same set, Store and JDKs.
-    opts = " ".join("-Dorg.gradle.project." + a[2:] for a in args[1:] if a.startswith("-P") and " " not in a)
+    opts = " ".join("-Dorg.gradle.project." + a[2:] for a in args if a.startswith("-P") and " " not in a)
     return launcher, revision, opts
 
 

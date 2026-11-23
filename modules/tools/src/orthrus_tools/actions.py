@@ -186,7 +186,7 @@ def from_project(data: dict, name: str) -> dict:
                 step = {**step, "run": [part for word in step["run"] for part in
                                         (["{python}", "{env.WB_GRADLE}"] if word == "{gradle}" else [word])]}
             if isinstance(step, list):  # an argv list, named by what it runs
-                words = [w for w in step if not (w.startswith("{") and w.endswith("}"))] or step
+                words = [w for w in step if not (w.startswith("{") and w.endswith("}")) and not w.startswith("-")] or step
                 if step[:2] == ["{python}", "{env.WB_GRADLE}"]:
                     words = ["gradle", *[w for w in step[2:] if not w.startswith("-")]]
                 steps.append({"name": " ".join(Path(w).name for w in words[:2]) or f"step {index}", "run": step})

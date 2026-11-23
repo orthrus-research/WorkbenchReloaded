@@ -8,6 +8,7 @@ are never swept: a worktree on an older revision keeps running on exactly its bu
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import tarfile
 import tempfile
@@ -89,6 +90,10 @@ def _unpack(archive: Path, folder: Path):
                 if not (root / name).resolve().is_relative_to(root):
                     raise EnvironmentProblem(f"{archive.name}: {name} would be written outside its folder")
             packed.extractall(part)
+            for info in packed.infolist():  # keep the modes the zip records (bin/gradle's execute bit)
+                mode = (info.external_attr >> 16) & 0o777
+                if mode and not info.is_dir():
+                    os.chmod(part / info.filename, mode)
     else:
         with tarfile.open(archive) as packed:
             packed.extractall(part, filter="data")
