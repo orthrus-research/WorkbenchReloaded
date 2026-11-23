@@ -121,6 +121,29 @@ class Gate(unittest.TestCase):
         self.assertEqual((answer["gated"], answer["refused"]), (False, []))
 
 
+class PushEnvironment(unittest.TestCase):
+    def test_the_pre_push_gate_reads_other_folders_although_git_set_git_dir(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name in ("one", "two"):
+                (root / name).mkdir()
+                git(root / name, "init", "-q", "-b", "main")
+                (root / name / "f.txt").write_text(name, encoding="utf-8")
+                git(root / name, "add", "-A")
+                git(root / name, "commit", "-q", "-m", name)
+            sha = git(root / "two", "rev-parse", "HEAD")
+            saved = dict(os.environ)
+            try:
+                os.environ["GIT_DIR"] = str(root / "one" / ".git")  # what git sets for a hook in repository one
+                for name in hooks.REPOSITORY_ENV:
+                    os.environ.pop(name, None)
+                self.assertEqual(git(root / "two", "rev-parse", "HEAD"), sha)  # read in its own folder again
+            finally:
+                os.environ.clear()
+                os.environ.update(saved)
+            self.assertIn("GIT_DIR", hooks.REPOSITORY_ENV)
+
+
 class Stubs(unittest.TestCase):
     def test_a_stub_holds_no_path_and_runs_what_git_config_names(self):
         for name in hooks.NAMES:

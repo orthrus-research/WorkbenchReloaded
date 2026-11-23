@@ -17,6 +17,8 @@ from pathlib import Path
 from .workspace import TOOLS, Workspace, WorkspaceError, git
 
 NAMES = ("pre-commit", "commit-msg", "pre-push")
+REPOSITORY_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX",
+                  "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
 MARKER = "# Written by Workbench (wb setup)"
 
 
@@ -77,6 +79,10 @@ def run(name: str, args: list[str], stdin: str | None = None) -> int:
                 findings += list(scrub.check_line(ref, f"ref name {ref}", rules))
     refused: list[dict] = []
     workspace = None
+    # git runs a hook with GIT_DIR (and others) naming the pushing worktree's own repository. The gate reads other
+    # folders (the registered checkout, pinned siblings), each by its own path, so these must not redirect it.
+    for name_ in REPOSITORY_ENV:
+        os.environ.pop(name_, None)
     try:
         workspace = Workspace()
         project = workspace.find(root)
