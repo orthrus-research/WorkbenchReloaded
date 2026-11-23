@@ -139,7 +139,7 @@ def report(workspace: Workspace) -> list[str]:
                        "cleans it up")
     unconverted = []
     for project in sorted(projects.values(), key=lambda p: p.name):
-        if project.name in current or not project.repo.is_dir():
+        if project.name in current or project.name == "set" or not project.repo.is_dir():
             continue
         ref = _default_ref(project.repo)
         if ref and _git(project.repo, "cat-file", "-e", f"{ref}:project.toml").returncode == 0:

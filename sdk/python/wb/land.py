@@ -35,6 +35,9 @@ from pathlib import Path
 from .workspace import GIT_ENV, Workspace, WorkspaceError, git
 
 
+SET = "set"  # the Set's own repository, as a ci project
+
+
 def _say(text: str):
     print(f"wb land: {text}", file=sys.stderr)
 
@@ -157,6 +160,16 @@ class Lander:
             if "origin" in git(repo, "remote").split():
                 git(repo, "fetch", "--quiet", "origin", check=False)
             commit = git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
+            if name == SET:  # the Set's own files: the landing's Set commit goes on top of this one
+                if commit == revision:
+                    skipped.append(name)
+                    continue
+                if subprocess.run(["git", "merge-base", "--is-ancestor", revision, commit], cwd=repo,
+                                  capture_output=True).returncode != 0:
+                    raise WorkspaceError(f"the Set change {commit[:12]} does not descend from the head "
+                                         f"{revision[:12]}: git rebase {revision[:12]}, then wb land set=<commit>")
+                wanted[name] = {"commit": commit}
+                continue
             line = setfile.line(current, name)
             if line and line["commit"] == commit:
                 skipped.append(name)
@@ -271,10 +284,19 @@ class Lander:
         return self.finish(record)
 
     def _commit(self, record: dict) -> str:
-        """The Set commit, made with plumbing in the bare home: the base's tree with set.json replaced."""
+        """The Set commit, made with plumbing in the bare home: the base's tree with set.json replaced, or, for a
+        change to the Set's own files, that change's tree with set.json replaced, on top of the change."""
+        parent = record.get("change") or record["base"]
+        if record.get("change"):  # bring the change's objects into the bare home from the Set's checkout
+            pushed = subprocess.run(["git", "push", "--quiet", "--no-verify", str(self.home),
+                                     f"{record['change']}:refs/landing/{record['id']}"],
+                                    cwd=self._repo(SET), capture_output=True, text=True)
+            if pushed.returncode != 0:
+                raise WorkspaceError(f"the Set change could not be brought into the Set's home: {pushed.stderr.strip()}")
         blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=self.home, input=record["set_json"],
                               capture_output=True, text=True, check=True).stdout.strip()
-        names = list(record["projects"]) or [h.split(":")[0].split("@")[0] for h in record.get("holds") or []]
+        names = (list(record["projects"]) or [h.split(":")[0].split("@")[0] for h in record.get("holds") or []]
+                 or ([SET] if record.get("change") else []))
         if not names:
             raise WorkspaceError("a landing that names no project or hold has no identity to commit with")
         first = self._repo(names[0])
@@ -285,15 +307,18 @@ class Lander:
                 identity[f"GIT_AUTHOR_{variable}"] = identity[f"GIT_COMMITTER_{variable}"] = value
         with tempfile.TemporaryDirectory(prefix="wb-land-") as scratch:
             env = {**os.environ, **identity, "GIT_INDEX_FILE": str(Path(scratch) / "index")}
-            for args in (["read-tree", record["base"]],
+            for args in (["read-tree", parent],
                          ["update-index", "--add", "--cacheinfo", f"100644,{blob},set.json"]):
                 subprocess.run(["git", *args], cwd=self.home, env=env, check=True, capture_output=True)
             tree = subprocess.run(["git", "write-tree"], cwd=self.home, env=env, check=True, capture_output=True,
                                   text=True).stdout.strip()
             message = Path(scratch) / "message"
             message.write_text(record["message"], encoding="utf-8")
-            made = subprocess.run(["git", "commit-tree", tree, "-p", record["base"], "-F", str(message)],
+            made = subprocess.run(["git", "commit-tree", tree, "-p", parent, "-F", str(message)],
                                   cwd=self.home, env=env, capture_output=True, text=True)
+        if record.get("change"):
+            subprocess.run(["git", "update-ref", "-d", f"refs/landing/{record['id']}"], cwd=self.home,
+                           capture_output=True)
         if made.returncode != 0:
             raise WorkspaceError(f"the Set commit could not be made: {made.stderr.strip()} (set user.name and "
                                  "user.email in the landed repository)")

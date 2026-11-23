@@ -82,6 +82,10 @@ class Land(unittest.TestCase):
         git(seed, "add", "-A")
         git(seed, "commit", "-q", "-m", "seed")
         git(seed, "push", "-q", str(cls.home), "main")
+        cls.set_checkout = root / "data" / "Set"  # the Set's home checkout, as a project
+        git(root, "clone", "-q", str(cls.home), str(cls.set_checkout))
+        git(cls.set_checkout, "config", "user.name", "t")
+        git(cls.set_checkout, "config", "user.email", "t@example.invalid")
         terms = root / "terms.txt"
         terms.write_text("forbiddenword\n", encoding="utf-8")
         out = root / "out"
@@ -101,6 +105,10 @@ class Land(unittest.TestCase):
 
             [modules.ci.projects.two]
             repo = '{cls.two}'
+            jdk = ""
+
+            [modules.ci.projects.set]
+            repo = '{cls.set_checkout}'
             jdk = ""
             """, root=root).start()
         cls.c = cls.d.client
@@ -297,6 +305,41 @@ class Land(unittest.TestCase):
         self.assertIn("hold lib:held at", text)
         self.assertNotIn(f"pins {digest[:12]}", text)  # a SHA-256 is not a commit, though it starts with 40 hex
         self.assertEqual(self.lander().land({}, drop_holds=["lib:held"])["state"], "landed")
+
+    def test_9c_a_change_to_the_sets_files_lands_under_its_landing_commit(self):
+        checkout = self.set_checkout
+        git(checkout, "fetch", "-q", "origin")
+        git(checkout, "checkout", "-q", "-B", "feat/logic", "origin/main")
+        (checkout / "project.toml").write_text('schema = 1\ngate = ["schema"]\n\n[project]\nname = "set"\n\n'
+                                              '[checks.schema]\nsteps = [["{python}", "-c", "pass"]]\n',
+                                              encoding="utf-8")
+        (checkout / "build-logic").mkdir(exist_ok=True)
+        (checkout / "build-logic" / "README.md").write_text("set.base\n", encoding="utf-8")
+        git(checkout, "add", "-A")
+        git(checkout, "commit", "-q", "-m", "build-logic")
+        change = git(checkout, "rev-parse", "HEAD")
+        before = self.set_json()
+        result = self.lander().land({"set": "HEAD"})
+        self.assertEqual(result["state"], "landed", self.said)
+        self.assertEqual(git(self.home, "rev-parse", "main^"), change)  # the landing's commit sits on the change
+        after = self.set_json()
+        self.assertEqual(after["platform"]["logic"], git(checkout, "rev-parse", "HEAD:build-logic"))
+        self.assertEqual(after["projects"], before["projects"])
+        self.assertTrue(git(self.home, "log", "-1", "--format=%s", "main").startswith(f"Land set files {change[:8]}"))
+        self.assertFalse(git(self.home, "for-each-ref", "refs/landing/"))  # the temporary ref is gone
+        # A change that edits set.json is refused: only a landing writes it.
+        git(checkout, "fetch", "-q", "origin")
+        git(checkout, "checkout", "-q", "-B", "feat/sneaky", "origin/main")
+        data = json.loads((checkout / "set.json").read_text(encoding="utf-8"))
+        data["doctor"] = {"exempt": ["sneaky/**"]}
+        (checkout / "set.json").write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+        git(checkout, "commit", "-q", "-am", "sneaky")
+        with self.assertRaises(WorkspaceError) as raised:
+            self.lander().land({"set": "HEAD"})
+        self.assertIn("edits set.json", str(raised.exception))
+        workspace = Workspace(self.d.config)
+        refused = workspace.landing_rule(workspace.projects()["set"], change, "refs/heads/main")
+        self.assertIn("wb land set=", refused)
 
     def test_y_the_backup_keeps_the_set_and_the_seeded_bytes(self):
         from wb import backup

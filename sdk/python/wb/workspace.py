@@ -190,6 +190,9 @@ class Workspace:
         """For a push to a landing ref or to the project's set-named branch: '' when a publishing landing names the
         commit, else why not. None for any other ref, which the ordinary gate judges."""
         from wb_core import landing as landings
+        if project.name == "set" and remote_ref == "refs/heads/main":
+            return (f"main is the Set's own branch, which moves only by landing: wb land set={commit[:12]} from the "
+                    "Set's worktree")
         line = self.set_line(project.name)
         store = self.store_root()
         if remote_ref.startswith("refs/landed/"):

@@ -102,6 +102,46 @@ def _member(ctx: Context, name: str, wanted: dict, base: dict) -> tuple[dict, st
     return line, body
 
 
+SET = "set"  # the Set's own repository, as a ci project: a change to its files lands like any change
+
+
+def _set_change(ctx: Context, wanted: dict, base: str, current: dict) -> tuple[str, str | None, str]:
+    """A change to the Set's own files: it descends from the head, leaves set.json alone (only a landing writes it),
+    and has passed the Set's gate. Returns its commit, the tree id of its build-logic/ (None without one) and the
+    body line."""
+    entry = commands._project(ctx, SET)
+    source = entry["source"]
+    sha = commands._resolve(ctx, source, wanted["commit"])
+    if not _descends(ctx, source, base, sha):
+        raise ParamError(f"the Set change {sha[:12]} does not descend from the head {base[:12]}: git rebase "
+                         f"{base[:12]} in the Set's worktree, then wb land set=<commit>")
+    shown = subprocess.run(["git", "--git-dir", str(commands._git_dir(ctx, source)), "show", f"{sha}:set.json"],
+                           env={**os.environ, **commands.GIT_SAFE}, capture_output=True, text=True, encoding="utf-8")
+    try:
+        theirs = setfile.parse(shown.stdout) if shown.returncode == 0 else None
+    except setfile.SetError:
+        theirs = None
+    if theirs != current:
+        raise ParamError(f"the Set change {sha[:12]} edits set.json, which only a landing writes: take that edit out "
+                         "(a line moves by wb land <project>=<ref>, a hold by --hold)")
+    config = commands._config_at(ctx, entry, commands._records(ctx, SET), sha)
+    if config is None:
+        raise ParamError(f"the Set change {sha[:12]} has no project.toml, so it has no gate to pass")
+    tree = commands._git(ctx, ["--git-dir", str(commands._git_dir(ctx, source)), "rev-parse", f"{sha}^{{tree}}"])
+    records = commands._records(ctx, SET)
+    passed = engine.passed_jobs(records, config.names) if records.is_dir() else {}
+    done = set().union(*[jobs for key, jobs in passed.items() if key and key[0] == tree] or [set()])
+    missing = [check for check in config.required() if check not in done]
+    if missing:
+        raise ParamError(f"the Set change {sha[:12]} has not passed {', '.join(missing)}: wb check in the Set's "
+                         "worktree, then wb land")
+    logic = commands._git(ctx, ["--git-dir", str(commands._git_dir(ctx, source)), "rev-parse", "--verify", "-q",
+                                f"{sha}:build-logic"], check=False) or None
+    body = (f"set files {base[:12]}..{sha[:12]}: gate {', '.join(config.required()) or '(empty)'} passed"
+            + (f"; logic {logic[:12]}" if logic else ""))
+    return sha, logic, body
+
+
 def _hold(ctx: Context, name: str, hold: dict) -> tuple[dict, str]:
     """A hold's entry: its files must be seeded in the Store (bytes no container builds, with their source)."""
     root = commands._store_root(ctx)
@@ -124,7 +164,9 @@ def _hold(ctx: Context, name: str, hold: dict) -> tuple[dict, str]:
 def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float = 600, caller: str = "",
          holds: dict | None = None, drop_holds: list | None = None):
     holds, drop_holds = holds or {}, list(drop_holds or [])
-    if not projects and not holds and not drop_holds:
+    projects = dict(projects or {})
+    change_wanted = projects.pop(SET, None)
+    if not projects and not holds and not drop_holds and not change_wanted:
         raise ParamError("nothing to land: name a project, a hold or a hold to drop")
     sets = _sets(ctx)
     root = commands._store_root(ctx)
@@ -140,11 +182,18 @@ def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float 
     if landings.read(root, landing):
         raise ParamError(f"landing {landing} exists already")
     lines, body = {}, []
+    change = logic = None
+    if change_wanted:
+        ctx.progress("validate", msg=f"the Set's files at {str(change_wanted.get('commit'))[:12]}")
+        change, logic, change_text = _set_change(ctx, change_wanted, base, current)
+        body.append(change_text)
     for name in sorted(projects):
         ctx.progress("validate", msg=f"{name} at {str(projects[name].get('commit'))[:12]}")
         lines[name], line_text = _member(ctx, name, projects[name], current)
         body.append(line_text)
     composed = setfile.with_lines(current, lines)
+    if change and logic != (current.get("platform") or {}).get("logic"):
+        composed.setdefault("platform", {})["logic"] = logic  # every project with a {gradle} check is reached
     for name in drop_holds:
         if name not in (composed.get("holds") or {}):
             raise ParamError(f"there is no hold {name} to drop")
@@ -157,6 +206,7 @@ def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float 
     moved = [n for n in sorted(lines) if (setfile.line(current, n) or {}).get("commit") != lines[n]["commit"]]
     parts = [f"{n} {lines[n]['commit'][:8]}" for n in (moved or sorted(lines))]
     parts += [f"hold {n}" for n in sorted(holds)] + [f"drop hold {n}" for n in drop_holds]
+    parts = ([f"set files {change[:8]}"] if change else []) + parts
     subject = "Land " + ", ".join(parts)
     message = subject + "\n\n" + "\n".join(body) + f"\n\nLanding {landing} (job {ctx.job}).\n"
     refs = [f"refs/landed/{landing}"] + [f"refs/heads/{lines[n]['branch']}" for n in sorted(lines)]
@@ -171,7 +221,7 @@ def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float 
         "id": landing, "state": "prepared", "job": ctx.job, "caller": caller, "base": base,
         "projects": {n: {"commit": lines[n]["commit"], "branch": lines[n]["branch"],
                          "old": (setfile.line(current, n) or {}).get("commit")} for n in sorted(lines)},
-        "holds": sorted(holds) + list(drop_holds), "set_json": text, "message": message, "created": time.time(),
+        "change": change, "holds": sorted(holds) + list(drop_holds), "set_json": text, "message": message, "created": time.time(),
         "deadline": time.time() + deadline})
     ctx.progress("publishing", msg=f"landing {landing}: waiting for wb land to publish (lock set held)")
     ctx.log.info(f"landing {landing} prepared: {subject}")
