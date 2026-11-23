@@ -69,6 +69,16 @@ def _restart_host_runner() -> str:
     return "restarted" if done.returncode == 0 else f"could not restart it: {(done.stderr or done.stdout).strip()}"
 
 
+def _task_script() -> str | None:
+    """The script the host runner's scheduled task starts (Windows), or None."""
+    if os.name != "nt":
+        return None
+    done = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                           f"(Get-ScheduledTask -TaskName '{TASK}' -ErrorAction SilentlyContinue).Actions.Arguments"],
+                          capture_output=True, text=True)
+    return done.stdout.strip().strip('"') or None
+
+
 def _running(client: Client) -> list:
     return [j for j in client.jobs(state="running", limit=200)]
 
@@ -78,6 +88,9 @@ def main(args) -> int:
     if root is None:
         _say("needs a Workbench checkout")
         return 3
+    if not (root / ".git").exists():
+        _say(f"{root} is a release, not a checkout; run wb deploy from the Workbench checkout to deploy its commit")
+        return 2
     config = wbconfig.load()
     from wb_core.identity import short, source_commit
     commit = source_commit(root)
@@ -112,6 +125,12 @@ def main(args) -> int:
     if compose.build("wb-core:dev", tools) != 0:
         _say("the image did not build; nothing was deployed")
         return 3
+
+    # The release: an immutable copy of the commit, which the hooks, the CLI and the host runner run.
+    from . import releases
+    release = releases.make(config, root, commit.split("-")[0], {"tree": tree, "override": override,
+                                                                 "tests": records["tested"].get(tree)})
+    _say(f"release {release}")
 
     # 3. The drain.
     client = Client()
@@ -156,6 +175,17 @@ def main(args) -> int:
     except (compose.ComposeError, wbconfig.ConfigError) as error:
         _say(f"the daemon did not come back: {error}")
         return 3
+    before = releases.point(config, release)
+    wanted = releases.cli_command(config)
+    if subprocess.run(["git", "config", "--global", "--get", "wb.cli"], capture_output=True,
+                      text=True).stdout.strip() != wanted:
+        subprocess.run(["git", "config", "--global", "wb.cli", wanted], check=True)
+        _say(f"the hooks now run the release in service: git config --global wb.cli = {wanted}")
+    _say(f"current release: {release.name}" + (f" (was {before.name})" if before and before != release else ""))
+    task = _task_script()
+    if task is not None and not task.startswith(str(releases.current(config))):
+        _say(f"the host runner's task still starts {task}; point it at the release once with "
+             f"`{releases.current(config) / 'bin' / ('wb.cmd' if os.name == 'nt' else 'wb')} host install --yes`")
     _say(f"the host runner: {_restart_host_runner()}")
     host = None
     for _ in range(30):
@@ -180,6 +210,9 @@ def main(args) -> int:
                                 "tests": records["tested"].get(tree), "problems": problems})
     records["releases"] = records["releases"][-100:]
     _save(config, records)
+    removed = releases.prune(config)
+    if removed:
+        _say(f"removed old releases: {', '.join(removed)}")
     if problems:
         _say("deployed with problems: " + "; ".join(problems))
         return 3

@@ -15,6 +15,13 @@ def source_commit(root: Path | None = None) -> str | None:
     if root is None and os.environ.get("WB_COMMIT"):
         return os.environ["WB_COMMIT"]
     root = root or ROOT
+    release = root / "RELEASE.json"  # a release folder has no git: it names its commit
+    if release.is_file():
+        try:
+            import json
+            return json.loads(release.read_text(encoding="utf-8")).get("commit")
+        except (OSError, ValueError):
+            return None
     try:
         head = subprocess.run(["git", "-c", "safe.directory=*", "-C", str(root), "rev-parse", "--verify", "-q", "HEAD"],
                               capture_output=True, text=True, timeout=30)

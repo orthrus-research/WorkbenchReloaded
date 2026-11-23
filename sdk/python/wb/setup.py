@@ -22,7 +22,13 @@ OLD_MARKERS = ("Written by Workbench (ci.hook)", "# installed by orthrus-scrub")
 
 
 def cli_command() -> str:
-    """How a hook started by git's sh runs this checkout's CLI (a value for git config wb.cli)."""
+    """How a hook started by git's sh runs Workbench's CLI (a value for git config wb.cli): the release in service
+    when wb deploy has made one, else this checkout's CLI."""
+    from . import config as wbconfig
+    from . import releases
+    config = wbconfig.load()
+    if releases.current(config).exists():
+        return releases.cli_command(config)
     if os.name == "nt":
         cmd = REPO / "bin" / "wb.cmd"
         if " " in str(cmd):

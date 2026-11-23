@@ -293,7 +293,8 @@ def _cli_commit() -> str | None:
             from wb_core.identity import source_commit
             from pathlib import Path as _Path
             root = _Path(__file__).resolve().parents[3]
-            _COMMIT.append(source_commit(root) if (root / ".git").exists() else None)
+            known = (root / ".git").exists() or (root / "RELEASE.json").is_file()
+            _COMMIT.append(source_commit(root) if known else None)
         except Exception:  # noqa: BLE001 - no identity, no handshake
             _COMMIT.append(None)
     return _COMMIT[0]
