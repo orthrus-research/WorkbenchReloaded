@@ -362,26 +362,20 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
                                 "commit=<sha or branch>"))
         config = _load(root, entry, records)
         pinned = {}
-        clones = {config.repositories[0].name: root}
-        # In declaration order, so a pin read from another repository's file (pin.repository) finds that
-        # repository already cloned at its own pin.
         for repository in config.repositories[1:]:
             relative = os.path.relpath(repository.path, root)
             other = (source / relative).resolve()
             at = "HEAD"
             if repository.pin_file:
-                holder = repository.pin_from or config.repositories[0].name
-                where = repository.pin_file if holder == config.repositories[0].name else                     f"{holder}'s {repository.pin_file}"
                 try:
-                    lock = json.loads((clones[holder] / repository.pin_file).read_text(encoding="utf-8"))
+                    lock = json.loads((root / repository.pin_file).read_text(encoding="utf-8"))
                     pin = engine.pin_value(lock, repository.pin_key)
                 except (OSError, ValueError, KeyError, TypeError):
-                    raise EnvironmentProblem(f"{where} names no {repository.name} commit") from None
+                    raise EnvironmentProblem(f"{repository.pin_file} names no {repository.name} commit") from None
                 at = str(pin)
             other_sha = _resolve(ctx, other, at)
             ctx.progress("clone", msg=f"{repository.name} at {other_sha[:12]}")
-            clones[repository.name] = (root / relative).resolve()
-            _clone(ctx, other, clones[repository.name], other_sha)
+            _clone(ctx, other, (root / relative).resolve(), other_sha)
             pinned[repository.name] = other_sha
         jobs_file = _jobs_copy(root, entry, records, work)
         major = str(entry["jdk"] if "jdk" in entry else ctx.config.get("jdk", "26"))  # "": no JAVA_HOME

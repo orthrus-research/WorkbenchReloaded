@@ -22,11 +22,6 @@ name = "demo"
 path = "../lib"
 pin = { file = "lib.lock.json", key = "commit" }
 
-# Pinned by the lib, at the lib's pin: the project names it nowhere.
-[repositories.base]
-path = "../base"
-pin = { repository = "lib", file = "base.lock.json", key = "base.commit" }
-
 [workflows]
 ci = ["hello", "pinned"]
 
@@ -34,8 +29,7 @@ ci = ["hello", "pinned"]
 steps = [{ name = "say", run = ["{python}", "-c", "import pathlib; print(pathlib.Path('src/a.txt').read_text())"] }]
 
 [jobs.pinned]
-steps = [{ name = "lib", run = ["{python}", "-c", "import pathlib, sys; t = pathlib.Path('../lib/lib.txt').read_text(); sys.exit(0 if t == 'v1' else 3)"] },
-         { name = "base", run = ["{python}", "-c", "import pathlib, sys; t = pathlib.Path('../base/base.txt').read_text(); sys.exit(0 if t == 'b1' else 3)"] }]
+steps = [{ name = "lib", run = ["{python}", "-c", "import pathlib, sys; t = pathlib.Path('../lib/lib.txt').read_text(); sys.exit(0 if t == 'v1' else 3)"] }]
 
 [jobs.lines]
 steps = [{ name = "lines", run = ["{python}", "-c", "import pathlib, sys; t = pathlib.Path('src/a.txt').read_text().splitlines(); sys.exit(0 if t == ['line one', 'line two'] else 3)"] }]
@@ -63,18 +57,11 @@ class Ci(unittest.TestCase):
     def setUpClass(cls):
         root = Path(tempfile.mkdtemp(prefix="wb-ci-"))
         base = root / "data"  # the harness's read-only data root
-        cls.lib, cls.demo, cls.base = base / "lib", base / "demo", base / "base"
-        for repo in (cls.lib, cls.demo, cls.base):
+        cls.lib, cls.demo = base / "lib", base / "demo"
+        for repo in (cls.lib, cls.demo):
             repo.mkdir(parents=True)
             git(repo, "init", "-q", "-b", "main")
-        (cls.base / "base.txt").write_text("b1", encoding="utf-8")
-        git(cls.base, "add", "-A")
-        git(cls.base, "commit", "-q", "-m", "b1")
-        cls.base_b1 = git(cls.base, "rev-parse", "HEAD")
-        (cls.base / "base.txt").write_text("b2", encoding="utf-8")  # moves on too; the lib pins b1
-        git(cls.base, "commit", "-q", "-am", "b2")
         (cls.lib / "lib.txt").write_text("v1", encoding="utf-8")
-        (cls.lib / "base.lock.json").write_text(json.dumps({"base": {"commit": cls.base_b1}}), encoding="utf-8")
         git(cls.lib, "add", "-A")
         git(cls.lib, "commit", "-q", "-m", "v1")
         cls.lib_v1 = git(cls.lib, "rev-parse", "HEAD")
@@ -113,7 +100,6 @@ class Ci(unittest.TestCase):
         self.assertEqual(first.outcome, "ok", first.summary)
         self.assertEqual(sorted(first.data.passed), ["hello", "pinned"])
         self.assertEqual(first.data.pinned["lib"], self.lib_v1)  # the pinned commit, not the lib's HEAD
-        self.assertEqual(first.data.pinned["base"], self.base_b1)  # the commit the lib's pin names
         self.assertEqual(first.data.trees["demo"], git(self.demo, "rev-parse", "HEAD^{tree}"))  # the commit's own tree
         self.assertFalse((self.demo / ".local").exists())          # the checkout was only read
         self.assertEqual(git(self.demo, "status", "--porcelain"), "")
