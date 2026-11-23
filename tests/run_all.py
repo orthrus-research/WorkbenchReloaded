@@ -29,6 +29,7 @@ SUITES = [
     ["modules/probe/tests/test_probe.py"],
     ["modules/lab/tests/test_server.py"],
     ["modules/lab/tests/test_profiles.py"],
+    ["modules/lab/tests/test_snapshots.py"],
     ["modules/lab/tests/test_assemble.py"],
     ["modules/lab/tests/test_session.py"],
     ["modules/lab/tests/test_install.py"],

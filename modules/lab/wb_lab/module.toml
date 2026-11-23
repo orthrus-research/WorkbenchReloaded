@@ -7,6 +7,7 @@ summary = "Game sessions: native client sessions on the host through wb-host (in
 launcher = { type = "string", default = "", summary = "the checkout whose launcher (the profile's launcher script) prepares and plays instances" }
 python = { type = "string", default = "", summary = "the interpreter for the launcher; empty means the one running wb-host" }
 profile = { type = "object", default = {}, summary = "the instance profile: how the launcher prepares, plays and checks instances and how they are laid out (keys: wb_lab/profile.py)" }
+snapshots = { type = "string", default = "", summary = "where the lab keeps snapshots of the checkouts a profile names by ref or pin, each a clone at one commit that is never moved; empty: checkouts in the lab home" }
 keep_worlds = { type = "list", items = "string", default = [], summary = "glob patterns of world snapshots lab.store-gc never removes" }
 keep_instances = { type = "list", items = "string", default = [], summary = "glob patterns of instances lab.prune-instances never removes" }
 scripts = { type = "list", items = "string", default = [], summary = "folders whose scripts lab.script may run" }
@@ -49,7 +50,7 @@ timeout = "40m"
 params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
 params.seed = { type = "int", optional = true }
 params.scale = { type = "float", optional = true, summary = "a whole or fractional scale (0.5); a whole one is passed as an integer" }
-params.args = { type = "list", items = "string", default = [], summary = "further prepare arguments" }
+params.args = { type = "list", items = "string", default = [], summary = "further prepare arguments; one that starts {<checkout>} names a file in that checkout as the job reads it (a snapshot at its commit)" }
 params.packs = { type = "list", items = "path.in", default = [], summary = "shader or resource packs laid into the instance's packs_dir (the profile's); they are part of its recipe" }
 
 [[command]]
@@ -86,6 +87,20 @@ params.allow_disagreement = { type = "bool", default = false, summary = "run the
 params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 result.steps = { type = "list" }
 result.agreement = { type = "object" }
+
+[[command]]
+name = "checkouts"
+requires = { config = ["modules.lab.profile"] }
+summary = "What the instance profile's checkouts resolve to now (a ref fetched and read, a pin read at its holder's commit), each read from a snapshot at its commit; with prune, removes snapshots past the newest keep of each repository that no job has used for unused_days."
+handler = "wb_lab.snapshots:checkouts_command"
+runs_on = ["host"]
+params.prune = { type = "bool", default = false, summary = "remove old snapshots (never one this profile resolves to now)" }
+params.keep = { type = "int", default = 3, min = 0, summary = "snapshots kept per repository, the most recently used" }
+params.unused_days = { type = "float", default = 7, min = 0, summary = "a snapshot used more recently than this is kept" }
+params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
+result.checkouts = { type = "object" }
+result.snapshots = { type = "list" }
+result.removed = { type = "list" }
 
 [[command]]
 name = "migrate-plan"
@@ -158,7 +173,7 @@ timeout = "40m"
 params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
 params.seed = { type = "int", optional = true }
 params.scale = { type = "float", optional = true, summary = "a whole or fractional scale (0.5); a whole one is passed as an integer" }
-params.args = { type = "list", items = "string", default = [], summary = "prepare arguments" }
+params.args = { type = "list", items = "string", default = [], summary = "prepare arguments; one that starts {<checkout>} names a file in that checkout as the job reads it (a snapshot at its commit); the recipe keeps its bytes" }
 params.world = { type = "string", default = "", summary = "a world snapshot label to start from; empty: the prepared (empty) world" }
 params.replace = { type = "bool", default = false, summary = "replace an instance of the same name built from another recipe" }
 params.allow_writer_change = { type = "bool", default = false, summary = "accept a world written by another build of the profile's world_writer" }
