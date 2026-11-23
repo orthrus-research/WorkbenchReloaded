@@ -35,6 +35,9 @@ steps = [{ name = "lib", run = ["{python}", "-c", "import pathlib, sys; t = path
 artifacts = ["build/out.jar"]
 steps = [{ name = "build", run = ["{python}", "-c", "import pathlib; p = pathlib.Path('build'); p.mkdir(exist_ok=True); (p / 'out.jar').write_bytes(b'built bytes')"] }]
 
+[jobs.clean-env]
+steps = [{ name = "env", run = ["{python}", "-c", "import os, sys; sys.exit(3 if [k for k in os.environ if k.startswith('WB_') and k not in ('WB_PIN_CACHE', 'WB_COLD')] else 0)"] }]
+
 [jobs.unbuilt]
 artifacts = ["build/missing.jar"]
 steps = [{ name = "nothing", run = ["{python}", "-c", "pass"] }]
@@ -238,6 +241,10 @@ class Ci(unittest.TestCase):
         self.assertEqual(len(verified.children), 1)  # one ci.run, cold
         # The cold builds read no Gradle build cache: every build's Gradle home has the script that turns it off.
         self.assertIn("WB_COLD", (self.d.state / "cache" / "gradle" / "init.d" / "workbench-cold.gradle").read_text())
+
+    def test_a_step_gets_none_of_workbenchs_own_environment(self):
+        result = self.c.submit("ci.run", {"project": "demo", "workflow": "clean-env"}).result(timeout=600)
+        self.assertEqual(result.outcome, "ok", result.summary)
 
     def test_a_job_that_fails_after_its_steps_says_why(self):
         result = self.c.submit("ci.run", {"project": "demo", "workflow": "unbuilt"}).result(timeout=600)

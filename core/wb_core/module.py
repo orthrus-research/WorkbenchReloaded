@@ -223,15 +223,16 @@ class Context:
     # -- running tools ---------------------------------------------------------------------------
     def run(self, args: list, *, cwd=None, env: dict | None = None, timeout: float | None = None,
             check: bool = False, log_output: bool = True, phase: str | None = None,
-            capture: bool = True) -> subprocess.CompletedProcess:
+            capture: bool = True, inherit: bool = True) -> subprocess.CompletedProcess:
         """Runs a tool until it exits; its output lines go to the job log; cancelling the job kills it and everything
         it started. A ``timeout`` holds even when the tool prints nothing; reaching it raises TimedOut. A grandchild
-        that keeps the output pipe open (a Gradle daemon) does not keep the call waiting."""
+        that keeps the output pipe open (a Gradle daemon) does not keep the call waiting. With ``inherit`` off the
+        tool gets ``env`` alone, none of this worker's own environment."""
         from . import process as processes
         args = [str(a) for a in args]
         self.log.debug("$ " + " ".join(args))
         try:
-            done = processes.run(args, cwd=cwd, env=dict(os.environ, **(env or {})), timeout=timeout,
+            done = processes.run(args, cwd=cwd, env=dict(os.environ if inherit else {}, **(env or {})), timeout=timeout,
                                  cancelled=self.cancelled, on_line=self.log.debug if log_output else None,
                                  capture=capture)
         except processes.StartError as error:

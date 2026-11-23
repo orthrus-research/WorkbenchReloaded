@@ -34,6 +34,13 @@ from wb_core.module import Context, EnvironmentProblem, ParamError
 TOOLS_SRC = Path(wb_tools.adapter.__file__).resolve().parents[1] / "src"
 # Mounted checkouts belong to another user; reading them is all ci ever does.
 GIT_SAFE = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": "*"}
+# What a project's steps get of this worker's environment: what any process needs to run, never Workbench's own
+# (WB_TOKEN, WB_URL, WB_CONFIG, ...), so a project's build cannot act as the job that runs it. The rest of a step's
+# environment is what ci.run gives it: the JDKs, the Gradle home, the pin cache, the project's own env.
+STEP_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TERM", "HOSTNAME",
+            "TMPDIR", "TEMP", "TMP", "PYTHONDONTWRITEBYTECODE",
+            "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+            "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE")
 PROJECT_KEYS = {"repo", "config", "jdk", "env", "python", "workflow", "gate"}  # gate = false: pushes are only scrubbed
 REPOSITORY_SCRIPT = "workbench-repository.gradle"  # in the Gradle home's init.d: toolchain's rescue repository
 COLD_SCRIPT = "workbench-cold.gradle"  # in the Gradle home's init.d: a cold run's builds use no build cache
@@ -294,9 +301,9 @@ def _engine(ctx: Context, root: Path, jobs_file: Path, argv: list[str], env: dic
     """The actions runner, under the project's interpreter: its ``{python}`` is the interpreter running it."""
     args = [python, "-m", "orthrus_tools", "actions", *argv, "--root", str(root), "--config", str(jobs_file),
             "--json"]
-    env = {**GIT_SAFE, **env,
-           "PYTHONPATH": os.pathsep.join(p for p in [str(TOOLS_SRC), os.environ.get("PYTHONPATH", "")] if p)}
-    done = ctx.run(args, cwd=root, env=env, timeout=None, log_output=False)
+    base = {key: value for key, value in os.environ.items() if key.upper() in STEP_ENV}
+    env = {**base, **GIT_SAFE, **env, "PYTHONPATH": str(TOOLS_SRC)}
+    done = ctx.run(args, cwd=root, env=env, timeout=None, log_output=False, inherit=False)
     text = done.stdout
     start = text.find("\n{")
     start = 0 if text.startswith("{") else (start + 1 if start >= 0 else -1)
