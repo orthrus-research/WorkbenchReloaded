@@ -24,7 +24,9 @@
   re-hashed. A lab input step with `store` takes CI's JARs for a clean checkout's tree instead of building.
   `toolchain.rebuild`, `build.freeze` and `build.stage` are gone: `store.verify` is how a pin is shown to rebuild.
 - The actions engine runs inside its job's reservation: no run lock, the job id as its run id, the job's memory
-  as its budget.
+  as its budget. A project's steps get an allow-listed environment, none of Workbench's own.
+- Each job calls the API with a token of its own, revoked when it ends, that can never approve a quote: approval
+  takes the person's token.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,
   ledger, vast, ci, release, plan, frames, tools (the former standalone tools, 0.6.0), selftest.
 - The lab reads a profile's checkouts at a ref, each from a snapshot fixed at its commit for the whole job
