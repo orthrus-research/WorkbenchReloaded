@@ -67,6 +67,24 @@ class Vast:
                     pass
 
 
+def list_instances(vast: "Vast", purpose: str) -> list[dict]:
+    """This account's instances. Vast retired GET /api/v0/instances/ (HTTP 410, 'Use /api/v1/instances/ instead');
+    the v1 listing pages with next_token."""
+    base = vast.base.replace("/api/v0", "/api/v1")
+    saved, items, token = vast.base, [], None
+    try:
+        vast.base = base
+        for _ in range(50):
+            page = vast.call("GET", "/instances/" + (f"?next_token={token}" if token else ""), purpose=purpose)
+            items += page.get("instances") or []
+            token = page.get("next_token")
+            if not token or not page.get("instances"):
+                break
+    finally:
+        vast.base = saved
+    return items
+
+
 def numeric_driver(version: str) -> int:
     """580.95.05 -> 580095005, the form Vast's search compares (as the Vast CLI encodes it)."""
     parts = (str(version).split(".") + ["0", "0"])[:3]

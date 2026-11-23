@@ -46,11 +46,14 @@ def parse_params(pairs: list[str], schema: dict | None) -> dict:
             raise SystemExit(f"wb: parameters are key=value, got {pair!r}")
         key, value = pair.split("=", 1)
         spec = properties.get(key, {})
+        structured = spec.get("type") in ("array", "object")
         if value[:1] in "[{":
             try:
                 value = json.loads(value)
-            except ValueError:
-                pass
+            except ValueError as error:
+                if structured:
+                    raise SystemExit(f"wb: {key}={value} is not JSON ({error}); for a list, repeat the key "
+                                     f"({key}=a {key}=b), or quote the JSON so the shell keeps its quotes") from None
         item_format = (spec.get("items") or {}).get("format") if spec.get("type") == "array" else None
         if (spec.get("format") in ("path.in", "path.out") or item_format in ("path.in", "path.out")) \
                 and isinstance(value, str) and value and not os.path.isabs(value) and not value.startswith("/"):
@@ -81,6 +84,8 @@ def print_envelope(env: Envelope, as_json: bool):
         return
     if state != "settled":
         print(f"{state}  {env['command']}  {env['job']}  {env.get('summary') or ''}".rstrip())
+        if (env.get("waiting") or {}).get("reason"):
+            print(f"  waiting: {env['waiting']['reason']}")
         return
     timings = env.get("timings") or {}
     print(f"{MARK.get(env.get('outcome'), env.get('outcome'))}  {env['command']}  {env['job']}"
@@ -90,7 +95,7 @@ def print_envelope(env: Envelope, as_json: bool):
     data = env.get("data") or {}
     if data:
         text = json.dumps(data, default=str)
-        print("  data: " + (text if len(text) < 400 else text[:400] + " ..."))
+        print("  data: " + (text if len(text) < 400 else text[:400] + " ...  (all of it: --json)"))
     for item in env.get("measurements") or []:
         print(f"  {item['name']} = {item['value']}{' ' + item['unit'] if item.get('unit') else ''}")
     for item in env.get("outputs") or []:
@@ -119,9 +124,34 @@ def cmd_run(args) -> int:
     if args.detach:
         print(job.id if not args.json else json.dumps(job.envelope, indent=1))
         return 0
+    if not args.quiet:
+        print(f"wb: {job.id}  {args.command}  (wb show {job.id})", file=sys.stderr)
+        _follow(client, job.id)
     env = job.wait(_duration(args.timeout))
     print_envelope(env, args.json)
     return env.exit_code
+
+
+def _follow(client: Client, job: str):
+    """Streams what a job waits for and its notices to stderr while it runs; stdout stays the one envelope."""
+    import threading
+
+    def stream():
+        try:
+            for event in client.events(job):
+                kind, data = event.get("kind"), event.get("data") or {}
+                if kind == "waiting":
+                    print(f"wb: waiting: {data.get('reason')}", file=sys.stderr)
+                elif kind == "state" and data.get("state") in ("running",):
+                    print("wb: running", file=sys.stderr)
+                elif kind == "log" and data.get("level") in ("WARNING", "ERROR"):
+                    print(f"wb: {data.get('msg')}", file=sys.stderr)
+                elif kind == "child":
+                    print(f"wb: started {data.get('command')} {data.get('job')}", file=sys.stderr)
+        except Exception:  # noqa: BLE001 - following is a courtesy; the wait below decides the result
+            return
+
+    threading.Thread(target=stream, name="follow", daemon=True).start()
 
 
 def cmd_wait(args) -> int:
@@ -137,7 +167,11 @@ def cmd_show(args) -> int:
 
 
 def cmd_jobs(args) -> int:
-    for env in _client().jobs(state=args.state, command=args.command, limit=args.limit):
+    listed = _client().jobs(state=args.state, command=args.command, limit=args.limit)
+    if args.json:
+        print(json.dumps(listed, indent=1, default=str))
+        return 0
+    for env in listed:
         state = env["state"] + (f" ({env['phase']})" if env.get("phase") and env["state"] == "queued" else "")
         print(f"{env['job']}  {state:<21} {str(env.get('outcome') or ''):<11} {env['command']:<24} "
               f"{env.get('summary') or ''}"[:160])
@@ -208,7 +242,11 @@ def cmd_logs(args) -> int:
     target = args.target
     job = target if target and target.startswith("j_") else None
     module = None if job else target
-    for line in client.logs(module=module, job=job, limit=args.n):
+    lines = client.logs(module=module, job=job, limit=args.n)
+    if args.json:
+        print(json.dumps(lines, indent=1, default=str))
+        return 0
+    for line in lines:
         if "line" in line:
             print(line["line"])
         else:
@@ -318,6 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out")
     p.add_argument("--fresh", action="store_true")
     p.add_argument("--detach", action="store_true")
+    p.add_argument("--quiet", action="store_true", help="print nothing but the result: no job id, no progress")
     p.add_argument("--timeout")
     p = add("wait", cmd_wait, "wait for a job")
     p.add_argument("job")

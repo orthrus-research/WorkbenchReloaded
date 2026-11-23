@@ -119,6 +119,7 @@ class Context:
         self.log = _Log(self)
         self.cancelled = threading.Event()
         self.outcome = "ok"
+        self.reasons: list[dict] = []
         self.summary_text: str | None = None
         self.findings: list[str] = []
         self._secrets: dict = spec.get("secrets", {})
@@ -154,6 +155,10 @@ class Context:
 
     def summary(self, text: str):
         self.summary_text = text
+
+    def reason(self, kind: str, name: str, detail: str, fix: str | None = None):
+        """Adds a reason to the envelope: what went wrong (detail) and the next thing to do (fix)."""
+        self.reasons.append({"kind": kind, "name": name, "detail": detail, "fix": fix})
 
     def cost(self, amount: float, currency: str = "USD", **details):
         """Records money this job spent (a rental's charge); it appears as the envelope's ``cost``."""

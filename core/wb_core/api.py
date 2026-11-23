@@ -167,7 +167,8 @@ def health(h: Handler, query):
     active = sum(1 for e in wb.registry.values() if e.activation.active)
     h._send(200, {"ok": True, "version": __version__, "image": wb.image_digest, "install": wb.install_id, "uptime_s": round(time.time() - wb.started),
                   "modules": sorted(wb.modules), "commands": {"active": active, "total": len(wb.registry)},
-                  "running": len(wb.running), "stalled": wb.stalled, "host": host})
+                  "running": len(wb.running), "stalled": wb.stalled,
+                  "hooks_failed": {m: h for m, h in wb.hooks.items() if h.get("outcome") != "ok"}, "host": host})
 
 
 @route("GET", r"/v1/commands")

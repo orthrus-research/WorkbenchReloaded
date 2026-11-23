@@ -24,7 +24,7 @@ from wb_core.module import Context, EnvironmentProblem, ParamError
 from . import bundle as bundles
 from . import market, remote
 from . import template as templates
-from .api import DEFAULT_API, Vast, VastError
+from .api import DEFAULT_API, Vast, VastError, list_instances
 
 
 def label_prefix() -> str:
@@ -190,7 +190,7 @@ def charges(ctx: Context, days: int):
 @_guard
 def instances(ctx: Context):
     vast = client(ctx)
-    listed = vast.call("GET", "/instances/?owner=me", purpose="instances").get("instances", [])
+    listed = list_instances(vast, "instances")
     keep = ("id", "label", "actual_status", "gpu_name", "dph_total", "start_date", "machine_id")
     ours = [{k: i.get(k) for k in keep} for i in listed]
     ctx.summary(f"{len(ours)} instance(s), {sum(1 for i in ours if str(i.get('label') or '').startswith(label_prefix()))} "
@@ -869,10 +869,10 @@ def reconcile(ctx: Context):
         return {}
     vast = client(ctx)
     try:
-        listed = vast.call("GET", "/instances/?owner=me", purpose="reconcile").get("instances", [])
+        listed = list_instances(vast, "reconcile")
     except VastError as error:
-        ctx.summary(f"could not list instances: {error}")
-        return {}
+        # Not a clean start: a rental no job holds may still be running and billing. Health shows this.
+        raise EnvironmentProblem(f"could not list instances, so none was cleaned up: {error}") from None
     destroyed, mine = [], label_prefix()
     for item in listed:
         label = str(item.get("label") or "")

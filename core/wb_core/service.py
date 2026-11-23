@@ -129,6 +129,7 @@ class Workbench:
         self.waiting: dict[str, dict] = {}  # queued job -> {reason, since}: why the dispatcher has not started it
         self.stalled: list[dict] = []       # queued jobs nothing can start while every running job waits on them
         self.inline_calls = 0
+        self.hooks: dict[str, dict] = {}    # module -> the outcome of its start-up hook, shown by health
         self.quoting: set[str] = set()
         self.seq: dict[str, int] = {}
         self.stopping = threading.Event()
@@ -564,8 +565,11 @@ class Workbench:
                 level = "INFO" if result.get("outcome") == "ok" else "ERROR"
                 self.hub.emit(level, f"startup hook: {result.get('summary') or result.get('outcome')}",
                               module=module.name)
+                self.hooks[module.name] = {"outcome": result.get("outcome"), "summary": result.get("summary"),
+                                           "at": iso(time.time())}
             except Exception as error:  # noqa: BLE001
                 self.hub.error(f"startup hook failed: {error}", module=module.name)
+                self.hooks[module.name] = {"outcome": "environment", "summary": str(error), "at": iso(time.time())}
 
     def _resources(self, command: Command, machine: str, params: dict | None = None
                    ) -> tuple[float, float, set[str], bool, set[str]]:
@@ -1100,7 +1104,7 @@ class Workbench:
         extra = {"measurements": collected.measurements, "phases": collected.phases, "cost": collected.cost,
                  "machine": collected.machine, "toolchain": collected.toolchain, "children": collected.children,
                  "findings": collected.findings, "data": data,
-                 "reasons": [r.as_dict() if isinstance(r, Reason) else r for r in reasons],
+                 "reasons": [_redacted(r.as_dict() if isinstance(r, Reason) else r) for r in reasons],
                  "cache_hit": cache_hit}
         code = CODES.get(outcome) if state == "settled" else None
         with self.cond:
@@ -1240,6 +1244,11 @@ def default_prompt(command: Command, quote: dict) -> dict:
     return {"question": f"Approve {command.full}: {what}{money}?",
             "options": [{"label": "Approve", "description": f"Run {command.full} on quote {quote.get('id')}."},
                         {"label": "Decline", "description": "Cancel the job; nothing is spent."}]}
+
+
+def _redacted(reason: dict) -> dict:
+    """A reason with secrets masked in its words, as the summary is."""
+    return {k: REDACT(v) if isinstance(v, str) else v for k, v in reason.items()}
 
 
 class _Params(dict):

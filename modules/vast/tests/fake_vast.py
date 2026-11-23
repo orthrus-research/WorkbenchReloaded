@@ -23,6 +23,7 @@ class State:
         self.next_id = 61700000
         self.destroyed: list[str] = []
         self.billed_override: float | None = None
+        self.listing_gone = False  # answer the listing with HTTP 410, as a retired endpoint does
         self.calls: list[tuple] = []
 
 
@@ -92,8 +93,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         STATE.calls.append(("GET", self.path, None))
-        if self.path.startswith("/instances/?"):
-            return self._send({"instances": list(STATE.instances.values())})
+        if (self.path == "/instances/" or self.path.startswith("/instances/?")) and STATE.listing_gone:
+            return self._send({"success": False, "error": "deprecated_endpoint"}, 410)
+        if self.path == "/instances/" or self.path.startswith("/instances/?"):  # the v1 listing, paged
+            return self._send({"success": True, "instances": list(STATE.instances.values()), "next_token": None})
         match = re.match(r"^/instances/(\d+)/$", self.path)
         if match:
             return self._send({"instances": STATE.instances.get(match.group(1), {})})

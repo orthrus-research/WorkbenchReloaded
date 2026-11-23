@@ -224,6 +224,10 @@ class Ci(unittest.TestCase):
             failed = self.c.submit("ci.run", {"project": "demo", "workflow": "pinned"}).result(timeout=600)
             self.assertEqual(failed.outcome, "finding", failed.summary)  # v2 makes the pinned job exit 3
             self.assertEqual(failed.data.failed, ["pinned"])
+            step = [r for r in failed.reasons if r["kind"] == "step"]  # the cause in the envelope, with where to look
+            self.assertTrue(step and step[0]["name"].startswith("pinned / "), failed.reasons)
+            self.assertIn("exited 3", step[0]["detail"])
+            self.assertTrue(step[0]["fix"].startswith("read the step log: "), step[0])
         finally:
             git(self.demo, "reset", "-q", "--hard", self.head)
 

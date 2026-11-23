@@ -260,6 +260,21 @@ class StartupCleanup(unittest.TestCase):
             for key in ("98", "97"):
                 fake_vast.STATE.instances.pop(key, None)
 
+    def test_a_clean_up_that_cannot_list_instances_shows_in_health(self):
+        server, url = fake_vast.serve()
+        d = make_daemon(url)
+        fake_vast.STATE.listing_gone = True  # the provider retired the listing, as it did with /api/v0/instances/
+        d.start()
+        try:
+            failed = d.client.health()["hooks_failed"]
+            self.assertIn("vast", failed)
+            self.assertEqual(failed["vast"]["outcome"], "environment")
+            self.assertIn("could not list instances", failed["vast"]["summary"])
+        finally:
+            fake_vast.STATE.listing_gone = False
+            d.stop()
+            server.shutdown()
+
 
 # ----------------------------------------------------------------------------------------------
 # templates, input archives and bundles

@@ -104,7 +104,7 @@ def _handle(spec, ctx, emit, Cancelled, EnvironmentProblem, ParamError, QuoteCha
         if result is not None and not isinstance(result, dict):
             raise TypeError(f"handler returned {type(result).__name__}; it must return a dict or None")
         emit({"kind": "done", "ts": time.time(), "outcome": ctx.outcome, "summary": ctx.summary_text,
-              "data": result or {}, "seconds": round(time.time() - started, 3)})
+              "data": result or {}, "reasons": ctx.reasons, "seconds": round(time.time() - started, 3)})
         return 0
     except QuoteChanged as changed:
         emit({"kind": "requote", "ts": time.time(), "quote": changed.quote, "reason": changed.reason})
@@ -121,7 +121,8 @@ def _handle(spec, ctx, emit, Cancelled, EnvironmentProblem, ParamError, QuoteCha
         emit({"kind": "done", "ts": time.time(), "outcome": "usage", "summary": str(error), "data": {}})
         return 0
     except EnvironmentProblem as error:
-        emit({"kind": "done", "ts": time.time(), "outcome": "environment", "summary": str(error), "data": {}})
+        emit({"kind": "done", "ts": time.time(), "outcome": "environment", "summary": str(error), "data": {},
+              "reasons": ctx.reasons})
         return 0
     except BaseException as error:  # noqa: BLE001 - every failure becomes an envelope
         sys.stderr.write(traceback.format_exc())

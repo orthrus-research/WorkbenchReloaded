@@ -330,6 +330,9 @@ def _failing_tails(ctx: Context, jobs: dict):
                 except OSError:
                     continue
                 ctx.log.warning(f"{name} / {step.get('name')} exited {step.get('exitCode')}:\n" + "\n".join(lines))
+                ctx.reason("step", f"{name} / {step.get('name')}",
+                           f"exited {step.get('exitCode')}: " + "\n".join(lines[-12:]),
+                           f"read the step log: {ctx.host_path(step['log'])}")
 
 
 # ---------------------------------------------------------------------------------------------
