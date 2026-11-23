@@ -59,7 +59,7 @@ beside = { Engine = { repo = "Engine", commit = "e4b8a1c0..." } }   # checkouts 
 An input with none of the recipe keys is made by hand and only checked (its pin, when it has one). A recipe needs
 `repo`, `commit` and `artifacts`, and makes a `.tar`. `vast.lab-inputs template=<name> --out <folder>` builds
 every input with a recipe (or those named in `inputs=`): a shared clone of the repository at the commit (the
-checkout is never written, as with `runs.at-commit` and `toolchain.rebuild`), the steps (`{python}` is Workbench's
+checkout is never written, as with `runs.at-commit`), the steps (`{python}` is Workbench's
 interpreter, `{tree}` the clean tree; each gets `WB_PIN_CACHE`), then a tar of the matched files whose bytes depend
 only on their paths, modes and contents and on the commit: sorted entries, no folder entries, the commit's time,
 owner 0, and the mode git records (a file the steps made is 0755 when executable, else 0644). Links are refused.
@@ -76,7 +76,7 @@ its digest, the full commit and its tree, each step with its exit code, every fi
 archive's SHA-256, and the pin it was checked against. An archive that is not its pin is not kept. A step that
 fails, a recipe whose globs match nothing, and a commit the checkout lacks are findings.
 
-**The pin cache.** `toolchain.rebuild` and `ci` share a folder of files named by their SHA-256: `WB_PIN_CACHE`, else
+**The pin cache.** `ci` and `vast.lab-inputs` share a folder of files named by their SHA-256: `WB_PIN_CACHE`, else
 `[modules.toolchain] pin_cache`, else `<state>/cache/pins`. `vast.lab-inputs` reads it first and fills it after: an
 archive it holds under the input's pin, or under the digest an earlier build of the same recipe made (receipts are
 kept by recipe in `<state>/vast/lab-inputs`), is taken from it instead of being built again.

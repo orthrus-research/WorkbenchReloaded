@@ -50,8 +50,8 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 
 | Module | Kind of operation | Commands |
 |---|---|---|
-| `toolchain` | JDKs, pinned inputs, pinned rebuilds, dependency repair, artifact rescue | `jdk`, `pins`, `rebuild`, `patch`, `repo-add`, `repo-list`, `repo-verify`, `repo-init`, `gradle-home` |
-| `build` | builds and their provenance | `receipt`, `freeze`, `stage`, `archive` |
+| `toolchain` | JDKs, pinned inputs, dependency repair, artifact rescue | `jdk`, `pins`, `patch`, `repo-add`, `repo-list`, `repo-verify`, `repo-init`, `gradle-home` |
+| `build` | builds and their provenance | `receipt`, `archive` |
 | `jar` | static analysis of compiled mods | `audit`, `survey`, `index`, `references`, `hook-targets`, `diff` |
 | `mixin` | Mixin and patches: configurations and application verified without the game | `remap-proof`, `apply`, `doctor` |
 | `probe` | probes and harnesses: JVM runs without the game | `jdk-matrix`, `api-consumer` |
@@ -67,7 +67,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 | `profile` | profiling and diagnostics of Java game processes and the GPU they run on | `jfr`, `attribute`, `memory`, `settings`, `gpu-sample`, `gpu-report` |
 | `ledger` | results and evidence | `query`, `runs`, `findings`, `show`, `costs`, `calls`, `add-run`, `add-finding`, `supersede`, `link-run`, `add-machine`, `prune`, `import`, `import-ci`, `import-results`, `import-json`, `parse-log` |
 | `vast` | rented machines | `offers`, `market`, `charges`, `instances`, `destroy`, `keys`, `rent`, `probe`, `bundle-check`, `bundle`, `lab-inputs` |
-| `ci` | project jobs, push gates, commit hygiene, Python lanes | `run`, `gate`, `status`, `hook`, `actions`, `scrub`, `matrix` |
+| `ci` | project jobs, push gates, commit hygiene, Python lanes, and the Store of what CI built | `run`, `gate`, `status`, `hook`, `actions`, `scrub`, `matrix`, `store-verify`, `store-export`, `store-import` |
 | `release` | release and publishing: GitHub releases, Modrinth, CurseForge, Maven | `check`, `publish`, `status` |
 | `plan` | declarative plans of commands | `check`, `run` |
 | `tools` | the engine of the former standalone tools, behind toolchain, build, jar, mixin, probe, source, runs and ci | — |

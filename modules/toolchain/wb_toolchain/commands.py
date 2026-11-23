@@ -1,4 +1,4 @@
-"""toolchain: repairing a dependency's JAR without forking it, and rebuilding a pinned dependency from its source.
+"""toolchain: repairing a dependency's JAR without forking it.
 
 ``patch`` rebuilds the classes named from sources with ``javac --release N`` (N defaults to the bytecode level of the
 classes it replaces) against the JAR itself and any classpath given, and writes a copy of the JAR in which only those
@@ -7,13 +7,6 @@ JAR's expected bytes, a signed JAR is refused (its signature would no longer hol
 exactly the classes named. Beside ``<name>`` go ``<name>.sha256`` and the receipt ``<stem>.json`` (``wb.patch.v1``):
 the input's and output's digests, each replaced entry before and after, the sources, the classpath and the javac.
 With ``expect``, any other output bytes are a finding (the output is kept, to requalify).
-
-``rebuild`` builds a dependency at its pinned commit in a throwaway clean tree, a shared clone of its checkout (as
-``runs.at-commit`` does; the checkout is never written), by a recipe: steps, the JDK they get as ``JAVA_HOME``, and
-the artifact they make. The artifact is kept only when it is the pinned SHA-256. A step may name ``{python}``
-(Workbench's interpreter) and ``{tree}`` (the clean tree). The pin cache, a folder of files named by their SHA-256
-(``WB_PIN_CACHE``, else ``[modules.toolchain] pin_cache``, else ``<state>/cache/pins``), is read before building and
-filled after, so each pinned file is built once per machine; the steps get ``WB_PIN_CACHE`` too.
 """
 
 from __future__ import annotations
@@ -22,10 +15,8 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
 import struct
-import sys
 import zipfile
 from pathlib import Path
 
@@ -225,113 +216,6 @@ def patch(ctx: Context, jar: str, sha256: str, sources: str, classes: list, clas
 # ---------------------------------------------------------------------------------------------
 # rebuild
 
-def pin_cache(ctx: Context) -> Path:
-    """The folder of pinned files by SHA-256 this machine shares: ``WB_PIN_CACHE``, else the module's ``pin_cache``,
-    else the one ci gives its jobs by default."""
-    value = os.environ.get("WB_PIN_CACHE") or ctx.config.get("pin_cache")
-    if value:
-        return Path(value)
-    return Path(os.environ.get("WB_STATE_DIR") or "/var/lib/wb") / "cache" / "pins"
-
-
-def _from_cache(cache: Path, digest: str, target: Path) -> bool:
-    stored = cache / digest
-    if not stored.is_file() or sha256_file(stored) != digest:
-        return False
-    copy_verified(stored, target, digest)
-    return True
-
-
-def _to_cache(cache: Path, path: Path, digest: str) -> None:
-    stored = cache / digest
-    if stored.is_file() and sha256_file(stored) == digest:
-        return
-    copy_verified(path, stored, digest)  # new, or in place of a damaged entry
-
-
-def _split(step: str, replacements: dict[str, str]) -> list[str]:
-    args = shlex.split(step, posix=sys.platform != "win32")
-    if sys.platform == "win32":  # non-POSIX splitting keeps the quotes around a token
-        args = [a[1:-1] if len(a) > 1 and a[0] == a[-1] and a[0] in "\"'" else a for a in args]
-    for key, value in replacements.items():
-        args = [a.replace(key, value) for a in args]
-    return args
-
-
-def _java_env(ctx: Context, major: str) -> dict:
-    env = {f"JAVA_HOME_{key}_X64": home for key, home in (getattr(ctx, "_jdks", {}) or {}).items() if key.isdigit()}
-    if major:
-        home = ctx.jdk(major)
-        env["JAVA_HOME"] = str(home)
-        env["PATH"] = os.pathsep.join([str(home / "bin"), os.environ.get("PATH", "")])
-    return env
-
-
-def rebuild(ctx: Context, repo: str, commit: str, steps: list, artifact: str, sha256: str, jdk: str, name: str,
-            env: dict, cached: bool, keep: bool):
-    pattern = artifact.replace("\\", "/")
-    if not pattern or pattern.startswith("/") or ":" in pattern or ".." in pattern.split("/"):
-        raise ParamError(f"artifact {artifact!r} must be a path relative to the tree")
-    leaf = pattern.rsplit("/", 1)[-1]
-    if not name and any(c in leaf for c in "*?["):
-        raise ParamError(f"artifact {artifact!r} has wildcards in its file name: give name= to keep it under")
-    target = ctx.out / _output_name(name, leaf)
-    cache = pin_cache(ctx)
-    result = {"commit": commit, "tree": None, "sha256": sha256, "cached": False, "artifact": None, "steps": []}
-    if cached and _from_cache(cache, sha256, target):
-        write_sidecar(target, sha256)
-        ctx.output(target.name, target)
-        ctx.summary(f"{target.name} {sha256[:12]} from the pin cache, not rebuilt")
-        return {**result, "cached": True, "artifact": ctx.host_path(target)}
-    if not steps:
-        raise ParamError("steps: the recipe names no build step")
-    tree = ctx.work / "tree"
-    ctx.progress("clone", msg=f"{commit[:12]} from {ctx.host_path(repo)}")
-    try:
-        sha, tree_hash = checkouts.clone_at(ctx, Path(repo), commit, tree)
-        result.update(commit=sha, tree=tree_hash)
-        run_env = {**_java_env(ctx, jdk), "WB_PIN_CACHE": str(cache), **{str(k): str(v) for k, v in env.items()}}
-        replacements = {"{python}": sys.executable, "{tree}": str(tree)}
-        for index, step in enumerate(steps, start=1):
-            ctx.check_cancel()
-            ctx.progress(f"step {index}", msg=step)
-            try:
-                done = ctx.run(_split(step, replacements), cwd=tree, env=run_env)
-            except OSError as error:
-                raise EnvironmentProblem(f"step {index} ({step}) could not start: {error}") from None
-            log = ctx.out / f"step-{index}.log"
-            log.write_text(done.stdout, encoding="utf-8")
-            ctx.output(f"step-{index}", log)
-            result["steps"].append({"step": step, "exit": done.returncode})
-            if done.returncode != 0:
-                ctx.finding(f"step {index} ({step}) exited {done.returncode} at {sha[:12]}; nothing was kept")
-                return result
-        matches = sorted(p for p in tree.glob(pattern) if p.is_file())
-        if len(matches) != 1:
-            found = ", ".join(p.relative_to(tree).as_posix() for p in matches[:3]) or "none"
-            ctx.finding(f"the build at {sha[:12]} made {len(matches)} file(s) matching {artifact} ({found}), "
-                        "not one; nothing was kept")
-            return result
-        made = sha256_file(matches[0])
-        if made != sha256:
-            ctx.finding(f"{matches[0].relative_to(tree).as_posix()} builds at {sha[:12]} to SHA-256 {made[:12]}, "
-                        f"not the pinned {sha256[:12]}; nothing was kept")
-            return {**result, "sha256": made}
-        copy_verified(matches[0], target, made)
-        write_sidecar(target, made)
-        try:
-            _to_cache(cache, target, made)
-        except OSError as error:
-            ctx.log.warning(f"could not keep {made[:12]} in the pin cache {cache}: {error}")
-    finally:
-        if not keep:
-            shutil.rmtree(tree, ignore_errors=True)
-    ctx.output(target.name, target)
-    ctx.summary(f"{target.name}: rebuilt at {sha[:12]}, the pinned SHA-256 {made[:12]}")
-    return {**result, "artifact": ctx.host_path(target), "kept": ctx.host_path(tree) if keep else None}
-
-
-# -- toolchain.gradle-home --------------------------------------------------------------------------
 def gradle_home(ctx: Context, gradle_home=None, write: bool = False, auto_detect: bool = False,
                 auto_download: bool = False):
     """Write (or, by default, show) the block of a Gradle home's gradle.properties that lists this machine's JDKs:

@@ -1,7 +1,7 @@
 """Lab inputs (``vast.lab-inputs``): the archives a template's inputs name, built from pinned commits.
 
 An input with a recipe is built in a throwaway clean tree: a shared clone of its repository at the pinned commit, so
-the checkout is only read (as ``runs.at-commit`` and ``toolchain.rebuild`` do), where the recipe's steps run in
+the checkout is only read (as ``runs.at-commit`` does), where the recipe's steps run in
 order. A recipe's ``beside`` checkouts are clean trees too, each at its own pinned commit in the folder next to the
 tree it names (``../Engine``), for steps that read a sibling checkout the way a project's own tools expect. A step
 may name ``{python}`` (Workbench's interpreter), ``{tree}`` (the clean tree) and ``{beside.<name>}``; it gets every JDK as
@@ -15,7 +15,7 @@ Beside ``<name>`` go ``<name>.sha256`` and the receipt ``<name>.receipt.json`` (
 its digest, the commit and tree, each step and its exit code, every file's size, mode and SHA-256, the archive's
 SHA-256 and the pin it was checked against. An archive that is not its pinned SHA-256 is not kept.
 
-The pin cache ``toolchain.rebuild`` and ``ci`` share, a folder of files named by their SHA-256 (``WB_PIN_CACHE``,
+The pin cache ``ci`` fills, a folder of files named by their SHA-256 (``WB_PIN_CACHE``,
 else ``[modules.toolchain] pin_cache``, else ``<state>/cache/pins``), is read first and filled after: an archive the
 cache holds under its pinned SHA-256, or under the digest an earlier build of the same recipe made (the receipts of
 builds are kept by recipe in ``<state>/vast/lab-inputs``), is taken from it instead of being built again.
@@ -48,7 +48,7 @@ LINK = 0o120000  # the mode git records for a link
 # the pin cache
 
 def pin_cache(ctx: Context) -> Path:
-    """The folder of pinned files by SHA-256 that ``toolchain.rebuild`` and ``ci`` share."""
+    """The folder of pinned files by SHA-256 that ``ci`` fills."""
     value = os.environ.get("WB_PIN_CACHE") or _configured_pin_cache(ctx)
     if value:
         return Path(value)

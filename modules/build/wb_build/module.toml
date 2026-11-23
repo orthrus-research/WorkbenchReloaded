@@ -1,7 +1,7 @@
 [module]
 name = "build"
 version = "0.1.0"
-summary = "Builds with receipts, freezes, cross-project staging and reproducible archives."
+summary = "Builds with receipts and reproducible archives."
 
 [[command]]
 name = "receipt"
@@ -10,33 +10,6 @@ handler = "wb_tools.adapter:run_tool"
 aliases = ["tools.receipt"]
 params.argv = { type = "list", items = "string", default = [], summary = "the tool's own arguments; absolute host paths are translated" }
 params.cwd = { type = "path.in", optional = true, digest = "git", summary = "run in this folder (a project checkout)" }
-
-[[command]]
-name = "freeze"
-summary = "Publish built artifacts under an immutable label (<name>-<commit>[-dirty-<hash>]) in a store, a .sha256 beside each, merging the store's manifest under the lock every freeze shares."
-handler = "wb_build.commands:freeze"
-resources = { cpu = 0.5 }
-params.artifacts = { type = "list", items = "path.in", summary = "the built files; each keeps its file name in the label" }
-params.store = { type = "path.out", summary = "the store: a folder per label and manifest.json (see wb_build/commands.py)" }
-params.name = { type = "string", default = "", summary = "the label's leading part: what was built" }
-params.label = { type = "string", default = "{name}-{commit:.12}{dirty}", summary = "the label: {name}, {commit} (40 hex; {commit:.12} the first 12), {hash} (the artifacts' digest), {dirty} (empty, or -dirty- and 12 hex of hash); no placeholders: that label as is" }
-params.repo = { type = "path.in", optional = true, digest = "git", summary = "the checkout built: its HEAD, and whether it has uncommitted changes" }
-params.commit = { type = "string", optional = true, pattern = "^[0-9a-fA-F]{7,64}$", summary = "the commit built, instead of repo" }
-params.dirty = { type = "bool", default = false, summary = "with commit: the tree built had uncommitted changes" }
-result.label = { type = "string" }
-result.artifacts = { type = "list" }
-
-[[command]]
-name = "stage"
-summary = "Stage another project's built artifacts as inputs: its checkout clean at the lock's commit and tree, every artifact at its SHA-256, all placed or none."
-handler = "wb_build.commands:stage"
-requires = { binary = ["git"] }
-resources = { cpu = 0.5 }
-params.lock = { type = "path.in", summary = "the lock (JSON): repository, commit, tree, artifacts [{artifact, sha256, destination}] (see wb_build/commands.py)" }
-params.checkout = { type = "path.in", digest = "git", summary = "the other project's checkout, where it built the artifacts (only read)" }
-params.into = { type = "path.out", optional = true, summary = "the folder the destinations are relative to (the consuming project); default: the out folder" }
-result.commit = { type = "string" }
-result.staged = { type = "list" }
 
 [[command]]
 name = "archive"

@@ -1,10 +1,10 @@
 [module]
 name = "toolchain"
 version = "0.1.0"
-summary = "JDKs, pinned inputs, pinned rebuilds, dependency repair and the rescue repository."
+summary = "JDKs, pinned inputs, dependency repair and the rescue repository."
 
 [config]
-pin_cache = { type = "string", default = "", summary = "the folder of pinned files by SHA-256 rebuild reads first and fills after, when WB_PIN_CACHE is unset; inside an rw root, given to Workbench's user at container start; empty: <state>/cache/pins, as ci" }
+pin_cache = { type = "string", default = "", summary = "the folder of pinned files by SHA-256 vast.lab-inputs reads first and fills after, when WB_PIN_CACHE is unset; inside an rw root, given to Workbench's user at container start; empty: <state>/cache/pins, as ci" }
 repository = { type = "string", default = "", summary = "the rescue repository, a Maven layout folder of coordinates public repositories no longer serve: a host path under a configured root (the out root), so builds on the host can read it too, or a folder only the container has; empty: <state>/toolchain/repository" }
 substitutions = { type = "object", default = {}, summary = "vanished coordinates and the coordinates every build gets instead, \"group:artifact:version\" = \"group:artifact:version\"; a plugin marker's coordinates (<id>:<id>.gradle.plugin:<version>) name the plugin request id '<id>' version '<version>' (see wb_toolchain/repository.py)" }
 
@@ -42,27 +42,6 @@ params.name = { type = "string", default = "", summary = "the repaired JAR's fil
 params.expect = { type = "sha256", optional = true, summary = "the repaired JAR's qualified SHA-256: other bytes are a finding" }
 result.sha256 = { type = "string" }
 result.replaced = { type = "list" }
-
-[[command]]
-name = "rebuild"
-summary = "Rebuild a pinned dependency at its commit in a throwaway clean tree by a recipe; keep the artifact only if it is the pinned SHA-256, reading the pin cache first and filling it after."
-handler = "wb_toolchain.commands:rebuild"
-requires = { binary = ["git"] }
-resources = { cpu = 2, mem_gb = 4 }
-timeout = "2h"
-params.repo = { type = "path.in", digest = "git", summary = "the dependency's checkout (only read: the tree is a shared clone)" }
-params.commit = { type = "string", pattern = "^[0-9a-fA-F]{7,64}$", summary = "the pinned commit" }
-params.steps = { type = "list", items = "string", default = [], summary = "the recipe's build commands, in order in the tree ({python}, {tree}); the first failure stops" }
-params.artifact = { type = "string", summary = "the file the steps make, relative to the tree (a glob matching one file)" }
-params.sha256 = { type = "sha256", summary = "the pin: other bytes are refused" }
-params.jdk = { type = "string", default = "", summary = "the JDK major the steps get as JAVA_HOME (every JDK is JAVA_HOME_<major>_X64)" }
-params.name = { type = "string", default = "", summary = "the kept file's name; default: the artifact's file name" }
-params.env = { type = "object", default = {}, summary = "more environment for the steps" }
-params.cached = { type = "bool", default = true, summary = "take the pinned file from the pin cache when it has it; false: rebuild to check the pin still reproduces" }
-params.keep = { type = "bool", default = false, summary = "keep the tree after the run" }
-result.sha256 = { type = "string" }
-result.commit = { type = "string" }
-result.cached = { type = "bool" }
 
 [[command]]
 name = "repo-add"

@@ -1,5 +1,4 @@
-"""build: freezes that never change what a label holds, staging that places a locked set whole or not at all, and
-archives whose bytes depend on the tree alone."""
+"""build: checkouts read through the roots, and archives whose bytes depend on the tree alone."""
 
 import hashlib
 import json
@@ -23,7 +22,6 @@ from harness import Daemon  # noqa: E402
 sys.path.insert(0, str(REPO / "modules" / "build"))
 from wb_build import archive as archives  # noqa: E402
 from wb_build import checkout as checkouts  # noqa: E402
-from wb_build import commands  # noqa: E402
 from wb_build.files import set_digest  # noqa: E402
 from wb_core.module import Context, EnvironmentProblem, ParamError  # noqa: E402
 
@@ -65,232 +63,6 @@ def checkout(folder: Path) -> str:
     return git(folder, "rev-parse", "HEAD")
 
 
-class Freeze(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.d = Daemon().start()
-        cls.c = cls.d.client
-        cls.repo = cls.d.data / "lib"
-        cls.commit = checkout(cls.repo)
-        cls.a = cls.repo / "build" / "libs" / "lib.jar"
-        cls.b = cls.repo / "build" / "libs" / "lib-sources.jar"
-        cls.store = cls.d.out / "store"
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.d.stop()
-
-    def freeze(self, **params):
-        return self.c.submit("build.freeze", {"store": str(self.store), **params}).result(timeout=120)
-
-    def manifest(self) -> dict:
-        return json.loads((self.store / "manifest.json").read_text(encoding="utf-8"))
-
-    def test_a_label_is_named_by_its_commit_and_never_changes(self):
-        first = self.freeze(artifacts=[str(self.a), str(self.b)], name="lib", repo=str(self.repo))
-        self.assertEqual(first.outcome, "ok", first.summary)
-        label = f"lib-{self.commit[:12]}"
-        self.assertEqual(first.data.label, label)
-        self.assertEqual([a["state"] for a in first.data.artifacts], ["frozen", "frozen"])
-        frozen = self.store / label / "lib.jar"
-        self.assertEqual(frozen.read_bytes(), b"binary one")
-        self.assertEqual(frozen.with_name("lib.jar.sha256").read_text(encoding="utf-8"),
-                         f"{sha(b'binary one')}  lib.jar\n")
-        entry = self.manifest()["labels"][label]["artifacts"]["lib.jar"]
-        self.assertEqual((entry["sha256"], entry["commit"], entry["dirty"]), (sha(b"binary one"), self.commit, False))
-        again = self.freeze(artifacts=[str(self.a), str(self.b)], name="lib", repo=str(self.repo))
-        self.assertEqual(again.outcome, "ok", again.summary)
-        self.assertEqual([a["state"] for a in again.data.artifacts], ["present", "present"])
-        self.a.write_bytes(b"binary two")  # the same commit built again, to other bytes
-        try:
-            refused = self.freeze(artifacts=[str(self.a), str(self.b)], name="lib", repo=str(self.repo))
-            self.assertEqual(refused.outcome, "finding", refused.summary)
-            self.assertIn("never changes", refused.summary)
-            self.assertEqual(refused.data.refused[0]["name"], "lib.jar")
-            self.assertEqual(frozen.read_bytes(), b"binary one")
-            self.assertEqual(self.manifest()["labels"][label]["artifacts"]["lib.jar"]["sha256"], sha(b"binary one"))
-        finally:
-            self.a.write_bytes(b"binary one")
-
-    def test_uncommitted_changes_name_the_bytes_too(self):
-        (self.repo / "src.txt").write_text("changed", encoding="utf-8")
-        try:
-            result = self.freeze(artifacts=[str(self.a)], name="lib", repo=str(self.repo))
-        finally:
-            git(self.repo, "checkout", "--", "src.txt")
-        self.assertEqual(result.outcome, "ok", result.summary)
-        together = set_digest({"lib.jar": sha(b"binary one")})
-        self.assertTrue(result.data.dirty)
-        self.assertEqual(result.data.label, f"lib-{self.commit[:12]}-dirty-{together[:12]}")
-        self.assertTrue(self.manifest()["labels"][result.data.label]["artifacts"]["lib.jar"]["dirty"])
-
-    def test_a_named_label_gathers_builds_and_a_commit_stands_in_for_the_checkout(self):
-        other = self.d.data / "other.jar"
-        other.write_bytes(b"other")
-        one = self.freeze(artifacts=[str(self.a)], label="candidate-01", commit=self.commit)
-        two = self.freeze(artifacts=[str(other)], label="candidate-01", commit="ab" * 20, dirty=True)
-        self.assertEqual((one.outcome, two.outcome), ("ok", "ok"), (one.summary, two.summary))
-        held = self.manifest()["labels"]["candidate-01"]["artifacts"]
-        self.assertEqual(sorted(held), ["lib.jar", "other.jar"])
-        self.assertEqual((held["other.jar"]["commit"], held["other.jar"]["dirty"]), ("ab" * 20, True))
-        self.assertEqual(held["lib.jar"]["commit"], self.commit)
-        unnamed = self.freeze(artifacts=[str(other)], name="x")  # the default label needs a commit
-        self.assertEqual(unnamed.outcome, "usage", unnamed.summary)
-        both = self.freeze(artifacts=[str(other)], name="x", repo=str(self.repo), commit=self.commit)
-        self.assertEqual(both.outcome, "usage", both.summary)
-        odd = self.freeze(artifacts=[str(other)], label="{name.__class__}", name="x")
-        self.assertEqual(odd.outcome, "usage", odd.summary)
-
-    def test_concurrent_freezes_keep_every_label(self):
-        root = scratch(self, "wb-freeze-")
-        store = root / "store"
-        files = []
-        for index in range(8):
-            path = root / f"part{index}.jar"
-            path.write_bytes(f"artifact {index}".encode())
-            files.append(path)
-        errors = []
-
-        def one(index):
-            try:
-                commands.freeze(context(root / f"job{index}", "build.freeze"), [str(files[index])], str(store),
-                                f"part{index}", "{name}-{commit:.12}", commit=f"{index + 1:040x}")
-            except Exception as error:  # noqa: BLE001 - reported below
-                errors.append(error)
-        threads = [threading.Thread(target=one, args=(i,)) for i in range(8)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=60)
-        self.assertEqual(errors, [])
-        labels = json.loads((store / "manifest.json").read_text(encoding="utf-8"))["labels"]
-        self.assertEqual(len(labels), 8)  # no freeze lost another's label
-        self.assertFalse([p.name for p in store.iterdir() if p.name.endswith(".part")])
-
-
-class Stage(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.d = Daemon().start()
-        cls.c = cls.d.client
-        cls.lib = cls.d.data / "lib"
-        cls.commit = checkout(cls.lib)
-        cls.tree = git(cls.lib, "rev-parse", "HEAD^{tree}")
-        cls.into = cls.d.out / "consumer"
-        cls.count = 0
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.d.stop()
-
-    def setUp(self):
-        inputs = self.into / "inputs"
-        inputs.mkdir(parents=True, exist_ok=True)
-        for name in ("lib.jar", "lib-sources.jar"):
-            (inputs / name).write_bytes(b"previous")
-
-    def lock(self, **changes) -> str:
-        data = {"repository": "https://example.invalid/lib.git", "commit": self.commit, "tree": self.tree,
-                "artifacts": [{"artifact": "build/libs/lib.jar", "sha256": sha(b"binary one"),
-                               "destination": "inputs/lib.jar"},
-                              {"artifact": "build/libs/lib-sources.jar", "sha256": sha(b"sources one"),
-                               "destination": "inputs/lib-sources.jar"}]}
-        data.update(changes)
-        Stage.count += 1
-        path = self.d.data / f"lock-{Stage.count}.json"
-        path.write_text(json.dumps(data), encoding="utf-8")
-        return str(path)
-
-    def stage(self, lock, **params):
-        return self.c.submit("build.stage", {"lock": lock, "checkout": str(self.lib), "into": str(self.into),
-                                             **params}).result(timeout=120)
-
-    def staged(self) -> list[bytes]:
-        return [(self.into / "inputs" / n).read_bytes() for n in ("lib.jar", "lib-sources.jar")]
-
-    def test_stages_the_locked_set_from_a_clean_checkout(self):
-        lock = self.lock()
-        result = self.stage(lock)
-        self.assertEqual(result.outcome, "ok", result.summary)
-        self.assertEqual([s["state"] for s in result.data.staged], ["staged", "staged"])
-        self.assertEqual(self.staged(), [b"binary one", b"sources one"])
-        again = self.stage(lock)
-        self.assertEqual([s["state"] for s in again.data.staged], ["unchanged", "unchanged"])
-        self.assertEqual(git(self.lib, "status", "--porcelain"), "")  # the checkout was only read
-
-    def test_a_checkout_that_moved_or_changed_stages_nothing(self):
-        lock = self.lock()
-        (self.lib / "src.txt").write_text("edited", encoding="utf-8")
-        try:
-            dirty = self.stage(lock)
-            self.assertEqual(dirty.outcome, "finding", dirty.summary)
-            self.assertIn("tracked modification", dirty.summary)
-            git(self.lib, "commit", "-q", "-am", "two")
-            moved = self.stage(lock)
-            self.assertEqual(moved.outcome, "finding", moved.summary)
-            self.assertIn("not the locked", moved.summary)
-        finally:
-            git(self.lib, "reset", "-q", "--hard", self.commit)
-        self.assertEqual(self.staged(), [b"previous", b"previous"])
-        wrong_tree = self.stage(self.lock(tree="0" * 40))
-        self.assertEqual(wrong_tree.outcome, "finding", wrong_tree.summary)
-
-    def test_one_changed_artifact_stages_none(self):
-        sources = self.lib / "build" / "libs" / "lib-sources.jar"
-        sources.write_bytes(b"sources two")
-        try:
-            result = self.stage(self.lock())
-        finally:
-            sources.write_bytes(b"sources one")
-        self.assertEqual(result.outcome, "finding", result.summary)
-        self.assertEqual(result.data.staged, [])
-        self.assertEqual(self.staged(), [b"previous", b"previous"])  # not even the artifact that matched
-
-    def test_locks_are_checked_and_paths_stay_inside(self):
-        escape = self.lock(artifacts=[{"artifact": "build/libs/lib.jar", "sha256": sha(b"binary one"),
-                                       "destination": "../outside.jar"}])
-        self.assertEqual(self.stage(escape).outcome, "usage")
-        self.assertFalse((self.d.out / "outside.jar").exists())
-        outside = self.lock(artifacts=[{"artifact": "../lib.lock.json", "sha256": "0" * 64, "destination": "x"}])
-        self.assertEqual(self.stage(outside).outcome, "usage")
-        twice = self.lock(artifacts=[{"artifact": "build/libs/lib.jar", "sha256": sha(b"binary one"),
-                                      "destination": "inputs/lib.jar"}] * 2)
-        self.assertEqual(self.stage(twice).outcome, "usage")
-        typo = self.lock(comit=self.commit)
-        self.assertEqual(self.stage(typo).outcome, "usage")
-        short = self.lock(commit=self.commit[:12])
-        self.assertEqual(self.stage(short).outcome, "usage")
-        self.assertEqual(self.staged(), [b"previous", b"previous"])
-
-    def test_a_failed_replacement_restores_every_destination(self):
-        root = scratch(self, "wb-stage-")
-        lib = root / "lib"
-        commit = checkout(lib)
-        into = root / "project"
-        (into / "inputs").mkdir(parents=True)
-        for name in ("lib.jar", "lib-sources.jar"):
-            (into / "inputs" / name).write_bytes(b"previous")
-        lock = root / "lock.json"
-        lock.write_text(json.dumps({"commit": commit, "artifacts": [
-            {"artifact": "build/libs/lib.jar", "sha256": sha(b"binary one"), "destination": "inputs/lib.jar"},
-            {"artifact": "build/libs/lib.jar", "sha256": sha(b"binary one"), "destination": "fresh/lib.jar"},
-            {"artifact": "build/libs/lib-sources.jar", "sha256": sha(b"sources one"),
-             "destination": "inputs/lib-sources.jar"}]}), encoding="utf-8")
-        real = os.replace
-
-        def held(source, destination):
-            if Path(destination).name == "lib-sources.jar" and str(source).endswith(".stage"):
-                raise PermissionError("the destination is open in another program")
-            return real(source, destination)
-        with mock.patch.object(os, "replace", held), self.assertRaises(EnvironmentProblem) as raised:
-            commands.stage(context(root / "job", "build.stage"), str(lock), str(lib), str(into))
-        self.assertIn("previous bytes", str(raised.exception))
-        self.assertEqual((into / "inputs" / "lib.jar").read_bytes(), b"previous")
-        self.assertEqual((into / "inputs" / "lib-sources.jar").read_bytes(), b"previous")
-        self.assertFalse((into / "fresh").exists())  # a destination that was new is gone again, with its folder
-        self.assertEqual(sorted(p.name for p in into.rglob("*") if p.is_file()), ["lib-sources.jar", "lib.jar"])
-
-
 class Checkouts(unittest.TestCase):
     def test_a_linked_worktree_named_by_a_host_path_is_read_through_the_roots(self):
         root = scratch(self, "wb-checkout-")
@@ -302,7 +74,7 @@ class Checkouts(unittest.TestCase):
         relative = Path(named).resolve().relative_to(root.resolve()).as_posix()
         (linked / ".git").unlink()  # git may have hidden it, and Windows will not overwrite a hidden file
         (linked / ".git").write_text(f"gitdir: /host/work/{relative}\n", encoding="utf-8")  # as another machine wrote it
-        ctx = Context({"job": "direct", "command": "build.stage", "module": "build", "work": str(root / "job" / "work"),
+        ctx = Context({"job": "direct", "command": "build.receipt", "module": "build", "work": str(root / "job" / "work"),
                        "out": str(root / "job" / "out"),
                        "roots": [{"name": "work", "host": "/host/work", "container": str(root), "mode": "ro"}]},
                       lambda event: None)
