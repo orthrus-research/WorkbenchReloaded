@@ -636,7 +636,9 @@ def ensure(ctx: Context, name: str, args: list, world: str, replace: bool, allow
                 remove_tree(folder / temporary)
                 raise EnvironmentProblem(f"prepare exited {done.returncode}")
             _place_packs(ctx, folder / temporary, packs)  # in the template, so every instance of the recipe has them
-            store.adopt_template(folder / temporary, recipe, inputs)
+            # The launcher writes the folder as it sees it: through its lab link when that is how it reaches it.
+            seen = _launcher(ctx) / _profile(ctx)["instances"] / temporary
+            store.adopt_template(folder / temporary, recipe, inputs, [seen])
             prepared = True
         ctx.progress("materialize", msg=f"{name} from recipe {recipe}")
         sizes = store.materialize(recipe, destination)

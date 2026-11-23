@@ -189,8 +189,8 @@ def materialize(ctx: Context, repo: Path, commit: str, launcher_profile: dict | 
                 done = _git(["-C", str(repo), "-c", "advice.detachedHead=false", "worktree", "add", "--detach",
                              "--quiet", str(target), commit], check=False)
                 if done.returncode != 0:
-                    raise EnvironmentProblem(f"git worktree add {target} {commit[:12]} failed: "
-                                             f"{(done.stderr or done.stdout).strip()[-300:]}")
+                    raise EnvironmentProblem(f"git worktree add {target} {commit[:12]} exited {done.returncode}: "
+                                             f"{(done.stderr or done.stdout).strip()[-300:] or 'it said nothing'}")
                 if launcher_profile is not None:
                     _link_lab(ctx, repo, target, launcher_profile)
     record.write_text(json.dumps({"repo": str(repo), "commit": commit, "used": time.time(), "job": ctx.job}),

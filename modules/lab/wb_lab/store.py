@@ -119,9 +119,10 @@ class Store:
         folder = self.templates / recipe
         return folder if (folder / "template.json").is_file() else None
 
-    def adopt_template(self, prepared: Path, recipe: str, inputs: dict) -> Path:
+    def adopt_template(self, prepared: Path, recipe: str, inputs: dict, seen_as: list[Path] = ()) -> Path:
         """Moves a freshly prepared instance into the store as the recipe's template, interning its read-only
-        files. ``prepared`` must be on the store's volume (a rename, not a copy)."""
+        files. ``prepared`` must be on the store's volume (a rename, not a copy). ``seen_as`` are other spellings of
+        its folder the launcher may have written into it (through a link, as a snapshot's lab folders are)."""
         folder = self.templates / recipe
         if folder.exists():
             raise StoreError(f"template {recipe} already exists")
@@ -133,6 +134,7 @@ class Store:
             if self.layout.linkable(rel):
                 links[rel] = self.intern(path)
         manifest = {"recipe": recipe, "inputs": inputs, "prepared_as": str(prepared), "name": prepared.name,
+                    "seen_as": [str(p) for p in seen_as if str(p) != str(prepared)],
                     "created": time.time(), "links": links}
         (folder / "template.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
         return folder
@@ -163,7 +165,8 @@ class Store:
                 shutil.copyfile(path, target)
                 copied += path.stat().st_size
         for rel in self.layout.rewrite:
-            rewrite_paths(destination / rel, old_root, destination, old_name, destination.name)
+            for root in [old_root, *map(Path, manifest.get("seen_as") or [])]:
+                rewrite_paths(destination / rel, root, destination, old_name, destination.name)
         record = {"schema": 1, "recipe": recipe, "template": str(folder), "created": time.time(),
                   "links": manifest["links"], "world": None}
         (destination / MARKER).write_text(json.dumps(record, indent=1), encoding="utf-8")
