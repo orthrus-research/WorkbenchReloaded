@@ -269,5 +269,25 @@ class Land(unittest.TestCase):
         self.assertNotIn("lib:adapter", self.set_json()["holds"])
 
 
+    def test_z_a_landing_made_elsewhere_is_built_on(self):
+        remote = self.root / "remotes" / "set.git"
+        git(self.root, "clone", "-q", "--bare", str(self.home), str(remote))
+        git(self.home, "remote", "add", "origin", str(remote))
+        elsewhere = self.root / "elsewhere"  # another machine's landing, pushed to the Set's remote
+        git(self.root, "clone", "-q", str(remote), str(elsewhere))
+        data = json.loads((elsewhere / "set.json").read_text(encoding="utf-8"))
+        data["doctor"] = {"exempt": ["evidence/**"]}
+        (elsewhere / "set.json").write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+        git(elsewhere, "commit", "-q", "-am", "elsewhere")
+        git(elsewhere, "push", "-q", "origin", "main")
+        commit = advance(self.lib, "v6")
+        result = self.lander().land({"lib": "HEAD"})
+        self.assertEqual(result["state"], "landed", self.said)
+        self.assertEqual(git(remote, "rev-parse", "main"), git(self.home, "rev-parse", "main"))  # pushed: the commit point
+        landed = json.loads(git(remote, "show", "main:set.json"))
+        self.assertEqual((landed["projects"]["lib"]["commit"], landed["doctor"]), (commit, {"exempt": ["evidence/**"]}))
+        self.assertTrue(any("moved elsewhere" in s for s in self.said), self.said)
+
+
 if __name__ == "__main__":
     unittest.main()

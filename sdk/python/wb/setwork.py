@@ -121,6 +121,7 @@ def sync(workspace: Workspace, folder: Path) -> int:
     from .cli import _client
     from .land import Lander
     lander = Lander(workspace, _client(), say=_say)
+    lander.fetch()
     lander.reconcile()
     revision, text = lander.head()
     lander.export(revision, text, head=True)

@@ -57,6 +57,31 @@ class Lander:
         self.sets = self.store.parent / "sets"
 
     # -- the Set ------------------------------------------------------------------------------------------------
+    def fetch(self):
+        """Brings the bare home's main to the Set's remote: a landing made elsewhere is built on, never raced. A
+        home that has commits the remote lacks, or that diverged from it, is refused with what to do."""
+        if not self._remote():
+            return
+        done = subprocess.run(["git", "fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+                              cwd=self.home, capture_output=True, text=True)
+        if done.returncode != 0:
+            raise WorkspaceError(f"cannot fetch the Set's remote, so nothing can land: {done.stderr.strip()[-300:]}")
+        local = git(self.home, "rev-parse", "--verify", "refs/heads/main")
+        remote = git(self.home, "rev-parse", "--verify", "refs/remotes/origin/main")
+        if local == remote:
+            return
+        def ancestor(a, b):
+            return subprocess.run(["git", "merge-base", "--is-ancestor", a, b], cwd=self.home).returncode == 0
+        if ancestor(local, remote):
+            git(self.home, "update-ref", "refs/heads/main", remote, local)
+            self.say(f"the Set moved elsewhere: {local[:12]} -> {remote[:12]}")
+        elif ancestor(remote, local):
+            raise WorkspaceError(f"the Set's home has commits its remote lacks ({remote[:12]}..{local[:12]}): a "
+                                 "landing stopped before its push; push them with git -C <home> push origin main")
+        else:
+            raise WorkspaceError(f"the Set's home ({local[:12]}) and its remote ({remote[:12]}) have diverged; "
+                                 "nothing lands until one of them is chosen")
+
     def head(self) -> tuple[str, str]:
         from wb_core import setfile
         revision = git(self.home, "rev-parse", "--verify", "refs/heads/main")
@@ -122,6 +147,7 @@ class Lander:
              deadline: float = 600, dry: bool = False, stop_after: str | None = None, holds: dict | None = None,
              drop_holds: list | None = None) -> dict:
         from wb_core import setfile
+        self.fetch()
         self.reconcile()
         revision, text = self.head()
         current = setfile.parse(text)
