@@ -480,7 +480,8 @@ def _store_artifacts(ctx: Context, project: str, sha: str, trees: dict, records:
             except (OSError, store.StoreError) as error:
                 ctx.reason("store", file_name, f"not kept: {error}", None)
                 continue
-            kept[file_name] = {"sha256": item["sha256"], "bytes": item.get("bytes"), "job": name, "run": run_id}
+            kept[file_name] = {"sha256": item["sha256"], "bytes": item.get("bytes"), "job": name, "run": run_id,
+                               "from": item.get("from")}  # where in the tree the build left it
     if kept:
         store.record(root, project, tree, sha, kept)
         ctx.log.info(f"kept {len(kept)} artifact(s) of {project} tree {tree[:12]} in the Store: "

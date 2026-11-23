@@ -79,9 +79,11 @@ def _member(ctx: Context, name: str, wanted: dict, base: dict) -> tuple[dict, st
     kept = store.find(commands._store_root(ctx), name, tree) or {"artifacts": {}}
     files = {}
     for artifact, spec in (config.data.get("artifacts") or {}).items():
-        pattern = Path(spec["file"]).name
+        # Matched on the path the build left the file at, where the Store knows it; by name for older records.
         matched = [f for f, item in kept["artifacts"].items()
-                   if item.get("job") == spec["check"] and fnmatch.fnmatch(f, pattern)]
+                   if item.get("job") == spec["check"] and (fnmatch.fnmatch(item["from"].replace("\\", "/"), spec["file"])
+                                                           if item.get("from") else
+                                                           fnmatch.fnmatch(f, Path(spec["file"]).name))]
         if len(matched) != 1:
             raise EnvironmentProblem(f"{name} {sha[:12]}: the Store holds {len(matched)} file(s) of check "
                                      f"{spec['check']} matching {spec['file']} ({', '.join(matched) or 'none'}); "
