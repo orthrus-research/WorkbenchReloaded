@@ -236,7 +236,8 @@ def finish(workspace: Workspace) -> int:
                  + (f"; on the remote: git -C {repo} push origin --delete {branch}" if pushed else ""))
         else:
             _say(f"{member.name}: branch {branch} has commits origin/{base} lacks, so it was kept")
-    if not kept and not any(folder.iterdir()):
+    if not kept and not [p for p in folder.iterdir() if p.name != ".set"]:
+        (folder / ".set").unlink(missing_ok=True)  # the Work's revision goes with its last member
         try:
             folder.rmdir()
             _say(f"removed {folder}")
