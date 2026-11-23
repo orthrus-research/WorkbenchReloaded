@@ -112,3 +112,74 @@ def seed(store: Path, source: Path, label: str, origin: str, reason: str, pins: 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(note, indent=1), encoding="utf-8")
     return note
+
+
+def _write_json(path: Path, value: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    part = path.with_name(path.name + f".{os.getpid()}.part")
+    part.write_text(json.dumps(value, indent=1), encoding="utf-8")
+    part.replace(path)
+
+
+def entries(store: Path, project: str | None = None) -> list[dict]:
+    """Every index entry, or one project's, oldest tree first by when it was recorded."""
+    folder = store / "index"
+    paths = sorted((folder / project).glob("*.json") if project else folder.glob("*/*.json"),
+                   key=lambda p: p.stat().st_mtime)
+    found = []
+    for path in paths:
+        try:
+            found.append(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            continue
+    return found
+
+
+def note_verified(store: Path, project: str, tree: str, verdict: dict) -> dict:
+    """Records a cold rebuild's verdict on ``project`` at ``tree``: {at, job, reproduced, differ: [...]}."""
+    path = store / "index" / project / f"{tree}.json"
+    current = json.loads(path.read_text(encoding="utf-8"))
+    current["verified"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), **verdict}
+    _write_json(path, current)
+    return current
+
+
+def export(store: Path, target: Path, project: str | None = None, trees: set[str] | None = None) -> dict:
+    """Copies index entries (one project's, or only ``trees`` of it) with the files they name and every seeded
+    note into ``target``, laid out as a Store, so ``import_from`` can take them on another machine."""
+    files = notes = 0
+    chosen = [e for e in entries(store, project) if not trees or e["tree"] in trees]
+    for entry in chosen:
+        for name, item in entry["artifacts"].items():
+            _write_once(path_of(store, item["sha256"], name), target / "files" / item["sha256"] / name,
+                        item["sha256"])
+            files += 1
+        _write_json(target / "index" / entry["project"] / f"{entry['tree']}.json", entry)
+    for note in sorted((store / "seeded").glob("*.json")):
+        meta = json.loads(note.read_text(encoding="utf-8"))
+        _write_once(path_of(store, meta["sha256"], meta["name"]), target / "files" / meta["sha256"] / meta["name"],
+                    meta["sha256"])
+        _write_json(target / "seeded" / note.name, meta)
+        notes += 1
+    return {"entries": len(chosen), "files": files, "seeded": notes}
+
+
+def import_from(store: Path, source: Path, pins: Path | None = None) -> dict:
+    """Takes a folder ``export`` wrote: every file re-hashed into the Store (a file that is not its SHA-256 is
+    refused), its index entries merged as ``record`` merges a build, and seeded notes this Store lacks."""
+    files = 0
+    for entry in entries(source):
+        for name, item in entry["artifacts"].items():
+            put(store, source / "files" / item["sha256"] / name, item["sha256"], pins)
+            files += 1
+        for commit in entry.get("commits") or [None]:
+            if commit:
+                record(store, entry["project"], entry["tree"], commit, entry["artifacts"])
+    notes = 0
+    for note in sorted((source / "seeded").glob("*.json")):
+        meta = json.loads(note.read_text(encoding="utf-8"))
+        put(store, source / "files" / meta["sha256"] / meta["name"], meta["sha256"], pins)
+        if not (store / "seeded" / note.name).is_file():
+            _write_json(store / "seeded" / note.name, meta)
+            notes += 1
+    return {"files": files, "seeded": notes}

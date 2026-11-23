@@ -36,6 +36,15 @@ TOOLS_SRC = Path(wb_tools.adapter.__file__).resolve().parents[1] / "src"
 GIT_SAFE = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": "*"}
 PROJECT_KEYS = {"repo", "config", "jdk", "env", "python", "workflow", "gate"}  # gate = false: pushes are only scrubbed
 REPOSITORY_SCRIPT = "workbench-repository.gradle"  # in the Gradle home's init.d: toolchain's rescue repository
+COLD_SCRIPT = "workbench-cold.gradle"  # in the Gradle home's init.d: a cold run's builds use no build cache
+COLD_INIT = b"""// Written by Workbench's ci module. A cold run (WB_COLD set) builds every task: no build cache is read or written.
+if (System.getenv("WB_COLD")) {
+    gradle.settingsEvaluated { settings ->
+        settings.buildCache.local.enabled = false
+        if (settings.buildCache.remote != null) settings.buildCache.remote.enabled = false
+    }
+}
+"""
 
 
 # ---------------------------------------------------------------------------------------------
@@ -212,6 +221,9 @@ def _gradle_home(ctx: Context) -> tuple[Path, dict]:
     lines = ["# written by Workbench's ci module", f"org.gradle.java.installations.paths={','.join(jdks)}",
              "org.gradle.java.installations.auto-detect=false", "org.gradle.java.installations.auto-download=false"]
     (home / "gradle.properties").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    cold = home / "init.d" / COLD_SCRIPT
+    if not cold.is_file() or cold.read_bytes() != COLD_INIT:
+        write_atomic(cold, COLD_INIT)
     return home, _serve_repository(ctx, home)
 
 
@@ -343,7 +355,7 @@ def _failing_tails(ctx: Context, jobs: dict):
 # commands
 
 def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_needed: bool, keep_going: bool,
-        keep: bool, dry_run: bool, checkout=None):
+        keep: bool, dry_run: bool, checkout=None, cold: bool = False):
     entry = _project(ctx, project)
     source = entry["source"]
     tree_source = Path(checkout) if checkout else source  # whose working tree commit=worktree runs
@@ -392,7 +404,7 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
         pins.mkdir(parents=True, exist_ok=True)
         gradle_home, served = _gradle_home(ctx)
         env = {**_jdk_env(ctx, major), "GRADLE_USER_HOME": str(gradle_home), "WB_PIN_CACHE": str(pins),
-               **{k: str(v) for k, v in (entry.get("env") or {}).items()}}
+               **{k: str(v) for k, v in (entry.get("env") or {}).items()}, **({"WB_COLD": "1"} if cold else {})}
         python = _python(ctx, root, [str(r) for r in entry.get("python") or []])
         targets = [*([workflow] if workflow else []), *[str(j) for j in jobs]] or [config.workflow]
         # The engine runs inside this job's reservation: the job id names its run, and its budget is what the
@@ -400,7 +412,8 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
         argv = ["run", *targets, "--run-id", ctx.job]
         if ctx.reservation.get("mem_gb"):
             argv += ["--memory", str(ctx.reservation["mem_gb"])]
-        argv += ["--if-needed"] if if_needed else []
+        # Cold: every job runs, none vouched for by an earlier pass or its input cache, and no build cache is read.
+        argv += ["--no-cache"] if cold else (["--if-needed"] if if_needed else [])
         argv += ["--keep-going"] if keep_going else []
         argv += ["--dry-run"] if dry_run else []
         ctx.progress("jobs", msg=" ".join([*targets, *argv[len(targets) + 3:]]))
@@ -468,6 +481,92 @@ def _store_artifacts(ctx: Context, project: str, sha: str, trees: dict, records:
         ctx.log.info(f"kept {len(kept)} artifact(s) of {project} tree {tree[:12]} in the Store: "
                      + ", ".join(f"{n} {k['sha256'][:12]}" for n, k in kept.items()))
     return kept
+
+
+# ---------------------------------------------------------------------------------------------
+# the Store's own commands
+
+def _store_root(ctx: Context) -> Path:
+    return _folder(ctx, "store", _state() / "store")
+
+
+def store_verify(ctx: Context, project: str, commit: str = "", again: bool = False):
+    """Rebuilds what the Store keeps for a project cold, at the commit it was built from, and records whether the
+    bytes came out the same. By default every tree not yet verified; ``commit`` picks one, ``again`` redoes them."""
+    from wb_core import artifacts as store
+    _project(ctx, project)
+    root = _store_root(ctx)
+    chosen = store.entries(root, project)
+    if commit:
+        chosen = [e for e in chosen if any(c.startswith(commit) for c in e.get("commits") or [])]
+        if not chosen:
+            raise ParamError(f"the Store keeps nothing of {project} built at {commit}")
+    elif not again:
+        chosen = [e for e in chosen if not e.get("verified")]
+    verdicts, failed = [], []
+    for entry in chosen:
+        built_at = entry["commits"][0]
+        jobs = sorted({item["job"] for item in entry["artifacts"].values()})
+        ctx.progress("rebuild", msg=f"{project} tree {entry['tree'][:12]} at {built_at[:12]}: {', '.join(jobs)}")
+        envelope = ctx.call("ci.run", project=project, commit=built_at, jobs=jobs, cold=True, if_needed=False)
+        ran = ((envelope.get("data") or {}).get("engine") or {}).get("jobs") or {}
+        differ = []
+        for name, item in entry["artifacts"].items():
+            rebuilt = ((ran.get(item["job"]) or {}).get("artifacts") or {}).get(name) or {}
+            if rebuilt.get("sha256") != item["sha256"]:
+                differ.append({"name": name, "kept": item["sha256"], "rebuilt": rebuilt.get("sha256")})
+        complete = envelope.get("outcome") == "ok" and all(
+            (ran.get(job) or {}).get("status") == "passed" for job in jobs)
+        verdict = {"job": envelope.get("job"), "commit": built_at, "reproduced": complete and not differ,
+                   "differ": differ, **({} if complete else {"rebuild": envelope.get("outcome") or "failed"})}
+        store.note_verified(root, project, entry["tree"], verdict)
+        verdicts.append({"tree": entry["tree"], **verdict})
+        if not verdict["reproduced"]:
+            failed.append(entry["tree"])
+            what = (", ".join(f"{d['name']} {d['kept'][:12]} -> {(d['rebuilt'] or 'nothing')[:12]}" for d in differ)
+                    or f"the rebuild ended {verdict.get('rebuild')}")
+            ctx.reason("store", f"{project} {entry['tree'][:12]}", f"did not rebuild to its bytes: {what}",
+                       f"wb job {envelope.get('job')}")
+    if failed:
+        ctx.finding(f"{project}: {len(failed)} of {len(chosen)} tree(s) did not rebuild to the Store's bytes")
+    else:
+        ctx.summary(f"{project}: {len(chosen)} tree(s) rebuilt cold to the Store's bytes"
+                    if chosen else f"{project}: nothing in the Store waits for a rebuild")
+    return {"project": project, "verified": verdicts}
+
+
+def store_export(ctx: Context, to: str, project: str = "", commit: str = ""):
+    """Copies what the Store keeps (one project's, or its tree at one commit) and every seeded file into a folder
+    laid out as a Store, for a backup or another machine's ``ci.store-import``."""
+    from wb_core import artifacts as store
+    root = _store_root(ctx)
+    trees = None
+    if commit:
+        if not project:
+            raise ParamError("commit names a build of one project; give project too")
+        trees = {e["tree"] for e in store.entries(root, project)
+                 if any(c.startswith(commit) for c in e.get("commits") or [])}
+        if not trees:
+            raise ParamError(f"the Store keeps nothing of {project} built at {commit}")
+    try:
+        counts = store.export(root, Path(to), project or None, trees)
+    except store.StoreError as error:
+        raise EnvironmentProblem(str(error)) from None
+    ctx.summary(f"exported {counts['entries']} build(s), {counts['files']} file(s) and {counts['seeded']} seeded "
+                f"file(s) to {ctx.host_path(to)}")
+    return counts
+
+
+def store_import(ctx: Context, source: str):
+    """Takes a folder ``ci.store-export`` wrote into the Store, every file re-hashed first."""
+    from wb_core import artifacts as store
+    try:
+        counts = store.import_from(_store_root(ctx), Path(source),
+                                   _folder(ctx, "pin_cache", _state() / "cache" / "pins"))
+    except store.StoreError as error:
+        raise EnvironmentProblem(str(error)) from None
+    ctx.summary(f"imported {counts['files']} file(s) and {counts['seeded']} new seeded file(s)")
+    return counts
 
 
 def gate(ctx: Context, project: str, refs: list, refs_file=None):

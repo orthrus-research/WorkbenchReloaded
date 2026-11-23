@@ -22,7 +22,7 @@ name = "run"
 summary = "Run a project's jobs from a clean clone (pinned repositories at their pins), keeping the records in Workbench; their Gradle builds get toolchain's rescue repository."
 handler = "wb_ci.commands:run"
 requires = { binary = ["git"], module = ["toolchain"] }
-# One run of a project at a time: a second waits here instead of failing on the engine's run lock.
+# One run of a project at a time, so two never interleave their writes to the project's Store index.
 resources = { cpu = 4, mem_gb = 8, locks = ["ci:{project}"] }
 timeout = "3h"
 params.project = { type = "string", summary = "a name under [modules.ci.projects]" }
@@ -34,6 +34,7 @@ params.keep_going = { type = "bool", default = false }
 params.keep = { type = "bool", default = false, summary = "keep the clean trees after the run" }
 params.checkout = { type = "path.in", optional = true, digest = "git", summary = "with commit=worktree: another checkout of the project's repository (a linked worktree) whose working tree to run" }
 params.dry_run = { type = "bool", default = false }
+params.cold = { type = "bool", default = false, summary = "build every job again: no earlier pass, input cache or Gradle build cache stands in (store.verify's rebuild)" }
 result.commit = { type = "string" }
 result.passed = { type = "list" }
 result.failed = { type = "list" }
@@ -96,3 +97,33 @@ params.folder = { type = "string", default = "", summary = "the folder the comma
 params.env = { type = "object", default = {}, summary = "variables added to the command's environment, by name (PYTHONPATH = \"src\"); the record keeps their names only" }
 result.commit = { type = "string", optional = true }
 result.results = { type = "list", optional = true }
+
+[[command]]
+name = "store-verify"
+summary = "Rebuild what the Store keeps for a project cold (a fresh clone, every job, no build cache) at the commit it was built from, and record whether each file came out to its SHA-256; a file that did not is a finding."
+handler = "wb_ci.commands:store_verify"
+aliases = ["store.verify"]
+resources = { cpu = 1, mem_gb = 0.5 }
+timeout = "12h"
+params.project = { type = "string", summary = "a name under [modules.ci.projects]" }
+params.commit = { type = "string", default = "", summary = "the build of this commit (a prefix will do); empty: every tree not yet verified" }
+params.again = { type = "bool", default = false, summary = "rebuild trees already verified too" }
+result.verified = { type = "list" }
+
+[[command]]
+name = "store-export"
+summary = "Copy what the Store keeps (one project's, or its build of one commit) and every seeded file into a folder laid out as a Store, each file re-hashed on the way."
+handler = "wb_ci.commands:store_export"
+aliases = ["store.export"]
+resources = { cpu = 1, mem_gb = 0.5 }
+params.to = { type = "path.out", summary = "the folder to write (a backup place, or a folder to carry to another machine)" }
+params.project = { type = "string", default = "", summary = "only this project's builds; empty: every project" }
+params.commit = { type = "string", default = "", summary = "with project: only its build of this commit" }
+
+[[command]]
+name = "store-import"
+summary = "Take a folder store-export wrote into the Store: every file re-hashed and refused unless it is its SHA-256, build records merged, seeded files' sources kept."
+handler = "wb_ci.commands:store_import"
+aliases = ["store.import"]
+resources = { cpu = 1, mem_gb = 0.5 }
+params.source = { type = "path.in", summary = "the folder store-export wrote" }

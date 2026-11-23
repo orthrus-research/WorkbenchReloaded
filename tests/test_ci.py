@@ -231,6 +231,13 @@ class Ci(unittest.TestCase):
         self.assertIn(self.head, index["commits"])
         self.assertEqual(artifacts.path_of(store, digest, "out.jar").read_bytes(), b"built bytes")
         self.assertTrue((self.d.state / "cache" / "pins" / digest).is_file())  # where WB_PIN_CACHE readers look
+        # A cold rebuild of what the Store keeps comes out to the same bytes, and the build says so.
+        verified = self.c.submit("store.verify", {"project": "demo", "commit": self.head}).result(timeout=600)
+        self.assertEqual(verified.outcome, "ok", verified.summary)
+        self.assertTrue(artifacts.find(store, "demo", tree)["verified"]["reproduced"])
+        self.assertEqual(len(verified.children), 1)  # one ci.run, cold
+        # The cold builds read no Gradle build cache: every build's Gradle home has the script that turns it off.
+        self.assertIn("WB_COLD", (self.d.state / "cache" / "gradle" / "init.d" / "workbench-cold.gradle").read_text())
 
     def test_a_job_that_fails_after_its_steps_says_why(self):
         result = self.c.submit("ci.run", {"project": "demo", "workflow": "unbuilt"}).result(timeout=600)

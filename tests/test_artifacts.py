@@ -55,6 +55,38 @@ class Store(unittest.TestCase):
         self.assertEqual((note["sha256"], note["source"]), (self.digest, "a bundle"))
         self.assertTrue((self.store / "seeded" / f"{self.digest}.json").is_file())
 
+    def build(self):
+        artifacts.put(self.store, self.jar, self.digest)
+        artifacts.record(self.store, "demo", "t1", "c1", {"mod.jar": {"sha256": self.digest, "job": "build"}})
+
+    def test_export_then_import_carries_builds_and_seeded_files_to_another_store(self):
+        self.build()
+        other = self.base / "other.jar"
+        other.write_bytes(b"adapter")
+        artifacts.seed(self.store, other, "lib:adapter@c0", "a bundle", "no container builds it")
+        carried, there = self.base / "carried", self.base / "there"
+        counts = artifacts.export(self.store, carried, "demo")
+        self.assertEqual(counts, {"entries": 1, "files": 1, "seeded": 1})
+        counts = artifacts.import_from(there, carried, self.pins)
+        self.assertEqual(counts, {"files": 1, "seeded": 1})
+        self.assertEqual(artifacts.find(there, "demo", "t1")["artifacts"]["mod.jar"]["sha256"], self.digest)
+        self.assertEqual(artifacts.path_of(there, self.digest, "mod.jar").read_bytes(), b"one")
+        self.assertTrue((self.pins / self.digest).is_file())
+
+    def test_import_refuses_a_file_that_is_not_its_hash(self):
+        self.build()
+        carried = self.base / "carried"
+        artifacts.export(self.store, carried)
+        (carried / "files" / self.digest / "mod.jar").write_bytes(b"tampered")
+        with self.assertRaises(artifacts.StoreError):
+            artifacts.import_from(self.base / "there", carried)
+
+    def test_a_verdict_is_kept_on_the_build(self):
+        self.build()
+        artifacts.note_verified(self.store, "demo", "t1", {"reproduced": True, "differ": []})
+        self.assertTrue(artifacts.find(self.store, "demo", "t1")["verified"]["reproduced"])
+        self.assertEqual([e["tree"] for e in artifacts.entries(self.store, "demo")], ["t1"])
+
 
 if __name__ == "__main__":
     unittest.main()
