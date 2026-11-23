@@ -36,7 +36,7 @@ artifacts = ["build/out.jar"]
 steps = [{ name = "build", run = ["{python}", "-c", "import pathlib; p = pathlib.Path('build'); p.mkdir(exist_ok=True); (p / 'out.jar').write_bytes(b'built bytes')"] }]
 
 [jobs.clean-env]
-steps = [{ name = "env", run = ["{python}", "-c", "import os, sys; sys.exit(3 if [k for k in os.environ if k.startswith('WB_') and k not in ('WB_PIN_CACHE', 'WB_COLD')] else 0)"] }]
+steps = [{ name = "env", run = ["{python}", "-c", "import os, sys; sys.exit(3 if [k for k in os.environ if k.startswith('WB_') and k not in ('WB_PIN_CACHE', 'WB_COLD', 'WB_GRADLE')] else 0)"] }]
 
 [jobs.unbuilt]
 artifacts = ["build/missing.jar"]
