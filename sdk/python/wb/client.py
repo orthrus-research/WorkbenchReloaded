@@ -175,7 +175,9 @@ class Client:
         headers = {"Idempotency-Key": key}
         if os.environ.get("WB_JOB"):  # submitted from inside a job: the scheduler must not make it wait on us
             headers["X-Wb-Parent"] = os.environ["WB_JOB"]
-        elif not os.environ.get("WB_DEV"):
+        if os.environ.get("WB_CALLER"):
+            headers["X-Wb-Caller"] = os.environ["WB_CALLER"]  # who submitted it, as the caller names itself
+        if not os.environ.get("WB_JOB") and not os.environ.get("WB_DEV"):
             commit = _cli_commit()
             if commit:
                 headers["X-Wb-Commit"] = commit  # the daemon refuses a CLI on other code (wb deploy brings them together)

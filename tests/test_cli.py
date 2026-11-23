@@ -83,5 +83,17 @@ class Verbs(unittest.TestCase):
         self.assertTrue(isinstance(json.loads(out), list))
 
 
+    def test_a_caller_label_is_kept_and_filters_jobs(self):
+        os.environ["WB_CALLER"] = "session-a"
+        try:
+            code, out, _ = self.wb("run", "selftest.echo", "text=mine", "--json", "--quiet")
+            self.assertEqual(json.loads(out)["caller"], "session-a")
+            code, out, _ = self.wb("jobs", "--mine", "--json")
+            self.assertTrue(json.loads(out) and all(j["caller"] == "session-a" for j in json.loads(out)))
+            code, out, _ = self.wb("job", "--json")
+            self.assertEqual(json.loads(out)["caller"], "session-a")
+        finally:
+            os.environ.pop("WB_CALLER", None)
+
 if __name__ == "__main__":
     unittest.main()

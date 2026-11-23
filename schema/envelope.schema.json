@@ -16,6 +16,7 @@
     "params_hash": { "type": ["string", "null"] },
     "state": { "enum": ["new", "queued", "awaiting_approval", "running", "settled", "cancelled", "interrupted"] },
     "phase": { "type": ["string", "null"], "description": "quoting while a spends command's quote is being made" },
+    "caller": { "type": ["string", "null"], "description": "the label the submitter gave itself (WB_CALLER); never enforced" },
     "waiting": {
       "type": ["object", "null"],
       "description": "why a queued job has not started: budget, behind <job>, gpu or lock <name> held by <job>, quiet, approval",

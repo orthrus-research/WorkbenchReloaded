@@ -223,10 +223,10 @@ def build(tag: str = "wb-core:dev", tools: list[str] | None = None) -> int:
             raise ComposeError(f"[core.image] tools names {unknown[0]}, which image/pins.toml does not pin "
                                f"(pinned: {', '.join(sorted(pinned)) or 'none'})")
     from wb_core.identity import source_commit
-    command = ["docker", "build", "-f", str(root / "image" / "Dockerfile"), "-t", tag,
-               "--build-arg", f"WB_COMMIT={source_commit(root) or ''}"]
+    command = ["docker", "build", "-f", str(root / "image" / "Dockerfile"), "-t", tag]
     if tools:
         command += ["--build-arg", "TOOLS=" + ",".join(tools)]
+    command += ["--build-arg", f"WB_COMMIT={source_commit(root) or ''}"]  # last: only the image's last layer changes
     return subprocess.run([*command, str(root)]).returncode
 
 

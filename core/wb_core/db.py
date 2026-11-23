@@ -87,6 +87,8 @@ CORE_SCHEMA = [
     "ALTER TABLE job ADD COLUMN inputs TEXT;",
     # 3: the job that submitted this one (plans, repeats): the scheduler never makes a child wait on it
     "ALTER TABLE job ADD COLUMN parent TEXT;",
+    # 4: a label the submitter gives itself (WB_CALLER), shown and filtered on, never enforced
+    "ALTER TABLE job ADD COLUMN caller TEXT;",
 ]
 
 

@@ -167,7 +167,8 @@ def cmd_show(args) -> int:
 
 
 def cmd_jobs(args) -> int:
-    listed = _client().jobs(state=args.state, command=args.command, limit=args.limit)
+    listed = _client().jobs(state=args.state, command=args.command, limit=args.limit,
+                            caller=os.environ.get("WB_CALLER") if args.mine else None)
     if args.json:
         print(json.dumps(listed, indent=1, default=str))
         return 0
@@ -268,6 +269,14 @@ def cmd_deploy(args) -> int:
     from . import deploy
     return deploy.main(args)
 
+def cmd_work(args) -> int:
+    from . import work
+    return work.main(args)
+
+def cmd_backup(args) -> int:
+    from . import backup
+    return backup.main(args)
+
 def cmd_check(args) -> int:
     """ci.run for the worktree you stand in: its project from the repository, the commit from HEAD, or the tree
     the host's git would commit when the worktree has changes. No commit= or checkout= to type."""
@@ -301,7 +310,7 @@ def cmd_job(args) -> int:
     if args.job:
         env = client.job(args.job).refresh()
     else:
-        listed = client.jobs(limit=1)
+        listed = client.jobs(limit=1, caller=os.environ.get("WB_CALLER"))  # this caller's newest, when it names itself
         if not listed:
             print("wb: no jobs yet", file=sys.stderr)
             return 2
@@ -439,6 +448,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--state")
     p.add_argument("--command")
     p.add_argument("--limit", type=int, default=30)
+    p.add_argument("--mine", action="store_true", help="only jobs submitted with this WB_CALLER")
     p = add("ls", cmd_ls, "list commands")
     p.add_argument("module", nargs="?")
     p = add("help", cmd_help, "describe a command")
@@ -474,6 +484,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--wait", default="10m", help="how long running jobs may take to end (default 10m)")
     p.add_argument("--now", action="store_true", help="cancel what still runs after the wait, listing it first")
     p.add_argument("--override", metavar="REASON", help="skip the test gate; the reason is recorded")
+    p = add("work", cmd_work, "worktrees with a lifecycle: the view, start, add, adopt, finish")
+    p.add_argument("action", nargs="?", choices=["view", "start", "add", "adopt", "finish"])
+    p.add_argument("names", nargs="*")
+    p.add_argument("--all", action="store_true", help="every registered project's worktrees")
+    p = add("backup", cmd_backup, "copy the job database, the ledger and the scrub rules off this drive")
+    p.add_argument("--to", help="the folder to back up into (default [paths] backup, else ~/wb-backup)")
     p = add("job", cmd_job, "show a job's envelope, or the newest job's")
     p.add_argument("job", nargs="?")
     p = add("hook", cmd_hook, "a git hook, answered on the host (the hook stubs call this)")

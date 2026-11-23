@@ -12,6 +12,7 @@ export interface Envelope {
   "params_hash"?: string | null;
   "state": "new" | "queued" | "awaiting_approval" | "running" | "settled" | "cancelled" | "interrupted";
   "phase"?: string | null;
+  "caller"?: string | null;
   "waiting"?: { "reason"?: string; "since"?: string | null; [key: string]: unknown } | null;
   "outcome"?: "ok" | "finding" | "usage" | "environment" | null;
   "code"?: 0 | 1 | 2 | 3 | null;

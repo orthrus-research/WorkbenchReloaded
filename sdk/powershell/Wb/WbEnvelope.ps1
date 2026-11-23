@@ -10,6 +10,7 @@ class WbEnvelope {
     [string] $params_hash
     [string] $state
     [string] $phase
+    [string] $caller
     [object] $waiting
     [string] $outcome
     [Nullable[long]] $code

@@ -65,6 +65,11 @@ public final class Envelope {
         return Json.asString(raw.get("phase"));
     }
 
+    /** the label the submitter gave itself (WB_CALLER); never enforced */
+    public String caller() {
+        return Json.asString(raw.get("caller"));
+    }
+
     /** why a queued job has not started: budget, behind <job>, gpu or lock <name> held by <job>, quiet, approval */
     public java.util.Map<String, Object> waiting() {
         return Json.asMap(raw.get("waiting"));

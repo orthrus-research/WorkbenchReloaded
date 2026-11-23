@@ -276,7 +276,7 @@ class Workbench:
     # submission
     def submit(self, command: str, params: dict | None, *, out: str | None = None, fresh: bool = False,
                path_style: str = "windows", idempotency_key: str | None = None, source: str = "api",
-               parent: str | None = None) -> dict:
+               parent: str | None = None, caller: str | None = None) -> dict:
         if path_style not in ("windows", "posix"):
             raise BadRequest("path_style must be windows or posix")
         if idempotency_key:
@@ -295,10 +295,11 @@ class Workbench:
             parent = None
         self.db.execute(
             "INSERT INTO job (id, command, module, command_version, module_version, params, state, machine, "
-            "out_dir, path_style, fresh, idempotency_key, source, submitted, parent) VALUES "
-            "(?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?)",
+            "out_dir, path_style, fresh, idempotency_key, source, submitted, parent, caller) VALUES "
+            "(?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (job, command, entry.module.name, entry.command.version, entry.module.version, dumps(params), machine,
-             out, path_style, int(bool(fresh)), idempotency_key, "child" if parent else source, now, parent))
+             out, path_style, int(bool(fresh)), idempotency_key, "child" if parent else source, now, parent,
+             (caller or "")[:80] or None))
         reasons = []
         if not entry.activation.active:
             self._settle(job, "environment", f"{command} is not active", reasons=entry.activation.reasons)
@@ -1194,12 +1195,16 @@ class Workbench:
             "approval": approval,
             "children": extra.get("children", []),
             "parent": row["parent"],
+            "caller": row["caller"] if "caller" in row.keys() else None,
             "logs": {"job": f"/v1/logs?job={job}"},
         }
 
     def list_jobs(self, state: str | None = None, command: str | None = None, since: str | None = None,
-                  limit: int = 100) -> list[dict]:
+                  limit: int = 100, caller: str | None = None) -> list[dict]:
         sql, args = "SELECT id FROM job WHERE 1=1", []
+        if caller:
+            sql += " AND caller = ?"
+            args.append(caller)
         if state:
             sql += " AND state = ?"
             args.append(state)

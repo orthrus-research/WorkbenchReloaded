@@ -119,8 +119,12 @@ def main(args) -> int:
         client.request("POST", "/v1/drain", {"on": True})
         drained = True
     except WbError as error:
-        _say(f"the daemon does not answer ({error}); starting it fresh")
-        drained = False
+        if error.status == 404:  # a daemon from before drains: it cannot hold new jobs, but it can list them
+            _say("the running daemon has no drain; it is restarted only when nothing runs (or with --now)")
+            drained = True
+        else:
+            _say(f"the daemon does not answer ({error}); starting it fresh")
+            drained = False
     if drained:
         deadline = time.time() + _duration(args.wait)
         running = _running(client)

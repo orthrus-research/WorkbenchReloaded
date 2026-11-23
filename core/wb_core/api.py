@@ -204,14 +204,15 @@ def submit(h: Handler, query):
                                          fresh=bool(body.get("fresh")),
                                          path_style=body.get("path_style", "windows"),
                                          idempotency_key=h.headers.get("Idempotency-Key"),
-                                         parent=h.headers.get("X-Wb-Parent"))
+                                         parent=h.headers.get("X-Wb-Parent"), caller=h.headers.get("X-Wb-Caller"))
     h._send(202, envelope, {"Location": f"/v1/jobs/{envelope['job']}"})
 
 
 @route("GET", r"/v1/jobs")
 def jobs(h: Handler, query):
     h._send(200, {"jobs": h.server.workbench.list_jobs(query.get("state"), query.get("command"),
-                                                       query.get("since"), int(query.get("limit", 100)))})
+                                                       query.get("since"), int(query.get("limit", 100)),
+                                                       query.get("caller"))})
 
 
 @route("GET", r"/v1/jobs/(j_\w+)")
