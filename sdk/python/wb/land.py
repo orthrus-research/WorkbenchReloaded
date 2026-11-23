@@ -348,17 +348,25 @@ class Lander:
         return {"state": "landed", "landing": landing, "revision": record.get("revision")}
 
 
-def _targets(workspace: Workspace, given: list[str]) -> dict[str, str]:
+def _targets(workspace: Workspace, given: list[str], here: Path | None = None) -> dict[str, str]:
+    """Each <project>=<ref>, the ref read in the worktree you stand in when it belongs to that project (HEAD is your
+    HEAD, not its home checkout's); with none given, HEAD of the worktree you stand in."""
+    here = here or Path.cwd()
+    try:
+        mine, top = workspace.project_for(here)
+    except WorkspaceError:
+        mine, top = None, None
     if given:
         targets = {}
         for item in given:
             name, sep, ref = item.partition("=")
             if not sep or not name or not ref:
                 raise WorkspaceError(f"{item!r}: name a project and a ref as <project>=<ref>")
-            targets[name] = ref
+            targets[name] = git(top, "rev-parse", "--verify", f"{ref}^{{commit}}") if mine and mine.name == name                 else ref
         return targets
-    project, top = workspace.project_for(Path.cwd())
-    return {project.name: git(top, "rev-parse", "HEAD")}
+    if mine is None:
+        raise WorkspaceError("stand in a worktree to land its HEAD, or name what lands: <project>=<ref>")
+    return {mine.name: git(top, "rev-parse", "HEAD")}
 
 
 def main(args) -> int:

@@ -375,6 +375,19 @@ class Land(unittest.TestCase):
         self.assertIn(f"-Dorg.gradle.project.set.dir={self.store.parent / 'sets' / revision}", opts)
         self.assertIn("-Dorg.gradle.project.set.exact=true", opts)
 
+    def test_9e_a_ref_is_read_in_the_worktree_you_stand_in(self):
+        from wb.land import _targets
+        workspace = Workspace(self.d.config)
+        tree = self.root / "lib-wt"
+        git(self.lib, "worktree", "add", "-q", "-b", "feat/here", str(tree), "HEAD")
+        (tree / "here.txt").write_text("here", encoding="utf-8")
+        git(tree, "add", "-A")
+        git(tree, "commit", "-q", "-m", "here")
+        mine = git(tree, "rev-parse", "HEAD")
+        self.assertEqual(_targets(workspace, ["lib=HEAD"], tree), {"lib": mine})  # this worktree's HEAD
+        self.assertEqual(_targets(workspace, [], tree), {"lib": mine})
+        self.assertEqual(_targets(workspace, ["two=HEAD"], tree), {"two": "HEAD"})  # another project: its own HEAD
+
     def test_y_the_backup_keeps_the_set_and_the_seeded_bytes(self):
         from wb import backup
         folder = Path(tempfile.mkdtemp(prefix="wb-backup-"))
