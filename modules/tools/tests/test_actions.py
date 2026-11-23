@@ -388,12 +388,25 @@ class RunTest(Project):
         code, document = self.actions("run", "quick")
         self.assertEqual(document["result"]["order"], ["lint", "test"])
 
-    def test_a_held_lock_refuses_a_second_run(self):
-        (self.root / ".local/actions").mkdir(parents=True)
-        (self.root / ".local/actions/.lock").write_text("pid 1", encoding="utf-8")
-        code, document = self.actions("run", "lint")
+    def test_a_callers_run_id_names_the_run_and_must_be_new(self):
+        code, document = self.actions("run", "lint", "--run-id", "job-1", "--memory", "2")
+        self.assertEqual(code, cli.OK)
+        self.assertEqual(document["result"]["runId"], "job-1")
+        self.assertTrue((self.root / ".local/actions/job-1/summary.json").is_file())
+        code, document = self.actions("run", "lint", "--run-id", "job-1")
         self.assertEqual(code, cli.USAGE)
-        self.assertIn("another actions run", document["messages"][0]["text"])
+        self.assertIn("already exists", document["messages"][0]["text"])
+        code, document = self.actions("run", "lint", "--run-id", "../out")
+        self.assertEqual(code, cli.USAGE)
+
+    def test_runs_in_one_second_each_get_their_own_folder(self):
+        runs = self.root / ".local/actions"
+        ids = {actions.new_run(runs)[0] for _ in range(3)}
+        self.assertEqual(len(ids), 3)
+        self.assertFalse((runs / ".lock").exists())
+
+    def test_the_budget_takes_the_callers_memory(self):
+        self.assertEqual(actions.budget(self.load(), 0, 3.0).memory, 3.0)
 
     def test_status_and_report(self):
         code, document = self.actions("status")

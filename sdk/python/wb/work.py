@@ -220,8 +220,10 @@ def finish(workspace: Workspace) -> int:
         _say(f"{member.name}: removed {member}")
         if merged:
             git(repo, "branch", "-q", "-d", branch, check=False)
-            _say(f"{member.name}: branch {branch} is in origin/{base}, so it was deleted here; on the remote: "
-                 f"git -C {repo} push origin --delete {branch}")
+            # Name the remote's copy only when this clone knows there is one (it was pushed or fetched).
+            pushed = git(repo, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}", check=False)
+            _say(f"{member.name}: branch {branch} is in origin/{base}, so it was deleted here"
+                 + (f"; on the remote: git -C {repo} push origin --delete {branch}" if pushed else ""))
         else:
             _say(f"{member.name}: branch {branch} has commits origin/{base} lacks, so it was kept")
     if not kept and not any(folder.iterdir()):

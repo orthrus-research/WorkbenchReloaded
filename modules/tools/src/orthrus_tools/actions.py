@@ -475,13 +475,16 @@ class Budget:
         return share <= 1.0 + 1e-9 and memory <= self.memory + 1e-9
 
 
-def budget(config: Config, concurrency: int) -> Budget:
+def budget(config: Config, concurrency: int, memory: float | None = None) -> Budget:
+    """The run's budget: ``memory`` GiB when the caller reserved it (a Workbench job's
+    reservation), else ``memory_fraction`` of the machine's memory."""
     settings = config.settings
-    fraction = float(settings.get("memory_fraction", MEMORY_FRACTION))
+    if memory is None:
+        memory = physical_memory_gib() * float(settings.get("memory_fraction", MEMORY_FRACTION))
     return Budget(
         config.jobs,
         concurrency,
-        physical_memory_gib() * fraction,
+        memory,
         float(settings.get("share", DEFAULT_SHARE)),
         float(settings.get("memory", DEFAULT_MEMORY)),
     )
@@ -750,12 +753,13 @@ def run_jobs(
     concurrency: int = 0,
     use_cache: bool = True,
     machine: Budget | None = None,
+    memory: float | None = None,
 ) -> None:
     """Run the ordered jobs, several at once within the budget, each after the jobs it needs.
     Jobs start in priority order (``priority``, higher first, then declaration order). After a
     failure no new job starts unless keep_going; every job not run is recorded as skipped."""
     jobs = config.jobs
-    plan = machine or budget(config, concurrency)
+    plan = machine or budget(config, concurrency, memory)
     pending = sorted(order, key=lambda n: (-jobs[n].get("priority", 0), order.index(n)))
     active: dict[concurrent.futures.Future[dict[str, Any]], str] = {}
     keys: dict[str, str | None] = {}
@@ -821,28 +825,28 @@ def run_jobs(
                     record_pass(config, name, keys[name], values["run_id"], results[name])
 
 
-def acquire_lock(runs: Path) -> Path:
+def new_run(runs: Path, run_id: str | None = None) -> tuple[str, Path]:
+    """A run id and its folder, made here. Making the folder is what claims the id, so two runs
+    in one records folder never share one and need no lock. A caller's id (a Workbench job id)
+    must be new; otherwise the id is the time, numbered when two runs start in one second."""
     runs.mkdir(parents=True, exist_ok=True)
-    lock = runs / ".lock"
-    try:
-        descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        owner = lock.read_text(encoding="utf-8", errors="replace").strip()
-        raise ToolError(
-            USAGE, f"another actions run holds {lock} ({owner}); delete it if that run is gone"
-        ) from None
-    os.write(descriptor, f"pid {os.getpid()} since {time.strftime('%H:%M:%S')}".encode())
-    os.close(descriptor)
-    return lock
-
-
-def new_run_id(runs: Path) -> str:
+    if run_id is not None:
+        if not run_id or run_id in (".", "..", "cache") or re.search(r"[\\/:]", run_id):
+            raise ToolError(USAGE, f"--run-id {run_id!r} is not a folder name")
+        try:
+            (runs / run_id).mkdir()
+        except FileExistsError:
+            raise ToolError(USAGE, f"run {run_id} already exists in {runs}") from None
+        return run_id, runs / run_id
     stem = time.strftime("%Y%m%d-%H%M%S")
-    run_id, number = stem, 1
-    while (runs / run_id).exists():
-        number += 1
-        run_id = f"{stem}-{number}"
-    return run_id
+    for number in range(1, 1000):
+        candidate = stem if number == 1 else f"{stem}-{number}"
+        try:
+            (runs / candidate).mkdir()
+        except FileExistsError:
+            continue
+        return candidate, runs / candidate
+    raise ToolError(USAGE, f"no free run id for {stem} in {runs}")
 
 
 # --- the push gate ---------------------------------------------------------------------------
@@ -1070,6 +1074,13 @@ def build_parser() -> cli.Parser:
     run.add_argument(
         "--if-needed", action="store_true", help="skip jobs already passed for these trees"
     )
+    run.add_argument("--run-id", metavar="ID", help="the run's id (default: the time); must be new")
+    run.add_argument(
+        "--memory",
+        type=float,
+        metavar="GIB",
+        help="memory the run's jobs may claim together (default: memory_fraction of the machine)",
+    )
     status = commands.add_parser(
         "status", help="which jobs of a workflow passed for the current trees", parents=common
     )
@@ -1167,45 +1178,40 @@ def _run(config: Config, args: argparse.Namespace, out: Output) -> int:
                 out.line("  $ " + " ".join(command))
         plan["commands"] = commands
         return OK
-    lock = acquire_lock(config.runs)
     results: dict[str, dict[str, Any]] = {}
     started = time.monotonic()
+    run_id, run_dir = new_run(config.runs, args.run_id)
+    values = placeholders(config, run_id)
+    tested = tested or trees(config)
+    out.line(f"run {run_id}: {', '.join(order)}  (logs in {run_dir})")
     try:
-        run_id = new_run_id(config.runs)
-        values = placeholders(config, run_id)
-        tested = tested or trees(config)
-        run_dir = config.runs / run_id
-        run_dir.mkdir(parents=True)
-        out.line(f"run {run_id}: {', '.join(order)}  (logs in {run_dir})")
-        try:
-            run_jobs(
-                config,
-                order,
-                values,
-                run_dir,
-                results,
-                out,
-                keep_going=args.keep_going,
-                verbose=args.verbose,
-                concurrency=args.jobs,
-                use_cache=not args.no_cache,
-            )
-        finally:
-            for name in order:
-                results.setdefault(name, {"status": "skipped", "reason": "interrupted"})
-            summary = {
-                "schema": SUMMARY_SCHEMA,
-                "runId": run_id,
-                "targets": list(args.targets),
-                "order": order,
-                "trees": tested,
-                "treesChanged": trees(config) != tested,
-                "seconds": round(time.monotonic() - started, 1),
-                "jobs": results,
-            }
-            (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), "utf-8")
+        run_jobs(
+            config,
+            order,
+            values,
+            run_dir,
+            results,
+            out,
+            keep_going=args.keep_going,
+            verbose=args.verbose,
+            concurrency=args.jobs,
+            use_cache=not args.no_cache,
+            memory=args.memory,
+        )
     finally:
-        lock.unlink(missing_ok=True)
+        for name in order:
+            results.setdefault(name, {"status": "skipped", "reason": "interrupted"})
+        summary = {
+            "schema": SUMMARY_SCHEMA,
+            "runId": run_id,
+            "targets": list(args.targets),
+            "order": order,
+            "trees": tested,
+            "treesChanged": trees(config) != tested,
+            "seconds": round(time.monotonic() - started, 1),
+            "jobs": results,
+        }
+        (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), "utf-8")
     out.result = summary
     failed = [n for n, r in results.items() if r["status"] == "failed"]
     skipped = [n for n, r in results.items() if r["status"] == "skipped"]

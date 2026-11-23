@@ -124,6 +124,8 @@ class Context:
         self.findings: list[str] = []
         self._secrets: dict = spec.get("secrets", {})
         self._jdks: dict = spec.get("jdks", {})
+        # What the scheduler holds for this job on its machine ({"cpu", "mem_gb"}); empty on the host.
+        self.reservation: dict = spec.get("reservation") or {}
         self.work.mkdir(parents=True, exist_ok=True)
         self.out.mkdir(parents=True, exist_ok=True)
 

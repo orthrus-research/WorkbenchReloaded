@@ -395,11 +395,15 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
                **{k: str(v) for k, v in (entry.get("env") or {}).items()}}
         python = _python(ctx, root, [str(r) for r in entry.get("python") or []])
         targets = [*([workflow] if workflow else []), *[str(j) for j in jobs]] or [config.workflow]
-        argv = ["run", *targets]
+        # The engine runs inside this job's reservation: the job id names its run, and its budget is what the
+        # scheduler holds for the job, not the machine.
+        argv = ["run", *targets, "--run-id", ctx.job]
+        if ctx.reservation.get("mem_gb"):
+            argv += ["--memory", str(ctx.reservation["mem_gb"])]
         argv += ["--if-needed"] if if_needed else []
         argv += ["--keep-going"] if keep_going else []
         argv += ["--dry-run"] if dry_run else []
-        ctx.progress("jobs", msg=" ".join(argv[1:]) or "the default workflow")
+        ctx.progress("jobs", msg=" ".join([*targets, *argv[len(targets) + 3:]]))
         document = _engine(ctx, root, jobs_file, argv, env, python)
         _failing_tails(ctx, (document.get("result") or {}).get("jobs") or {})
     finally:

@@ -87,6 +87,7 @@ class Work(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertFalse(member.exists())
         self.assertIn("deleted here", out)  # the branch had nothing origin/main lacks
+        self.assertNotIn("--delete", out)  # it was never pushed, so there is no remote copy to delete
 
     def test_a_hand_made_worktree_is_adopted_and_a_main_checkout_is_not(self):
         hand = self.root / "hand-wt"

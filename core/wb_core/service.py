@@ -780,6 +780,7 @@ class Workbench:
                 "module_config": self.settings.modules.get(module.name, {}), "secrets": secrets,
                 "jdks": self.checker.jdks, "quote": quote, "machine": "container", "path_style": path_style,
                 "roots": [r.__dict__ for r in self.settings.roots], "sys_path": sys_path,
+                "reservation": dict(zip(("cpu", "mem_gb"), self._resources(entry.command, "container", params)[:2])),
                 "env": {"WB_URL": f"http://127.0.0.1:{self.settings.core['api']['port']}",
                         "WB_INSTALL_ID": self.install_id,
                         "WB_TOKEN": self._token(), "WB_JOB": job, "WB_STATE_DIR": str(self.state)}}

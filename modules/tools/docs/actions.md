@@ -7,6 +7,7 @@ memory.
 ```sh
 orthrus-tools actions list
 orthrus-tools actions run ci [--if-needed] [--keep-going] [--jobs N] [--dry-run] [--verbose]
+                              [--run-id ID] [--memory GIB]
 orthrus-tools actions run quick
 orthrus-tools actions status [WORKFLOW]
 orthrus-tools actions report [RUN]
@@ -107,6 +108,11 @@ Jobs run concurrently once the jobs they `needs` have passed. A job claims `shar
 `memory` GiB and its `locks`; jobs start while the running claims fit the machine. An
 `exclusive = true` job runs alone. `--jobs 1` runs one at a time. After a failure no new job
 starts (`--keep-going` continues), and a job whose need failed is skipped.
+
+The jobs' memory together is `memory_fraction` of the machine's, or `--memory GIB` when the
+caller has reserved memory for the run (Workbench passes its job's reservation). A run's id is
+the time it started, or `--run-id ID` (Workbench passes its job id), which must be new. Making
+the run's folder claims the id, so several runs may share one records folder at once.
 
 Each step's output goes to `.local/actions/<run>/<job>/<NN-step>.log`, and the failing step's
 last lines are printed. A step may print lines `timing {json}`; the summary keeps them.
