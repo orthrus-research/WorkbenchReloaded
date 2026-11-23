@@ -57,7 +57,8 @@ DEFAULTS = {
     "lab_root": None,            # the checkout's folder of lab items, for lab.migrate
     "lab_items": [],             # [item, what it is] in lab_root, moved by lab.migrate
     "stays": [],                 # lab items that must never move
-    "inputs": [],                # lab.inputs' steps, in order: {name, run, checkout}; run is a command template
+    "inputs": [],                # lab.inputs' steps, in order: {name, run, checkout, store}; run is a command template;
+                                 # store = {project, files}: CI's JARs of a clean checkout's tree replace the run
                                  # with {python} and {cwd}, run in checkout (a name from checkouts; empty: the
                                  # launcher's) with env, and brings the launch set to its state before lab.ensure
     "agree": {},                 # dependency -> [{file, pattern, checkout}]: where each project of the launch set
@@ -143,8 +144,16 @@ def _check_inputs(profile: dict) -> None:
         raise ProfileError("the instance profile's inputs is a list of steps")
     seen = set()
     for step in profile["inputs"]:
-        if not isinstance(step, dict) or set(step) - {"name", "run", "checkout"}:
-            raise ProfileError(f"the instance profile's inputs: {step!r} is not a step (keys: name, run, checkout)")
+        if not isinstance(step, dict) or set(step) - {"name", "run", "checkout", "store"}:
+            raise ProfileError(f"the instance profile's inputs: {step!r} is not a step (keys: name, run, checkout, "
+                               "store)")
+        store = step.get("store")
+        if store is not None and (not isinstance(store, dict) or set(store) - {"project", "files"}
+                                  or not isinstance(store.get("project"), str)
+                                  or not isinstance(store.get("files"), dict) or not store["files"]
+                                  or not all(isinstance(k, str) and isinstance(v, str) for k, v in store["files"].items())):
+            raise ProfileError(f"the instance profile's input step {step.get('name')}: store is a table with project "
+                               "(a CI project) and files (artifact name = path in the checkout)")
         name = step.get("name")
         if not isinstance(name, str) or not STEP_NAME.match(name) or name in seen:
             raise ProfileError(f"the instance profile's inputs: {name!r} is not a plain, distinct step name")

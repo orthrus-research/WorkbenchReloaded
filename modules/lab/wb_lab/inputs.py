@@ -62,6 +62,50 @@ def check_agreement(ctx: Context, allow: bool) -> list[str]:
     return lines
 
 
+def from_store(ctx: Context, step: dict, cwd: Path) -> dict | None:
+    """The step's files from the Store when CI built this checkout's tree: the checkout must be clean (its tracked
+    files are its HEAD), and the Store must hold every file the step names. None: the step runs as written."""
+    import shutil
+    import subprocess
+    from wb_core import artifacts
+    from wb.workspace import Workspace, WorkspaceError
+    store = step["store"]
+    def git(*args):
+        done = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
+        return done.stdout.strip() if done.returncode == 0 else None
+    tree = git("rev-parse", "HEAD^{tree}")
+    if tree is None:
+        return None
+    if git("status", "--porcelain", "--untracked-files=no"):
+        ctx.log.info(f"{step['name']}: the checkout has changes, so CI's JARs do not stand for it; building")
+        return None
+    try:
+        workspace = Workspace()
+        root = workspace.host_path(str(workspace.ci.get("store") or ""))
+    except (WorkspaceError, OSError) as error:
+        ctx.log.info(f"{step['name']}: no Store to read ({error}); building")
+        return None
+    index = artifacts.find(root, store["project"], tree) if str(root) else None
+    held = (index or {}).get("artifacts", {})
+    missing = [name for name in store["files"] if name not in held]
+    if missing:
+        ctx.log.info(f"{step['name']}: the Store has no {', '.join(missing)} of {store['project']} tree {tree[:12]}; "
+                     "building")
+        return None
+    started = time.monotonic()
+    placed = {}
+    for name, target in store["files"].items():
+        kept = artifacts.path_of(root, held[name]["sha256"], name)
+        destination = cwd / target
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(kept, destination)
+        placed[name] = held[name]["sha256"]
+    ctx.log.info(f"{step['name']}: took {len(placed)} file(s) CI built for {store['project']} tree {tree[:12]} "
+                 "from the Store")
+    return {"name": step["name"], "exit": 0, "seconds": round(time.monotonic() - started, 1),
+            "from_store": {"project": store["project"], "tree": tree, "files": placed}}
+
+
 def inputs(ctx: Context, steps: list, allow_disagreement: bool = False, profile: str = ""):
     p = commands._profile(ctx)
     declared = p["inputs"]
@@ -81,6 +125,11 @@ def inputs(ctx: Context, steps: list, allow_disagreement: bool = False, profile:
     results = []
     for step in chosen:
         cwd = folder(ctx, step.get("checkout") or "")
+        if step.get("store"):
+            taken = from_store(ctx, step, cwd)
+            if taken is not None:
+                results.append(taken)
+                continue
         command = profiles.command(step["run"], python=commands._python(ctx), cwd=str(cwd))
         ctx.progress("inputs", msg=step["name"])
         started = time.monotonic()
