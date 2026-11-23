@@ -37,7 +37,7 @@ import sys
 import tempfile
 import time
 import tomllib
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -76,6 +76,10 @@ class Repository:
     path: Path
     pin_file: str | None = None
     pin_key: str = "commit"
+    # The repository whose pin_file names this one's commit, read at its own pinned commit; None: the
+    # project's. A chain names each shared dependency once: the project pins a library, the library
+    # pins what both load.
+    pin_from: str | None = None
     # False for a checkout that jobs only build pinned commits from: its own tree is not what a
     # run tests, so it is not recorded, matched or gated, and its new commits leave passes standing.
     tested: bool = True
@@ -153,8 +157,15 @@ def load(root: Path, given: Path | None = None) -> Config:
         if not isinstance(tested, bool) or (pin and not tested):
             raise ToolError(USAGE, f"{path.name}: [repositories.{name}] tested is true or false, "
                                    "and a pinned repository is tested")
+        source = pin.get("repository") or None
+        if source is not None and source not in {r.name for r in repositories[1:] if r.pin_file}:
+            raise ToolError(USAGE, f"{path.name}: [repositories.{name}] pin.repository names {source}, which is "
+                                   "no pinned repository declared above it")
+        if pin and not pin.get("file"):
+            raise ToolError(USAGE, f"{path.name}: [repositories.{name}] pin needs a file")
         repositories.append(
-            Repository(name, checkout.resolve(), pin.get("file"), str(pin.get("key", "commit")), tested)
+            Repository(name, checkout.resolve(), pin.get("file"), str(pin.get("key", "commit")),
+                       tested=tested, pin_from=source)
         )
     runs = root / str(settings.get("runs", DEFAULT_RUNS))
     config = Config(root, path, data, repositories, runs)
@@ -310,6 +321,33 @@ def pin_value(document: Any, key: str) -> Any:
             raise KeyError(key)
         value = value[part]
     return value
+
+
+def pinned_commits(config: Config, commit: str, read: Callable[[Repository, str, str], str]) -> dict[str, str]:
+    """The commit each pinned repository is at when the project is at ``commit``: read from its pin file in the
+    project, or in the repository ``pin.repository`` names at that one's pinned commit. ``read(repository, commit,
+    file)`` gives a file's text at a commit. Raises PinError naming the pin it could not read."""
+    at = {config.repositories[0].name: commit}
+    by_name = {r.name: r for r in config.repositories}
+    for repository in config.repositories[1:]:
+        if not repository.pin_file:
+            continue
+        holder = by_name[repository.pin_from or config.repositories[0].name]
+        where = (repository.pin_file if holder is config.repositories[0]
+                 else f"{holder.name} {at[holder.name][:8]}'s {repository.pin_file}")
+        try:
+            value = pin_value(json.loads(read(holder, at[holder.name], repository.pin_file)), repository.pin_key)
+        except (OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError):
+            value = None
+        if value is None or isinstance(value, (dict, list)) or not str(value):
+            raise PinError(f"its {where} names no {repository.name} commit")
+        at[repository.name] = str(value)
+    del at[config.repositories[0].name]
+    return at
+
+
+class PinError(Exception):
+    """A pin that could not be read: why, as the push gate words it."""
 
 
 def trees(config: Config) -> dict[str, str | None]:
@@ -839,14 +877,22 @@ def refusal(
     fixed = {names.index(repository): tree}
     label = f"{repository} tree {tree[:8]}"
     if repository == names[0]:
+        def read(holder: Repository, at: str, file: str) -> str:
+            if holder is not config.repositories[0]:
+                try:
+                    git(holder.path, "rev-parse", "--verify", f"{at}^{{commit}}")
+                except (OSError, subprocess.CalledProcessError):
+                    raise PinError(f"its {holder.name} pin {at[:8]} is not in the {holder.name} checkout") from None
+            return git(holder.path, "show", f"{at}:{file}")
+
+        try:
+            pins = pinned_commits(config, commit, read)
+        except PinError as error:
+            return str(error)
         for other in config.tested[1:]:
             if not other.pin_file:
                 continue
-            try:
-                text = git(config.root, "show", f"{commit}:{other.pin_file}")
-                pin = str(pin_value(json.loads(text), other.pin_key))
-            except (subprocess.CalledProcessError, ValueError, KeyError, TypeError):
-                return f"its {other.pin_file} names no {other.name} commit"
+            pin = pins[other.name]
             try:
                 pinned = git(other.path, "rev-parse", "--verify", f"{pin}^{{tree}}")
             except (OSError, subprocess.CalledProcessError):

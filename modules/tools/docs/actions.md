@@ -43,6 +43,10 @@ path = "../library"
 env = "LIBRARY_HOME"      # overrides path when set
 pin = { file = "library.lock.json", key = "commit" }   # optional, see the push gate
 
+[repositories.base]       # what the library pins, at the library's pin: named once, by the library
+path = "../base"
+pin = { repository = "library", file = "platform.json", key = "base.commit" }
+
 [repositories.upstream]   # a checkout jobs only build pinned commits from
 path = "../upstream"
 tested = false            # its tree is not recorded, matched or gated (never with a pin)
@@ -150,7 +154,10 @@ whose pushed commit's tree has not passed every job of the workflow in one run c
 
 - a project commit's tree must have passed together with the tree of each repository commit it
   pins, read from `pin.file` at that commit as the JSON key `key`, or a dotted path to a nested
-  one (`orthlib.commit`); repositories without a `pin` may be any tree tested with it;
+  one (`orthlib.commit`). A pin with `repository` is read from that repository's `pin.file` at
+  the commit its own pin names (a pinned repository declared above it), so a dependency two
+  projects share is pinned in one place: the project pins the library, the library pins the base.
+  Repositories without a `pin` may be any tree tested with it;
 - a repository commit's tree must have passed with any project tree.
 
 To push: check out the commits with nothing uncommitted, run

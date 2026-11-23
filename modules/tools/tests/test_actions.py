@@ -467,6 +467,52 @@ class GateTest(Project):
         tree = git(self.root, "rev-parse", "HEAD^{tree}")
         self.assertIsNone(self.refusal("demo", commit, {(tree, self.other_tree): {"lint", "test"}}))
 
+    def chained(self):
+        """A third repository, base, pinned by other's base.json at other's pin."""
+        (self.root / "base").mkdir()
+        base = git_repo(self.root / "base")
+        (base / "c.txt").write_text("c\n", encoding="utf-8")
+        base_pin = commit_all(base, "base")
+        (self.other / "base.json").write_text(json.dumps({"base": {"commit": base_pin}}), encoding="utf-8")
+        other_pin = commit_all(self.other, "pin base")
+        text = (self.root / "actions.toml").read_text(encoding="utf-8")
+        entry = '[repositories.base]\npath = "base"\npin = { repository = "other", file = "base.json", key = "base.commit" }\n'
+        self.write_config(text.replace("[workflows]", entry + "\n[workflows]"))
+        (self.root / ".gitignore").write_text(".local/\nother/\nbase/\n", encoding="utf-8")
+        return base, base_pin, other_pin
+
+    def test_a_pin_may_be_read_from_another_pinned_repository(self):
+        base, base_pin, other_pin = self.chained()
+        commit = self.pinned(other_pin)
+        config = self.load()
+        self.assertEqual(config.names, ("demo", "other", "base"))
+        self.assertEqual(actions.pinned_commits(config, commit, lambda r, at, f: git(r.path, "show", f"{at}:{f}")),
+                         {"other": other_pin, "base": base_pin})
+        tree = git(self.root, "rev-parse", "HEAD^{tree}")
+        other_tree = git(self.other, "rev-parse", f"{other_pin}^{{tree}}")
+        base_tree = git(base, "rev-parse", f"{base_pin}^{{tree}}")
+        self.assertIsNone(self.refusal("demo", commit, {(tree, other_tree, base_tree): {"lint", "test"}}))
+        reason = self.refusal("demo", commit, {(tree, other_tree, "elsewhere"): {"lint", "test"}})
+        self.assertIn(f"with other {other_pin[:8]} with base {base_pin[:8]} has not passed", reason)
+
+    def test_a_chained_pin_through_an_absent_commit_is_refused(self):
+        self.chained()
+        commit = self.pinned("e" * 40)
+        self.assertEqual(self.refusal("demo", commit, {}), "its other pin eeeeeeee is not in the other checkout")
+        commit = self.pinned(self.pin)  # other's first commit has no base.json
+        self.assertEqual(self.refusal("demo", commit, {}),
+                         f"its other {self.pin[:8]}'s base.json names no base commit")
+
+    def test_a_chained_pin_names_a_pinned_repository_above_it(self):
+        text = (self.root / "actions.toml").read_text(encoding="utf-8")
+        for pin in ('{ repository = "base", file = "x.json" }',      # itself
+                    '{ repository = "nowhere", file = "x.json" }',   # unknown
+                    '{ repository = "demo", file = "x.json" }',      # the project: name no repository instead
+                    '{ repository = "other" }'):                      # no file
+            self.write_config(text.replace("[workflows]", f'[repositories.base]\npath = "base"\npin = {pin}\n\n[workflows]'))
+            with self.assertRaises(cli.ToolError, msg=pin):
+                self.load()
+
     def test_a_pin_to_an_absent_commit_is_refused(self):
         commit = self.pinned("f" * 40)
         reason = self.refusal("demo", commit, {})
