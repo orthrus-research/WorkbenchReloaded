@@ -254,6 +254,58 @@ def cmd_logs(args) -> int:
     return 0
 
 
+def cmd_hook(args) -> int:
+    from . import hooks
+    return hooks.run(args.name, args.rest)
+
+
+def cmd_setup(args) -> int:
+    from . import setup
+    return setup.main(args)
+
+
+def cmd_check(args) -> int:
+    """ci.run for the worktree you stand in: its project from the repository, the commit from HEAD, or the tree
+    the host's git would commit when the worktree has changes. No commit= or checkout= to type."""
+    from .workspace import Workspace, WorkspaceError
+    try:
+        workspace = Workspace()
+        project, top = workspace.project_for(Path.cwd())
+        tree = workspace.would_be(top)
+    except WorkspaceError as error:
+        print(f"wb: {error}", file=sys.stderr)
+        return 2
+    params = {"project": project.name, "commit": tree["commit"]}
+    if args.names:
+        params["workflow"] = args.names[0]
+        params["jobs"] = args.names[1:]
+    what = (f"the working tree of {top} (tree {tree['tree'][:12]}, on {tree['head'][:12]})" if tree["dirty"]
+            else f"{top} at {tree['commit'][:12]}")
+    client = _client()
+    job = client.submit("ci.run", params)
+    if not args.quiet:
+        print(f"wb: {job.id}  check {project.name}: {what}  (wb show {job.id})", file=sys.stderr)
+        _follow(client, job.id)
+    env = job.wait(_duration(args.timeout))
+    print_envelope(env, args.json)
+    return env.exit_code
+
+
+def cmd_job(args) -> int:
+    """A job's envelope: the one named, or the newest."""
+    client = _client()
+    if args.job:
+        env = client.job(args.job).refresh()
+    else:
+        listed = client.jobs(limit=1)
+        if not listed:
+            print("wb: no jobs yet", file=sys.stderr)
+            return 2
+        env = listed[0]
+    print_envelope(env, args.json)
+    return env.exit_code if hasattr(env, "exit_code") else 0
+
+
 def cmd_config(args) -> int:
     if args.action == "reload":
         body = _client().reload_config()
@@ -394,6 +446,20 @@ def build_parser() -> argparse.ArgumentParser:
     add("status", cmd_status, "health of the daemon")
     p = add("build", cmd_build, "build the image from this checkout")
     p.add_argument("--tag", default="wb-core:dev")
+    p = add("check", cmd_check, "run CI's checks on the worktree you stand in (its changes included)")
+    p.add_argument("names", nargs="*", help="a workflow or check, then more (default: the jobs file's workflow)")
+    p.add_argument("--quiet", action="store_true")
+    p.add_argument("--timeout")
+    p = add("job", cmd_job, "show a job's envelope, or the newest job's")
+    p.add_argument("job", nargs="?")
+    p = add("hook", cmd_hook, "a git hook, answered on the host (the hook stubs call this)")
+    p.add_argument("name", choices=["pre-commit", "commit-msg", "pre-push"])
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = add("setup", cmd_setup, "install Workbench's hooks in this machine's repositories (a plan unless --yes)")
+    p.add_argument("--yes", action="store_true")
+    p.add_argument("--report", action="store_true", help="scrub unpushed commits and ref names; change nothing")
+    p.add_argument("--undo", action="store_true", help="remove Workbench's hooks, restoring those kept at install")
+    p.add_argument("--repo", action="append", default=[], help="another repository to cover")
     p = add("host", cmd_host, "the Windows host runner")
     p.add_argument("action", choices=["serve", "install", "uninstall", "status"])
     p.add_argument("rest", nargs=argparse.REMAINDER)

@@ -1,0 +1,122 @@
+"""The git hooks, answered on the host in this process: no daemon, no queue, no job.
+
+``pre-commit`` scrubs the staged changes, ``commit-msg`` the message, and ``pre-push`` the commits and ref names being
+pushed and then asks the push gate: each pushed commit of a registered project must have passed its own required
+checks in CI's records. A repository that is not a registered project, or one whose ``gate`` is false, is only
+scrubbed. The scrub reads the machine's rules file; without one it says that it ran on its built-in rules only.
+
+Each verdict is one line in the machine's hook log. ``git push --no-verify`` still skips everything."""
+
+from __future__ import annotations
+
+import os
+import sys
+import time
+from pathlib import Path
+
+from .workspace import TOOLS, Workspace, WorkspaceError, git
+
+NAMES = ("pre-commit", "commit-msg", "pre-push")
+MARKER = "# Written by Workbench (wb setup)"
+
+
+def _scrub():
+    if str(TOOLS) not in sys.path:
+        sys.path.insert(0, str(TOOLS))
+    from orthrus_tools import scrub
+    return scrub
+
+
+def _say(text: str):
+    print(f"Workbench: {text}", file=sys.stderr)
+
+
+def _log(workspace: Workspace | None, root: Path, name: str, verdict: str):
+    try:
+        folder = Path(workspace.config.folder) if workspace else Path.home() / ".config" / "wb"
+        (folder / "run").mkdir(parents=True, exist_ok=True)
+        with open(folder / "run" / "hooks.log", "a", encoding="utf-8") as log:
+            log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {root} {name} {verdict}\n")
+    except OSError:
+        pass  # a log line never decides a commit
+
+
+def rules_note(scrub) -> str | None:
+    named = os.environ.get("ORTHRUS_SCRUB_RULES_FILE")
+    path = Path(named) if named else scrub.RULES_FILE
+    return None if path.is_file() else f"no scrub rules file at {path}: the scrub ran on its built-in rules only"
+
+
+def run(name: str, args: list[str], stdin: str | None = None) -> int:
+    scrub = _scrub()
+    root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
+    try:
+        rules = scrub.Rules.load(root)
+    except scrub.ToolError as error:
+        _say(f"the scrub cannot load its rules: {error.message if hasattr(error, 'message') else error}")
+        return 1
+    note = rules_note(scrub)
+    if note:
+        _say(note)
+    if name == "commit-msg":
+        if not args:
+            _say("commit-msg needs the message file")
+            return 1
+        text = Path(args[0]).read_text(encoding="utf-8", errors="replace")
+        body = "\n".join(line for line in text.splitlines() if not line.startswith("#"))
+        findings = list(scrub.check_text(body, "message", rules))
+        return _verdict(None, root, name, findings, [])
+    if name == "pre-commit":
+        return _verdict(None, root, name, scrub.check_staged(root, rules), [])
+    lines = [line for line in (stdin if stdin is not None else sys.stdin.read()).splitlines() if line.strip()]
+    findings = scrub.pre_push(root, "\n".join(lines), rules)
+    for line in lines:
+        fields = line.split()
+        if len(fields) == 4:
+            for ref in (fields[0], fields[2]):
+                findings += list(scrub.check_line(ref, f"ref name {ref}", rules))
+    refused: list[dict] = []
+    workspace = None
+    try:
+        workspace = Workspace()
+        project = workspace.find(root)
+        if project is not None:
+            answer = workspace.gate(project, lines)
+            refused = answer["refused"]
+            if answer["gated"] and not refused and answer["required"]:
+                _say(f"{project.name}: every pushed commit has passed {', '.join(answer['required'])}")
+    except (WorkspaceError, OSError) as error:
+        _say(f"the push gate could not answer: {error}. Fix that, or push with --no-verify to skip the gate.")
+        _log(workspace, root, name, "error")
+        return 1
+    for item in refused:
+        _say(f"{item['ref']} {item['commit'][:12]}: {item['reason']}")
+    if refused:
+        _say("run `wb check` in the worktree of that commit, then push again")
+    return _verdict(workspace, root, name, findings, refused)
+
+
+def _verdict(workspace, root: Path, name: str, findings: list, refused: list) -> int:
+    for finding in findings:
+        _say(f"scrub: {finding}")
+    if findings:
+        _say(f"{len(findings)} scrub finding(s). Remove them, or mark a line that must keep its text with "
+             "'scrub: allow'.")
+    verdict = "refused" if (findings or refused) else "ok"
+    _log(workspace, root, name, f"{verdict} findings={len(findings)} refused={len(refused)}")
+    return 1 if (findings or refused) else 0
+
+
+STUB = """#!/bin/sh
+{marker}: the scrub{gate}, answered on the host.
+wb="$(git config --get wb.cli)"
+if [ -z "$wb" ]; then
+  echo "Workbench: git config wb.cli is not set, so this hook cannot run; run wb setup (or commit with --no-verify)" >&2
+  exit 1
+fi
+exec $wb hook {name} "$@"
+"""
+
+
+def stub(name: str) -> str:
+    return STUB.format(marker=MARKER, gate=", and the push gate" if name == "pre-push" else "", name=name)

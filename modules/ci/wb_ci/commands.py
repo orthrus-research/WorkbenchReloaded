@@ -34,7 +34,7 @@ from wb_core.module import Context, EnvironmentProblem, ParamError
 TOOLS_SRC = Path(wb_tools.adapter.__file__).resolve().parents[1] / "src"
 # Mounted checkouts belong to another user; reading them is all ci ever does.
 GIT_SAFE = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": "*"}
-PROJECT_KEYS = {"repo", "config", "jdk", "env", "python", "workflow"}
+PROJECT_KEYS = {"repo", "config", "jdk", "env", "python", "workflow", "gate"}  # gate = false: pushes are only scrubbed
 REPOSITORY_SCRIPT = "workbench-repository.gradle"  # in the Gradle home's init.d: toolchain's rescue repository
 
 
