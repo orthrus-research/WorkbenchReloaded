@@ -8,6 +8,7 @@ git common dir, so a parked main checkout stops mattering."""
 from __future__ import annotations
 
 import ntpath
+import json
 import os
 import posixpath
 import subprocess
@@ -162,6 +163,47 @@ class Workspace:
         config.runs = self.records(project.name)
         return config
 
+    # -- the Set ----------------------------------------------------------------------------------------------
+    def set_home(self) -> Path | None:
+        configured = str((self.values.get("workspace") or {}).get("set") or "")
+        return Path(configured) if configured and (Path(configured) / "HEAD").is_file() else None
+
+    def set_line(self, name: str) -> dict | None:
+        """The project's line at the head of this machine's Set, or None when it has none (or there is no Set)."""
+        home = self.set_home()
+        if home is None:
+            return None
+        shown = subprocess.run(["git", "show", "refs/heads/main:set.json"], cwd=home, capture_output=True,
+                               text=True, encoding="utf-8")
+        if shown.returncode != 0:
+            return None
+        try:
+            return (json.loads(shown.stdout).get("projects") or {}).get(name)
+        except ValueError:
+            return None
+
+    def store_root(self) -> Path | None:
+        value = self.ci.get("store")
+        return self.host_path(str(value)) if value else None
+
+    def landing_rule(self, project: Project, commit: str, remote_ref: str) -> str | None:
+        """For a push to a landing ref or to the project's set-named branch: '' when a publishing landing names the
+        commit, else why not. None for any other ref, which the ordinary gate judges."""
+        from wb_core import landing as landings
+        line = self.set_line(project.name)
+        store = self.store_root()
+        if remote_ref.startswith("refs/landed/"):
+            states = ("prepared", "refs-pushed", "set-pushed")
+        elif line and remote_ref == f"refs/heads/{line.get('branch')}":
+            states = ("refs-pushed", "set-pushed")
+        else:
+            return None
+        if store is not None and landings.naming(store, project.name, commit, states):
+            return ""
+        what = remote_ref.removeprefix("refs/heads/")
+        return (f"{what} is {project.name}'s set-named branch, which moves only by landing: wb land in a worktree "
+                f"at {commit[:12]} (or wb land {project.name}={commit[:12]})")
+
     def gate(self, project: Project, lines: list[str]) -> dict:
         """The push gate, answered on the host from git and CI's records. Each pushed commit is judged by its own
         jobs file and the trees it pins; a project whose ``gate`` is false, or a commit with no jobs file, is not
@@ -174,6 +216,11 @@ class Workspace:
             for line in lines:
                 fields = line.split()
                 if len(fields) != 4 or set(fields[1]) == {"0"}:
+                    continue
+                landed = self.landing_rule(project, fields[1], fields[2])
+                if landed is not None:
+                    if landed:
+                        refused.append({"ref": fields[0], "commit": fields[1], "reason": landed})
                     continue
                 config = self.config_at(project, fields[1], Path(scratch))
                 if config is None:

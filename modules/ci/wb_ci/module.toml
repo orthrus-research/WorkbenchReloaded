@@ -14,6 +14,7 @@ workdir = { type = "string", default = "", summary = "where clean trees are buil
 records = { type = "string", default = "", summary = "where run records are kept, one folder per project; inside an rw root, given to Workbench's user at container start; empty: <state>/ci/records" }
 gradle_home = { type = "string", default = "", summary = "a Gradle home that survives the container, whose init.d serves toolchain's rescue repository and substitutions to every build (written each run); empty: <state>/cache/gradle" }
 store = { type = "string", default = "", summary = "the Store: what producing jobs built, by SHA-256 and by project and tree; inside an rw root, given to Workbench's user at container start; empty: <state>/store" }
+store_hosts = { type = "list", items = "string", default = [], summary = "the hosts a URL the Set names may be fetched from (platform JDKs, Gradle, third-party files); a URL on any other host is refused" }
 pin_cache = { type = "string", default = "", summary = "the shared cache of pinned files by SHA-256 (WB_PIN_CACHE in every job); inside an rw root, given to Workbench's user at container start; empty: <state>/cache/pins" }
 python_cache = { type = "string", default = "", summary = "where projects' Python environments are cached by requirements; empty: <state>/cache/python" }
 
@@ -127,3 +128,18 @@ handler = "wb_ci.commands:store_import"
 aliases = ["store.import"]
 resources = { cpu = 1, mem_gb = 0.5 }
 params.source = { type = "path.in", summary = "the folder store-export wrote" }
+
+[[command]]
+name = "land"
+summary = "One landing under lock set: each commit descends from its line and has passed its gate checks, its files are found in the Store, the new set.json and commit body are composed and scrubbed, and the lock is held while wb land publishes with the caller's git."
+handler = "wb_ci.land:land"
+aliases = ["set.land"]
+requires = { binary = ["git"] }
+resources = { cpu = 1, mem_gb = 0.5, locks = ["set"] }
+timeout = "1h"
+params.landing = { type = "string", pattern = "^[A-Za-z0-9_-]{4,64}$", summary = "the landing's id, from wb land" }
+params.base = { type = "string", pattern = "^[0-9a-f]{40}$", summary = "the Set revision validated against (exported by wb land)" }
+params.projects = { type = "object", summary = "{name: {commit, branch?, url?}}: what lands" }
+params.deadline = { type = "float", default = 600, min = 5, summary = "seconds the publish has to be confirmed" }
+params.caller = { type = "string", default = "" }
+result.state = { type = "string" }

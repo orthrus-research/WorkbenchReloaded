@@ -281,6 +281,11 @@ def cmd_store(args) -> int:
     from . import store
     return store.main(args)
 
+
+def cmd_land(args) -> int:
+    from . import land
+    return land.main(args)
+
 def cmd_check(args) -> int:
     """ci.run for the worktree you stand in: its project from the repository, the commit from HEAD, or the tree
     the host's git would commit when the worktree has changes. No commit= or checkout= to type."""
@@ -492,6 +497,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("action", nargs="?", choices=["view", "start", "add", "adopt", "finish"])
     p.add_argument("names", nargs="*")
     p.add_argument("--all", action="store_true", help="every registered project's worktrees")
+    p = add("land", cmd_land, "move projects' lines in the Set: the only route to a set-named branch")
+    p.add_argument("targets", nargs="*", metavar="PROJECT=REF", help="default: HEAD of the worktree you stand in")
+    p.add_argument("--add", action="append", metavar="PROJECT=URL", help="a project's first line, with its public url")
+    p.add_argument("--branch", help="the set-named branch (default: the line's, else the remote's default)")
+    p.add_argument("--dry", action="store_true", help="validate and compose only; publish nothing")
     p = add("backup", cmd_backup, "copy the job database, the ledger and the scrub rules off this drive")
     p.add_argument("--to", help="the folder to back up into (default [paths] backup, else ~/wb-backup)")
     p = add("store", cmd_store, "what CI built: by project and commit, a kept file's path, or bytes to seed")

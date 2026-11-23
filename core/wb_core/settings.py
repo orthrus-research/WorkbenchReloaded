@@ -94,7 +94,13 @@ HOST_RUNNER = {
              "summary": "the host's JDKs by key (\"26\" = its home); host routines get JAVA_HOME_<major>_X64 for each"},
     "java_home": {"type": "string", "default": "26", "summary": "the JDK key host routines get as JAVA_HOME"},
 }
-TOP_LEVEL = {"core", "paths", "secrets", "schedules", "modules", "runner"}
+# Where a person's work lives on this host, read by the host CLI (the daemon only checks it).
+WORKSPACE = {
+    "work": {"type": "string", "default": "", "summary": "the folder Works are made in; empty: <projects root>/work"},
+    "set": {"type": "string", "default": "",
+            "summary": "the Set's home: a bare repository on this host that wb land writes with plumbing"},
+}
+TOP_LEVEL = {"core", "paths", "secrets", "schedules", "modules", "runner", "workspace"}
 
 
 class SettingsError(Exception):
@@ -118,6 +124,7 @@ class Settings:
     schedules: dict[str, dict] = field(default_factory=dict)
     modules: dict[str, dict] = field(default_factory=dict)
     runner: dict = field(default_factory=dict)
+    workspace: dict = field(default_factory=dict)
 
     @property
     def state_dir(self) -> Path:
@@ -210,5 +217,6 @@ def resolve(config: wbconfig.Config, module_schemas: dict[str, dict] | None = No
     modules = {name: _check(config, f"modules.{name}", schema, module_values.get(name))
                for name, schema in module_schemas.items()}
     runner = _check(config, "runner", HOST_RUNNER, values.get("runner"))
+    workspace = _check(config, "workspace", WORKSPACE, values.get("workspace"))
     return Settings(config=config, core=core, roots=roots, secrets=secrets, schedules=schedules,
-                    modules=modules, runner=runner)
+                    modules=modules, runner=runner, workspace=workspace)
