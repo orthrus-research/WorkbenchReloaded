@@ -82,6 +82,10 @@ class Land(unittest.TestCase):
         git(seed, "add", "-A")
         git(seed, "commit", "-q", "-m", "seed")
         git(seed, "push", "-q", str(cls.home), "main")
+        cls.gradled, _ = project(root, "gradled")  # a project whose check runs {gradle}
+        (cls.gradled / "project.toml").write_text('schema = 1\ngate = ["build"]\n\n[project]\nname = "gradled"\n\n'
+                                                  '[checks.build]\nsteps = [["{gradle}", "hello"]]\n', encoding="utf-8")
+        git(cls.gradled, "commit", "-q", "-am", "gradle")
         cls.set_checkout = root / "data" / "Set"  # the Set's home checkout, as a project
         git(root, "clone", "-q", str(cls.home), str(cls.set_checkout))
         git(cls.set_checkout, "config", "user.name", "t")
@@ -105,6 +109,10 @@ class Land(unittest.TestCase):
 
             [modules.ci.projects.two]
             repo = '{cls.two}'
+            jdk = ""
+
+            [modules.ci.projects.gradled]
+            repo = '{cls.gradled}'
             jdk = ""
 
             [modules.ci.projects.set]
@@ -340,6 +348,26 @@ class Land(unittest.TestCase):
         workspace = Workspace(self.d.config)
         refused = workspace.landing_rule(workspace.projects()["set"], change, "refs/heads/main")
         self.assertIn("wb land set=", refused)
+
+    def test_9d_gradle_in_a_step_is_the_sets_gradle_with_the_sets_arguments(self):
+        import os
+        from wb_core import setfile
+        revision = "b" * 40
+        setfile.export(self.store.parent / "sets", revision, setfile.dump(
+            {**EMPTY_SET, "platform": {"java": 26, "gradle": {"version": "9.8.1"}}}))
+        binary = self.store / "gradle" / "9.8.1" / "gradle-9.8.1" / "bin" / ("gradle.bat" if os.name == "nt" else "gradle")
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text("@echo gradle %*\r\n" if os.name == "nt" else '#!/bin/sh\necho gradle "$@"\n', encoding="utf-8")
+        binary.chmod(0o755)
+        envelope = self.c.submit("ci.run", {"project": "gradled", "set": revision}).result(timeout=300)
+        self.assertEqual(envelope.outcome, "ok", envelope.summary)
+        self.assertEqual(envelope.data["set"], revision)
+        step = envelope.data["engine"]["jobs"]["build"]["steps"][0]
+        log = Path(step["log"]).read_text(encoding="utf-8")
+        self.assertIn(f"-Pset.dir={self.store.parent / 'sets' / revision}", log)
+        self.assertIn("-Pset.exact=true", log)
+        self.assertIn("hello", log)
+        self.assertEqual(step["name"], "gradle hello")
 
     def test_y_the_backup_keeps_the_set_and_the_seeded_bytes(self):
         from wb import backup

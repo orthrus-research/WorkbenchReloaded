@@ -294,12 +294,12 @@ def cmd_check(args) -> int:
         workspace = Workspace()
         project, top = workspace.project_for(Path.cwd())
         from . import setwork
-        setwork.resolve(workspace, Path.cwd())
+        revision = setwork.resolve(workspace, Path.cwd())
         tree = workspace.would_be(top)
     except WorkspaceError as error:
         print(f"wb: {error}", file=sys.stderr)
         return 2
-    params = {"project": project.name, "commit": tree["commit"]}
+    params = {"project": project.name, "commit": tree["commit"], **({"set": revision} if revision else {})}
     if args.names:
         params["workflow"] = args.names[0]
         params["jobs"] = args.names[1:]

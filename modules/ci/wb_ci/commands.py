@@ -358,8 +358,49 @@ def _failing_tails(ctx: Context, jobs: dict):
 # ---------------------------------------------------------------------------------------------
 # commands
 
+GRADLE_LAUNCHER = """import os, subprocess, sys
+# Written by Workbench's ci for one run: the set's Gradle with the set's arguments.
+args = {args!r}
+sys.exit(subprocess.call([*args, *sys.argv[1:]]))
+"""
+
+
+def _gradle_launcher(ctx: Context, work: Path, revision: str) -> tuple[Path, str]:
+    """The launcher {gradle} runs: the Gradle distribution the set's platform names, from the Store, with -Pset.dir
+    (the run's export of the set), -Pset.store, -Pset.plugins, -Pset.exact=true and the platform's JDK builds as
+    Gradle's only installations. Without that Gradle in the Store, the launcher says what fetches it."""
+    from wb_core import setfile
+    root = _store_root(ctx)
+    sets = root.parent / "sets"
+    launcher = work / "gradle-launcher.py"
+    revision = revision or setfile.read_head(sets) or ""
+    try:
+        platform = setfile.read_export(sets, revision).get("platform") or {} if revision else {}
+    except setfile.SetError:
+        platform = {}
+    version = str((platform.get("gradle") or {}).get("version") or "")
+    found = sorted((root / "gradle" / version).glob("*/bin/" + ("gradle.bat" if os.name == "nt" else "gradle"))) \
+        if version else []
+    if not found:
+        why = (f"no Gradle {version} in the Store for set {revision[:12]}: wb run store.platform" if version
+               else "no set revision for this run: wb work sync, or name one with set=<revision>")
+        launcher.write_text(f"import sys\nsys.exit('{{gradle}}: {why}')\n", encoding="utf-8")
+        return launcher, ""
+    system = "windows" if os.name == "nt" else "linux"
+    jdks = []
+    for major, jdk in sorted((platform.get("jdk") or {}).items()):
+        jdks += [str(p) for p in sorted((root / "jdks" / str(jdk.get("build")) / system).glob("*")) if p.is_dir()]
+    args = [str(found[0]), f"-Pset.dir={sets / revision}", f"-Pset.store={root}", f"-Pset.plugins={root / 'plugins'}",
+            "-Pset.exact=true", "-Porg.gradle.java.installations.auto-detect=false",
+            "-Porg.gradle.java.installations.auto-download=false"]
+    if jdks:
+        args.append(f"-Porg.gradle.java.installations.paths={','.join(jdks)}")
+    launcher.write_text(GRADLE_LAUNCHER.format(args=args), encoding="utf-8")
+    return launcher, revision
+
+
 def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_needed: bool, keep_going: bool,
-        keep: bool, dry_run: bool, checkout=None, cold: bool = False):
+        keep: bool, dry_run: bool, checkout=None, cold: bool = False, set: str = ""):
     entry = _project(ctx, project)
     source = entry["source"]
     tree_source = Path(checkout) if checkout else source  # whose working tree commit=worktree runs
@@ -407,7 +448,9 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
         pins = _folder(ctx, "pin_cache", _state() / "cache" / "pins")
         pins.mkdir(parents=True, exist_ok=True)
         gradle_home, served = _gradle_home(ctx)
+        launcher, set_revision = _gradle_launcher(ctx, work, set)
         env = {**_jdk_env(ctx, major), "GRADLE_USER_HOME": str(gradle_home), "WB_PIN_CACHE": str(pins),
+               "WB_GRADLE": str(launcher),
                **{k: str(v) for k, v in (entry.get("env") or {}).items()}, **({"WB_COLD": "1"} if cold else {})}
         python = _python(ctx, root, [str(r) for r in entry.get("python") or config.data.get("project", {}).get("python")
                                      or []])
@@ -455,7 +498,7 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
                     + ("" if jobs_done else f" ({document.get('summary') or 'nothing to run'})"))
     return {"project": project, "commit": sha, "worktree": worktree, "pinned": pinned, "run": run_id,
             "trees": trees, "passed": passed, "failed": failed, "repository": served, "stored": stored,
-            "engine": result}
+            "engine": result, "set": set_revision}
 
 
 def _store_artifacts(ctx: Context, project: str, sha: str, trees: dict, records: Path, run_id: str | None,

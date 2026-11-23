@@ -179,8 +179,16 @@ def from_project(data: dict, name: str) -> dict:
             refuse(f"unknown key checks.{check}.{key}")
         steps = []
         for index, step in enumerate(entry.get("steps") or [], 1):
+            if isinstance(step, list):  # {gradle}: the set's Gradle, through the launcher Workbench writes per run
+                step = [part for word in step for part in
+                        (["{python}", "{env.WB_GRADLE}"] if word == "{gradle}" else [word])]
+            if isinstance(step, dict) and isinstance(step.get("run"), list):
+                step = {**step, "run": [part for word in step["run"] for part in
+                                        (["{python}", "{env.WB_GRADLE}"] if word == "{gradle}" else [word])]}
             if isinstance(step, list):  # an argv list, named by what it runs
                 words = [w for w in step if not (w.startswith("{") and w.endswith("}"))] or step
+                if step[:2] == ["{python}", "{env.WB_GRADLE}"]:
+                    words = ["gradle", *[w for w in step[2:] if not w.startswith("-")]]
                 steps.append({"name": " ".join(Path(w).name for w in words[:2]) or f"step {index}", "run": step})
             elif isinstance(step, dict):
                 steps.append(step)
