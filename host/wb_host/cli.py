@@ -17,6 +17,15 @@ import threading
 import urllib.request
 from pathlib import Path
 
+
+def _repo() -> Path:
+    """The Workbench folder the task should start: as the CLI was started (a release's current link stays a link, so
+    the next deploy's release is what the task runs), else this file's checkout."""
+    if os.environ.get("WB_REPO"):
+        return Path(os.path.abspath(os.environ["WB_REPO"]))
+    return Path(__file__).resolve().parents[2]
+
+
 def _token(path: Path) -> str:
     if not path.exists():
         from wb.compose import write_secret_file
@@ -58,7 +67,7 @@ def install(args) -> int:
     from wb import platform
 
     from . import startup
-    repo = Path(__file__).resolve().parents[2]
+    repo = _repo()
     plan = startup.install_plan(repo, args.platform or platform.os_name())
     print(plan.describe())
     if not args.yes:
@@ -71,7 +80,7 @@ def uninstall(args) -> int:
     from wb import platform
 
     from . import startup
-    repo = Path(__file__).resolve().parents[2]
+    repo = _repo()
     plan = startup.uninstall_plan(repo, args.platform or platform.os_name())
     print(plan.describe())
     if not args.yes:
