@@ -293,6 +293,8 @@ def cmd_check(args) -> int:
     try:
         workspace = Workspace()
         project, top = workspace.project_for(Path.cwd())
+        from . import setwork
+        setwork.resolve(workspace, Path.cwd())
         tree = workspace.would_be(top)
     except WorkspaceError as error:
         print(f"wb: {error}", file=sys.stderr)
@@ -494,7 +496,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--now", action="store_true", help="cancel what still runs after the wait, listing it first")
     p.add_argument("--override", metavar="REASON", help="skip the test gate; the reason is recorded")
     p = add("work", cmd_work, "worktrees with a lifecycle: the view, start, add, adopt, finish")
-    p.add_argument("action", nargs="?", choices=["view", "start", "add", "adopt", "finish"])
+    p.add_argument("action", nargs="?", choices=["view", "start", "add", "adopt", "finish", "sync"])
     p.add_argument("names", nargs="*")
     p.add_argument("--all", action="store_true", help="every registered project's worktrees")
     p = add("land", cmd_land, "move projects' lines in the Set: the only route to a set-named branch")

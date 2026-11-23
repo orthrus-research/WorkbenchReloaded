@@ -90,6 +90,8 @@ def _line(state: dict) -> str:
 def view(workspace: Workspace, everything: bool) -> int:
     if not everything:
         project, top = workspace.project_for(Path.cwd())
+        from . import setwork
+        setwork.resolve(workspace, Path.cwd())
         _say(f"{project.name}:")
         _say(_line(_state(workspace, project, top)))
         others = [w for w in _worktrees(project) if Path(w["worktree"]).resolve() != top.resolve()]
@@ -135,6 +137,11 @@ def start(workspace: Workspace, branch: str, names: list[str]) -> int:
     folder = work_root(workspace) / topic_folder(branch)
     folder.mkdir(parents=True, exist_ok=True)
     made = [_member(workspace, projects[name], folder, branch) for name in names]
+    from . import setwork
+    revision = setwork.head(workspace)
+    if revision:
+        setwork.write(folder, revision)
+        _say(f"set {revision[:7]} (head), for every member")
     _say(f"cd {made[0] if len(made) == 1 else folder}")
     return 0
 
@@ -250,10 +257,13 @@ def main(args) -> int:
             return adopt(workspace, args.names[0]) if args.names else _usage("wb work adopt <path>")
         if args.action == "finish":
             return finish(workspace)
+        if args.action == "sync":
+            from . import setwork
+            return setwork.sync(workspace, Path.cwd())
     except WorkspaceError as error:
         print(f"wb: {error}", file=sys.stderr)
         return 2
-    return _usage("wb work [start|add|adopt|finish]")
+    return _usage("wb work [start|add|adopt|finish|sync]")
 
 
 def _usage(text: str) -> int:

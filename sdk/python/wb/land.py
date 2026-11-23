@@ -301,6 +301,12 @@ def main(args) -> int:
         for name in urls:
             targets.setdefault(name, "HEAD")
         result = lander.land(targets, urls=urls, branch=args.branch, dry=args.dry)
+        if result.get("state") == "landed" and not args.targets:
+            from . import setwork  # a landing from this folder moves this folder's .set
+            found = setwork.find(Path.cwd())
+            place = found[0].parent if found else setwork.home_of(workspace, Path.cwd())
+            setwork.write(place, result["revision"])
+            _say(f"set {result['revision'][:7]} (head), written to {place / setwork.NAME}")
     except WorkspaceError as error:
         _say(str(error))
         return 2

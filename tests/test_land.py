@@ -214,6 +214,23 @@ class Land(unittest.TestCase):
         self.assertEqual(workspace.landing_rule(lib, commit, "refs/heads/main"), "")
         landings.move(self.store, "ltest", "abandoned", refs_dropped=True)
 
+    def test_7_a_worktree_two_landings_behind_still_checks_and_pushes(self):
+        from wb import setwork
+        workspace = Workspace(self.d.config)
+        old = git(self.home, "rev-parse", "main~2")
+        line = self.set_json()["projects"]["lib"]["commit"]
+        tree = self.root / "behind-wt"
+        git(self.lib, "worktree", "add", "-q", "-b", "feat/behind", str(tree), line)
+        setwork.write(tree, old)
+        said = []
+        self.assertEqual(setwork.resolve(workspace, tree, say=said.append), old)  # its own revision, not the head
+        self.assertRegex(said[0], r"^set [0-9a-f]{7}, 2 behind \(.+ moved\): wb work sync$")
+        verdict = workspace.gate(workspace.projects()["lib"],
+                                 [f"refs/heads/feat/behind {line} refs/heads/feat/behind {'0' * 40}"])
+        self.assertEqual((verdict["gated"], verdict["refused"]), (True, []))  # the same pass decides, behind or not
+        self.assertIn("/.set", (Path(git(tree, "rev-parse", "--git-common-dir")) / "info" / "exclude")
+                      .read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()
