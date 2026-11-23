@@ -97,7 +97,7 @@ def run(name: str, args: list[str], stdin: str | None = None) -> int:
         return 1
     for item in refused:
         _say(f"{item['ref']} {item['commit'][:12]}: {item['reason']}")
-    if refused:
+    if any("moves only by landing" not in item["reason"] for item in refused):  # a landing refusal names its own fix
         _say("run `wb check` in the worktree of that commit, then push again")
     return _verdict(workspace, root, name, findings, refused)
 
