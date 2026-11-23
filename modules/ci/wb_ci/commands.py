@@ -385,7 +385,7 @@ def _gradle_launcher(ctx: Context, work: Path, revision: str) -> tuple[Path, str
         why = (f"no Gradle {version} in the Store for set {revision[:12]}: wb run store.platform" if version
                else "no set revision for this run: wb work sync, or name one with set=<revision>")
         launcher.write_text(f"import sys\nsys.exit('{{gradle}}: {why}')\n", encoding="utf-8")
-        return launcher, ""
+        return launcher, "", ""
     system = "windows" if os.name == "nt" else "linux"
     jdks = []
     for major, jdk in sorted((platform.get("jdk") or {}).items()):
@@ -397,7 +397,10 @@ def _gradle_launcher(ctx: Context, work: Path, revision: str) -> tuple[Path, str
     if jdks:
         args.append(f"-Porg.gradle.java.installations.paths={','.join(jdks)}")
     launcher.write_text(GRADLE_LAUNCHER.format(args=args), encoding="utf-8")
-    return launcher, revision
+    # The same values for a ./gradlew a step script starts: Gradle reads org.gradle.project.* system properties from
+    # GRADLE_OPTS as the build's properties, so that build resolves the same set, Store and JDKs.
+    opts = " ".join("-Dorg.gradle.project." + a[2:] for a in args[1:] if a.startswith("-P") and " " not in a)
+    return launcher, revision, opts
 
 
 def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_needed: bool, keep_going: bool,
@@ -449,9 +452,9 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
         pins = _folder(ctx, "pin_cache", _state() / "cache" / "pins")
         pins.mkdir(parents=True, exist_ok=True)
         gradle_home, served = _gradle_home(ctx)
-        launcher, set_revision = _gradle_launcher(ctx, work, set)
+        launcher, set_revision, gradle_opts = _gradle_launcher(ctx, work, set)
         env = {**_jdk_env(ctx, major), "GRADLE_USER_HOME": str(gradle_home), "WB_PIN_CACHE": str(pins),
-               "WB_GRADLE": str(launcher),
+               "WB_GRADLE": str(launcher), **({"GRADLE_OPTS": gradle_opts} if gradle_opts else {}),
                **{k: str(v) for k, v in (entry.get("env") or {}).items()}, **({"WB_COLD": "1"} if cold else {})}
         python = _python(ctx, root, [str(r) for r in entry.get("python") or config.data.get("project", {}).get("python")
                                      or []])

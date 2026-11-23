@@ -84,7 +84,9 @@ class Land(unittest.TestCase):
         git(seed, "push", "-q", str(cls.home), "main")
         cls.gradled, _ = project(root, "gradled")  # a project whose check runs {gradle}
         (cls.gradled / "project.toml").write_text('schema = 1\ngate = ["build"]\n\n[project]\nname = "gradled"\n\n'
-                                                  '[checks.build]\nsteps = [["{gradle}", "hello"]]\n', encoding="utf-8")
+                                                  '[checks.build]\nsteps = [["{gradle}", "hello"], '
+                                                  '["{python}", "-c", "import os; print(os.environ.get(\'GRADLE_OPTS\'))"]]\n',
+                                                  encoding="utf-8")
         git(cls.gradled, "commit", "-q", "-am", "gradle")
         cls.set_checkout = root / "data" / "Set"  # the Set's home checkout, as a project
         git(root, "clone", "-q", str(cls.home), str(cls.set_checkout))
@@ -368,6 +370,10 @@ class Land(unittest.TestCase):
         self.assertIn("-Pset.exact=true", log)
         self.assertIn("hello", log)
         self.assertEqual(step["name"], "gradle hello")
+        # A ./gradlew a step script starts gets the same values, as org.gradle.project.* system properties.
+        opts = Path(envelope.data["engine"]["jobs"]["build"]["steps"][1]["log"]).read_text(encoding="utf-8")
+        self.assertIn(f"-Dorg.gradle.project.set.dir={self.store.parent / 'sets' / revision}", opts)
+        self.assertIn("-Dorg.gradle.project.set.exact=true", opts)
 
     def test_y_the_backup_keeps_the_set_and_the_seeded_bytes(self):
         from wb import backup
