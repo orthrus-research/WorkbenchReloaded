@@ -385,13 +385,12 @@ def cmd_status(args) -> int:
             line += f"; the host runner runs {short(host['commit'])}: run wb deploy"
         if health.get("draining"):
             line += "; draining for a deploy"
+        lines = [line]
         for item in health.get("stalled") or []:
-            line += f"
-  stalled: {item['job']}: {item['reason']}"
+            lines.append(f"  stalled: {item['job']}: {item['reason']}")
         for module, hook in (health.get("hooks_failed") or {}).items():
-            line += f"
-  start-up hook of {module} failed: {hook.get('summary')}"
-        print(line)
+            lines.append(f"  start-up hook of {module} failed: {hook.get('summary')}")
+        print("\n".join(lines))
     return 0
 
 
