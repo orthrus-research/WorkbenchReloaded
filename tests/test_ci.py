@@ -35,6 +35,10 @@ steps = [{ name = "lib", run = ["{python}", "-c", "import pathlib, sys; t = path
 artifacts = ["build/out.jar"]
 steps = [{ name = "build", run = ["{python}", "-c", "import pathlib; p = pathlib.Path('build'); p.mkdir(exist_ok=True); (p / 'out.jar').write_bytes(b'built bytes')"] }]
 
+[jobs.unbuilt]
+artifacts = ["build/missing.jar"]
+steps = [{ name = "nothing", run = ["{python}", "-c", "pass"] }]
+
 [jobs.lines]
 steps = [{ name = "lines", run = ["{python}", "-c", "import pathlib, sys; t = pathlib.Path('src/a.txt').read_text().splitlines(); sys.exit(0 if t == ['line one', 'line two'] else 3)"] }]
 """
@@ -227,6 +231,12 @@ class Ci(unittest.TestCase):
         self.assertIn(self.head, index["commits"])
         self.assertEqual(artifacts.path_of(store, digest, "out.jar").read_bytes(), b"built bytes")
         self.assertTrue((self.d.state / "cache" / "pins" / digest).is_file())  # where WB_PIN_CACHE readers look
+
+    def test_a_job_that_fails_after_its_steps_says_why(self):
+        result = self.c.submit("ci.run", {"project": "demo", "workflow": "unbuilt"}).result(timeout=600)
+        self.assertEqual(result.outcome, "finding", result.summary)
+        job = [r for r in result.reasons if r["kind"] == "job"]
+        self.assertTrue(job and "no file matches its artifact build/missing.jar" in job[0]["detail"], result.reasons)
 
     def test_working_tree_run_and_a_failing_job(self):
         (self.demo / "src" / "a.txt").write_text("uncommitted", encoding="utf-8")

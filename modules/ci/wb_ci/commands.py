@@ -323,6 +323,10 @@ def _failing_tails(ctx: Context, jobs: dict):
     for name, job in jobs.items():
         if job.get("status") != "failed":
             continue
+        if job.get("error") and all(step.get("exitCode") in (0, None) for step in job.get("steps") or []):
+            # Every step passed and the job still failed (an artifact no file matches, ...): say why.
+            ctx.reason("job", name, str(job["error"]), "fix the job in the jobs file, then run its checks again")
+            continue
         for step in job.get("steps") or []:
             if step.get("exitCode") not in (0, None) and step.get("log"):
                 try:
