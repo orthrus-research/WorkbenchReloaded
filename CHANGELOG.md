@@ -27,6 +27,15 @@
   as its budget. A project's steps get an allow-listed environment, none of Workbench's own.
 - Each job calls the API with a token of its own, revoked when it ends, that can never approve a quote: approval
   takes the person's token.
+- The Set: set.json (schema 1) names each project's line (branch, commit and the SHA-256 of its files), holds
+  with seeded bytes and the platform. `wb land` is the only route to a set-named branch: its gate checks run
+  first, `set.land` composes and scrubs under lock `set`, and the CLI publishes with the caller's git (landing
+  refs, the Set commit as the commit point, then the branches); an unfinished publish is finished or cleaned up by
+  the next landing. The push gate takes a set-named branch only from a landing. Each worktree builds against the
+  revision in its `.set`; `wb work sync` moves it, and every verb says how far behind it is. `wb work --all`
+  lists each line, open landings, and unconverted projects with the pins they still carry. `store.platform`
+  fetches the platform's JDKs and Gradle into the Store by SHA-256 from allowed hosts.
+- project.toml (schema 1): a project's checks, gate and artifacts, read before actions.toml.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,
   ledger, vast, ci, release, plan, frames, tools (the former standalone tools, 0.6.0), selftest.
 - The lab reads a profile's checkouts at a ref, each from a snapshot fixed at its commit for the whole job
