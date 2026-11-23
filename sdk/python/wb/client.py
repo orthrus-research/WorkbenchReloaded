@@ -175,6 +175,10 @@ class Client:
         headers = {"Idempotency-Key": key}
         if os.environ.get("WB_JOB"):  # submitted from inside a job: the scheduler must not make it wait on us
             headers["X-Wb-Parent"] = os.environ["WB_JOB"]
+        elif not os.environ.get("WB_DEV"):
+            commit = _cli_commit()
+            if commit:
+                headers["X-Wb-Commit"] = commit  # the daemon refuses a CLI on other code (wb deploy brings them together)
         envelope = Envelope(self.request("POST", "/v1/jobs", body, headers))
         return Job(self, envelope["job"], envelope)
 
@@ -275,6 +279,22 @@ class Job:
 
     def events(self):
         return self.client.events(self.id)
+
+
+_COMMIT: list = []
+
+
+def _cli_commit() -> str | None:
+    """The commit of the checkout this CLI runs from (None in an image or a folder without git), once per process."""
+    if not _COMMIT:
+        try:
+            from wb_core.identity import source_commit
+            from pathlib import Path as _Path
+            root = _Path(__file__).resolve().parents[3]
+            _COMMIT.append(source_commit(root) if (root / ".git").exists() else None)
+        except Exception:  # noqa: BLE001 - no identity, no handshake
+            _COMMIT.append(None)
+    return _COMMIT[0]
 
 
 _default: Client | None = None

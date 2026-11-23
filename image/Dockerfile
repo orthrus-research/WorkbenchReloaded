@@ -107,6 +107,9 @@ ENV PYTHONPATH=/opt/wb/src/sdk/python:/opt/wb/src/core:/opt/wb/src/host \
     JAVA_HOME_26_X64=/opt/jdk/26 \
     JAVA_HOME_27_X64=/opt/jdk/27
 # No USER: the entrypoint drops to the host's user (WB_UID, WB_GID; default 1000) before Workbench starts.
+# Which commit this image's Workbench code is (wb build passes it); the daemon reports it and the CLI checks it.
+ARG WB_COMMIT=""
+ENV WB_COMMIT=${WB_COMMIT}
 WORKDIR /var/lib/wb
 VOLUME ["/var/lib/wb"]
 EXPOSE 7377

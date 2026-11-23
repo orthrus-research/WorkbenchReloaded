@@ -85,6 +85,32 @@ class Admission(unittest.TestCase):
         self.assertIn("not running", str(raised.exception))
 
 
+    def test_a_drain_holds_new_jobs_and_lets_a_running_jobs_children_start(self):
+        parent = self.c.submit("selftest.nest", {"text": "drained", "hold": "2s"})
+        until(lambda: parent.refresh().state == "running", 20)
+        self.c.request("POST", "/v1/drain", {"on": True})
+        try:
+            held = self.c.submit("selftest.echo", {"text": "after the deploy"})
+            reason = until(lambda: (held.refresh().get("waiting") or {}).get("reason"), 20)
+            self.assertTrue(reason and reason.startswith("draining"), reason)
+            self.assertEqual(parent.result(timeout=60).data.inner_outcome, "ok")  # its child still ran
+            self.assertEqual(held.refresh().state, "queued")
+        finally:
+            self.c.request("POST", "/v1/drain", {"on": False})
+        self.assertEqual(held.result(timeout=60).outcome, "ok")
+
+    def test_a_cli_on_other_code_is_refused_with_the_fix(self):
+        from wb import WbError
+        with self.assertRaises(WbError) as raised:
+            self.c.request("POST", "/v1/jobs", {"command": "selftest.echo", "params": {}},
+                           {"X-Wb-Commit": "0" * 40})
+        self.assertEqual(raised.exception.status, 409)
+        self.assertIn("wb deploy", str(raised.exception))
+        self.assertEqual(raised.exception.body["reasons"][0]["kind"], "version")
+        same = self.c.request("POST", "/v1/jobs", {"command": "selftest.echo", "params": {}},
+                              {"X-Wb-Commit": self.d.workbench.commit or ""})
+        self.assertTrue(same["job"])
+
 class Rules(unittest.TestCase):
     def service(self):
         service = Workbench.__new__(Workbench)  # only the scheduling arithmetic

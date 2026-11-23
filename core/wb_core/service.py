@@ -136,6 +136,9 @@ class Workbench:
         self.cpu_budget = core["budget"].get("cpu_cores") or float(os.cpu_count() or 2)
         self.mem_budget = core["budget"].get("mem_gb") or _total_memory_gb()
         self.image_digest = os.environ.get("WB_IMAGE_DIGEST")
+        from .identity import source_commit
+        self.commit = source_commit()   # the Workbench code this daemon runs
+        self.draining = False           # a deploy is waiting for running jobs: no new root job starts
         self.install_id = _install_id(self.state)
         self.started = time.time()
         self.registry: dict[str, Entry] = {}
@@ -148,10 +151,15 @@ class Workbench:
 
     def _probe_host(self, settings) -> str | None:
         try:
-            self.host.health()
-            return None
+            health = self.host.health()
         except Exception as error:  # noqa: BLE001
             return f"wb-host does not answer: {error}"
+        theirs = health.get("commit")
+        if theirs and self.commit and theirs != self.commit:
+            from .identity import short
+            return (f"the host runner runs Workbench {short(theirs)} and the daemon {short(self.commit)}, so their "
+                    "commands may not match: run wb deploy")
+        return None
 
     # ------------------------------------------------------------------------------------------
     # registry
@@ -672,6 +680,9 @@ class Workbench:
             if job in self.quoting or job in self.running:
                 continue
             queued += 1
+            if self.draining and not row["under_running"]:
+                self._wait_reason(job, "draining: Workbench is being deployed; it starts after the deploy")
+                continue
             entry = self.registry.get(row["command"])
             if entry is None:
                 self._wait_reason(job, f"{row['command']} is not a known command")
@@ -1102,7 +1113,9 @@ class Workbench:
         row = self._job_row(job)
         self._store(job, collected.artifacts, bool(row["out_dir"]))
         extra = {"measurements": collected.measurements, "phases": collected.phases, "cost": collected.cost,
-                 "machine": collected.machine, "toolchain": collected.toolchain, "children": collected.children,
+                 "machine": collected.machine,
+                 "toolchain": dict({"commit": self.commit}, **(collected.toolchain or {})),  # stamped when it settles
+                 "children": collected.children,
                  "findings": collected.findings, "data": data,
                  "reasons": [_redacted(r.as_dict() if isinstance(r, Reason) else r) for r in reasons],
                  "cache_hit": cache_hit}

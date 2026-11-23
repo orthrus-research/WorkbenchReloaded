@@ -264,6 +264,10 @@ def cmd_setup(args) -> int:
     return setup.main(args)
 
 
+def cmd_deploy(args) -> int:
+    from . import deploy
+    return deploy.main(args)
+
 def cmd_check(args) -> int:
     """ci.run for the worktree you stand in: its project from the repository, the commit from HEAD, or the tree
     the host's git would commit when the worktree has changes. No commit= or checkout= to type."""
@@ -357,6 +361,8 @@ def cmd_down(args) -> int:
 
 
 def cmd_restart(args) -> int:
+    print("wb: restart stops running jobs; wb deploy drains them first and restarts the host runner too",
+          file=sys.stderr)
     cmd_down(args)
     return cmd_up(args)
 
@@ -371,6 +377,21 @@ def cmd_status(args) -> int:
           f"up {health['uptime_s']}s, version {health['version']}, {health['commands']['active']}/"
           f"{health['commands']['total']} commands active, {health['running']} running, host: "
           f"{'ok' if health.get('host') and 'error' not in health['host'] else (health.get('host') or {}).get('error', 'off')}")
+    if not args.json:
+        from wb_core.identity import short
+        host = health.get("host") or {}
+        line = f"  commit {short(health.get('commit'))}"
+        if host.get("commit") and host.get("commit") != health.get("commit"):
+            line += f"; the host runner runs {short(host['commit'])}: run wb deploy"
+        if health.get("draining"):
+            line += "; draining for a deploy"
+        for item in health.get("stalled") or []:
+            line += f"
+  stalled: {item['job']}: {item['reason']}"
+        for module, hook in (health.get("hooks_failed") or {}).items():
+            line += f"
+  start-up hook of {module} failed: {hook.get('summary')}"
+        print(line)
     return 0
 
 
@@ -450,6 +471,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("names", nargs="*", help="a workflow or check, then more (default: the jobs file's workflow)")
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--timeout")
+    p = add("deploy", cmd_deploy, "test, build, drain, and restart the daemon and the host runner on this checkout")
+    p.add_argument("--wait", default="10m", help="how long running jobs may take to end (default 10m)")
+    p.add_argument("--now", action="store_true", help="cancel what still runs after the wait, listing it first")
+    p.add_argument("--override", metavar="REASON", help="skip the test gate; the reason is recorded")
     p = add("job", cmd_job, "show a job's envelope, or the newest job's")
     p.add_argument("job", nargs="?")
     p = add("hook", cmd_hook, "a git hook, answered on the host (the hook stubs call this)")

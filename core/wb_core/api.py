@@ -165,7 +165,8 @@ def health(h: Handler, query):
         except Exception as error:  # noqa: BLE001
             host = {"error": str(error)}
     active = sum(1 for e in wb.registry.values() if e.activation.active)
-    h._send(200, {"ok": True, "version": __version__, "image": wb.image_digest, "install": wb.install_id, "uptime_s": round(time.time() - wb.started),
+    h._send(200, {"ok": True, "version": __version__, "commit": wb.commit, "draining": wb.draining,
+                  "image": wb.image_digest, "install": wb.install_id, "uptime_s": round(time.time() - wb.started),
                   "modules": sorted(wb.modules), "commands": {"active": active, "total": len(wb.registry)},
                   "running": len(wb.running), "stalled": wb.stalled,
                   "hooks_failed": {m: h for m, h in wb.hooks.items() if h.get("outcome") != "ok"}, "host": host})
@@ -198,6 +199,7 @@ def submit(h: Handler, query):
     unknown = set(body) - {"command", "params", "out", "fresh", "path_style"}
     if unknown:
         raise ApiError(400, f"unknown fields {sorted(unknown)}")
+    _same_code(h)
     envelope = h.server.workbench.submit(body["command"], body.get("params") or {}, out=body.get("out"),
                                          fresh=bool(body.get("fresh")),
                                          path_style=body.get("path_style", "windows"),
@@ -225,6 +227,33 @@ def approve(h: Handler, query, job_id):
     if not body.get("quote"):
         raise ApiError(400, "quote is required: approve one exact quote")
     h._send(200, h.server.workbench.approve(job_id, body["quote"], body.get("via", "direct")))
+
+
+@route("POST", r"/v1/drain")
+def drain(h: Handler, query):
+    """A deploy's drain: with on, no new root job starts (a running job's descendants still do); returns what runs."""
+    body = h._body()
+    wb = h.server.workbench
+    with wb.cond:
+        wb.draining = bool(body.get("on", True))
+        running = sorted(wb.running)
+        wb.cond.notify_all()
+    h._send(200, {"draining": wb.draining, "running": running})
+
+
+def _same_code(h: Handler):
+    """The version handshake: a CLI on other Workbench code than the daemon is refused, naming both and the fix. A
+    job's own calls (X-Wb-Parent) and a CLI that sends no commit (an image, WB_DEV) pass."""
+    from .identity import short
+    wb = h.server.workbench
+    theirs = h.headers.get("X-Wb-Commit")
+    if not theirs or not wb.commit or theirs == wb.commit or h.headers.get("X-Wb-Parent"):
+        return
+    detail = f"this CLI runs Workbench {short(theirs)} and the daemon {short(wb.commit)}"
+    raise ApiError(409, f"{detail}: run wb deploy to bring them together, or set WB_DEV=1 to use this working "
+                        "tree on purpose",
+                   {"reasons": [{"kind": "version", "name": "workbench", "detail": detail,
+                                 "fix": "wb deploy (or WB_DEV=1 for a working tree on purpose)"}]})
 
 
 @route("POST", r"/v1/jobs/(j_\w+)/call")

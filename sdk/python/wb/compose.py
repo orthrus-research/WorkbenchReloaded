@@ -222,7 +222,9 @@ def build(tag: str = "wb-core:dev", tools: list[str] | None = None) -> int:
         if unknown:
             raise ComposeError(f"[core.image] tools names {unknown[0]}, which image/pins.toml does not pin "
                                f"(pinned: {', '.join(sorted(pinned)) or 'none'})")
-    command = ["docker", "build", "-f", str(root / "image" / "Dockerfile"), "-t", tag]
+    from wb_core.identity import source_commit
+    command = ["docker", "build", "-f", str(root / "image" / "Dockerfile"), "-t", tag,
+               "--build-arg", f"WB_COMMIT={source_commit(root) or ''}"]
     if tools:
         command += ["--build-arg", "TOOLS=" + ",".join(tools)]
     return subprocess.run([*command, str(root)]).returncode

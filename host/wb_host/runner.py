@@ -62,6 +62,8 @@ class Runner:
         self.lane_env = [leases.LANE_ENV, *runner.get("lane_env", [])]
         self.jdks = {**find_jdks(settings), **{str(k): str(v) for k, v in (runner.get("jdks") or {}).items()}}
         self.java_home = str(runner.get("java_home") or "")
+        from wb_core.identity import source_commit
+        self.commit = source_commit(REPO_ROOT)  # the code this runner loaded at start; health reports it
 
     # -- runs ------------------------------------------------------------------------------------
     def start(self, name: str, body: dict) -> str:
@@ -186,7 +188,8 @@ class Runner:
                 name, driver, memory = [p.strip() for p in done.stdout.strip().splitlines()[0].split(",")]
                 gpu = {"name": name, "driver": driver, "memory": memory}
         holder = leases.owner(self.lease_file) if leases.occupied(self.lease_file) else None
-        return {"ok": True, "gpu": gpu, "lab_home": str(self.lab_home), "lease_file": str(self.lease_file),
+        return {"ok": True, "commit": self.commit, "gpu": gpu, "lab_home": str(self.lab_home),
+                "lease_file": str(self.lease_file),
                 "lease": {"held": holder is not None, "by": (holder or {}).get("lane") or (holder or {}).get("name")},
                 "routines": sorted(self.routines), "running": sum(1 for r in self.runs.values() if not r.finished)}
 
