@@ -273,20 +273,30 @@ def _load(root: Path, entry: dict, records: Path) -> engine.Config:
     return config
 
 
+def _jobs_names(entry: dict) -> list[str]:
+    """The files a commit's checks may be in: the one the project entry names, else project.toml then actions.toml."""
+    if entry.get("config"):
+        return [str(entry["config"]).replace("\\", "/")]
+    return list(engine.config_names())
+
+
 def _jobs_name(entry: dict) -> str:
-    return str(entry.get("config") or engine.DEFAULT_CONFIG).replace("\\", "/")
+    return " or ".join(_jobs_names(entry))
 
 
 def _config_at(ctx: Context, entry: dict, records: Path, sha: str) -> engine.Config | None:
     """The engine's config from the jobs file in commit ``sha``; None when the commit has none. Status and the gate
     judge a commit by its own jobs file: the checkout's working tree may be on another branch, or older."""
     source = entry["source"]
-    # Not ctx.run: it merges git's stderr into the output, which here is the file itself.
-    shown = subprocess.run(["git", "--git-dir", str(_git_dir(ctx, source)), "show", f"{sha}:{_jobs_name(entry)}"],
-                           env={**os.environ, **GIT_SAFE}, capture_output=True)
-    if shown.returncode != 0:
+    for name in _jobs_names(entry):
+        # Not ctx.run: it merges git's stderr into the output, which here is the file itself.
+        shown = subprocess.run(["git", "--git-dir", str(_git_dir(ctx, source)), "show", f"{sha}:{name}"],
+                               env={**os.environ, **GIT_SAFE}, capture_output=True)
+        if shown.returncode == 0:
+            break
+    else:
         return None
-    copy = ctx.work / f"jobs-{sha[:12]}.toml"
+    copy = ctx.work / f"jobs-{sha[:12]}" / Path(name).name  # the file's own name says which kind it is
     copy.parent.mkdir(parents=True, exist_ok=True)
     copy.write_bytes(shown.stdout)
     try:
@@ -317,24 +327,11 @@ def _engine(ctx: Context, root: Path, jobs_file: Path, argv: list[str], env: dic
 
 
 def _jobs_copy(root: Path, entry: dict, records: Path, work: Path) -> Path:
-    """The project's jobs file with its run records pointed at Workbench's. The copy sits outside the tree: an edit
-    inside it would change the very tree the run vouches for."""
-    import re
-    import tomllib
-    path = engine.config_path(root, Path(entry["config"]) if entry.get("config") else None)
-    if not path.is_file():
-        raise EnvironmentProblem(f"no jobs file at {path} (set modules.ci.projects.<name>.config)")
-    text = path.read_text(encoding="utf-8")
-    settings = tomllib.loads(text).get("settings") or {}
-    line = f'runs = "{records.as_posix()}"'
-    if "runs" in settings:
-        text = re.sub(r"(?m)^\s*runs\s*=.*$", line, text, count=1)
-    elif re.search(r"(?m)^\[settings\]\s*$", text):
-        text = re.sub(r"(?m)^\[settings\]\s*$", "[settings]\n" + line, text, count=1)
-    else:
-        text = "[settings]\n" + line + "\n\n" + text
-    copy = work / "jobs.toml"
-    copy.write_text(text, encoding="utf-8")
+    """The project's checks file, copied outside the tree under its own name: an edit inside the tree would change the
+    very tree the run vouches for. The run records go where ``--runs`` says, not where the file does."""
+    path = next(root / name for name in _jobs_names(entry) if (root / name).is_file())
+    copy = work / path.name
+    copy.write_bytes(path.read_bytes())
     return copy
 
 
@@ -384,7 +381,7 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
         if worktree:
             _overlay_worktree(ctx, tree_source, root, list(ctx.config.get("excludes") or []),
                               dict(ctx.config.get("git_config") or {}))
-        if not (root / _jobs_name(entry)).is_file():
+        if not any((root / name).is_file() for name in _jobs_names(entry)):
             raise ParamError(f"{project} {sha[:12]} has no {_jobs_name(entry)}, so there are no jobs to run"
                              + ("" if commit != "HEAD" else "; that is the checkout's HEAD, so name another with "
                                 "commit=<sha or branch>"))
@@ -412,11 +409,12 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
         gradle_home, served = _gradle_home(ctx)
         env = {**_jdk_env(ctx, major), "GRADLE_USER_HOME": str(gradle_home), "WB_PIN_CACHE": str(pins),
                **{k: str(v) for k, v in (entry.get("env") or {}).items()}, **({"WB_COLD": "1"} if cold else {})}
-        python = _python(ctx, root, [str(r) for r in entry.get("python") or []])
+        python = _python(ctx, root, [str(r) for r in entry.get("python") or config.data.get("project", {}).get("python")
+                                     or []])
         targets = [*([workflow] if workflow else []), *[str(j) for j in jobs]] or [config.workflow]
         # The engine runs inside this job's reservation: the job id names its run, and its budget is what the
         # scheduler holds for the job, not the machine.
-        argv = ["run", *targets, "--run-id", ctx.job]
+        argv = ["run", *targets, "--run-id", ctx.job, "--runs", str(records)]
         if ctx.reservation.get("mem_gb"):
             argv += ["--memory", str(ctx.reservation["mem_gb"])]
         # Cold: every job runs, none vouched for by an earlier pass or its input cache, and no build cache is read.

@@ -102,6 +102,32 @@ replaced in `run`, `cwd`, `env`, `inputs`, `[placeholders]` and `identity_files`
 
 Write a literal brace as `{{` or `}}`.
 
+## project.toml
+
+A repository may carry `project.toml` (schema 1) instead; it is read before `actions.toml`. Each `[checks.<name>]`
+is a job (steps are argument lists, or `{ name, run, cwd }` tables), `gate = [...]` is the default workflow, and
+each `[artifacts.<name>]` puts its `file` glob on the `check` that makes it. `gate` is a top-level key, so it goes
+above the first table. Unknown keys are refused, naming the file and the key; a check that runs on the host or the
+GPU cannot be in the gate.
+
+```toml
+schema = 1
+gate = ["build"]
+
+[project]
+name = "library"
+
+[artifacts.mod]
+check = "build"
+file = "build/libs/library-*.jar"
+
+[checks.build]
+memory = 6
+steps = [["bash", "gradlew", "build", "--no-daemon"]]
+```
+
+`--runs DIR` puts the run records in `DIR` whichever file is read.
+
 ## Running
 
 Jobs run concurrently once the jobs they `needs` have passed. A job claims `share` of the cores,

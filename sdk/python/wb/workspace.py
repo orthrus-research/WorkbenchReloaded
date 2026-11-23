@@ -142,16 +142,21 @@ class Workspace:
         return actions
 
     def jobs_name(self, project: Project) -> str:
-        return str(project.entry.get("config") or "actions.toml").replace("\\", "/")
+        return str(project.entry.get("config") or "project.toml or actions.toml").replace("\\", "/")
 
     def config_at(self, project: Project, sha: str, scratch: Path):
         """The engine's config from the jobs file in commit ``sha``, with CI's records; None when it has none."""
         actions = self.engine()
-        shown = subprocess.run(["git", "show", f"{sha}:{self.jobs_name(project)}"], cwd=project.repo,
-                               capture_output=True, env={**os.environ, **GIT_ENV})
-        if shown.returncode != 0:
+        configured = (project.entry or {}).get("config")
+        for name in [str(configured)] if configured else actions.config_names():
+            shown = subprocess.run(["git", "show", f"{sha}:{name}"], cwd=project.repo,
+                                   capture_output=True, env={**os.environ, **GIT_ENV})
+            if shown.returncode == 0:
+                break
+        else:
             return None
-        copy = scratch / f"jobs-{sha[:12]}.toml"
+        copy = scratch / f"jobs-{sha[:12]}" / Path(name).name
+        copy.parent.mkdir(parents=True, exist_ok=True)
         copy.write_bytes(shown.stdout)
         config = actions.load(project.repo, copy)
         config.runs = self.records(project.name)

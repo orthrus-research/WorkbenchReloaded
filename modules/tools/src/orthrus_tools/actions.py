@@ -49,6 +49,7 @@ from .config import project_root, tool_settings
 
 SUMMARY_SCHEMA = "orthrus.actions.summary.v1"
 DEFAULT_CONFIG = "actions.toml"
+PROJECT_FILE = "project.toml"  # a project's manifest (schema 1); read before actions.toml when both are present
 DEFAULT_RUNS = ".local/actions"
 DEFAULT_SHARE = 0.25
 DEFAULT_MEMORY = 4.0
@@ -133,7 +134,79 @@ def config_path(root: Path, given: Path | None = None) -> Path:
     if given is not None:
         return given if given.is_absolute() else root / given
     configured = tool_settings(root, "actions").get("config")
-    return root / (str(configured) if configured else DEFAULT_CONFIG)
+    if configured:
+        return root / str(configured)
+    return root / (PROJECT_FILE if (root / PROJECT_FILE).is_file() else DEFAULT_CONFIG)
+
+
+def config_names() -> tuple[str, str]:
+    """The files a commit's checks may live in, the manifest first."""
+    return PROJECT_FILE, DEFAULT_CONFIG
+
+
+# project.toml (schema 1): what a repository says about its checks and the files they make.
+PROJECT_KEYS = {"schema", "project", "uses", "artifacts", "checks", "gate", "launch", "settings"}
+PROJECT_TABLE_KEYS = {"name", "python", "branch", "own", "reserve"}
+CHECK_KEYS = {"description", "steps", "needs", "inputs", "tools", "locks", "memory", "share", "priority", "on",
+              "gpu", "timeout", "exclusive"}
+ARTIFACT_KEYS = {"check", "file", "mod_id"}
+
+
+def from_project(data: dict, name: str) -> dict:
+    """A project manifest as the engine's own table: each check a job, the gate a workflow, each artifact's glob on
+    the check that makes it. Unknown keys are refused, naming the file and the key."""
+    def refuse(text: str):
+        raise ToolError(USAGE, f"{name}: {text}")
+
+    if data.get("schema") != 1:
+        refuse("schema must be 1")
+    for key in sorted(set(data) - PROJECT_KEYS):
+        refuse(f"unknown key {key}")
+    project = data.get("project") or {}
+    for key in sorted(set(project) - PROJECT_TABLE_KEYS):
+        refuse(f"unknown key project.{key}")
+    if not isinstance(project.get("name"), str) or not project["name"]:
+        refuse("project.name is missing")
+    checks = data.get("checks") or {}
+    if not isinstance(checks, dict) or not checks:
+        refuse("no [checks]")
+    jobs: dict[str, dict] = {}
+    for check, entry in checks.items():
+        if "gate" in entry:
+            refuse(f"checks.{check}.gate: gate is a top-level key, so it goes above the first [table]; below one, "
+                   "TOML puts it in that table")
+        for key in sorted(set(entry) - CHECK_KEYS):
+            refuse(f"unknown key checks.{check}.{key}")
+        steps = []
+        for index, step in enumerate(entry.get("steps") or [], 1):
+            if isinstance(step, list):  # an argv list, named by what it runs
+                words = [w for w in step if not (w.startswith("{") and w.endswith("}"))] or step
+                steps.append({"name": " ".join(Path(w).name for w in words[:2]) or f"step {index}", "run": step})
+            elif isinstance(step, dict):
+                steps.append(step)
+            else:
+                refuse(f"checks.{check}.steps: a step is an argument list or {{ name, run, cwd }}")
+        jobs[check] = {**{k: v for k, v in entry.items() if k not in ("steps", "tools")}, "steps": steps}
+    artifacts = data.get("artifacts") or {}
+    for artifact, entry in artifacts.items():
+        for key in sorted(set(entry) - ARTIFACT_KEYS):
+            refuse(f"unknown key artifacts.{artifact}.{key}")
+        check, glob = entry.get("check"), entry.get("file")
+        if check not in jobs:
+            refuse(f"artifacts.{artifact}.check names no check: {check}")
+        if not isinstance(glob, str) or not glob:
+            refuse(f"artifacts.{artifact}.file is the glob that finds its one file")
+        jobs[check].setdefault("artifacts", []).append(glob)
+    gate = data.get("gate", [])
+    if not isinstance(gate, list) or not all(g in jobs for g in gate):
+        refuse("gate lists checks by name")
+    for check in gate:
+        if jobs[check].get("on") == "host" or jobs[check].get("gpu"):
+            refuse(f"gate: {check} runs on the host or the GPU, so a push cannot wait for it")
+    settings = {"name": project["name"], "workflow": "gate",
+                "identity_files": ["{env.JAVA_HOME}/release"], **(data.get("settings") or {})}
+    return {"settings": settings, "workflows": {"gate": list(gate), "all": list(jobs)}, "jobs": jobs,
+            "project": project, "artifacts": artifacts, "uses": data.get("uses") or {}}
 
 
 def load(root: Path, given: Path | None = None) -> Config:
@@ -144,6 +217,8 @@ def load(root: Path, given: Path | None = None) -> Config:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ToolError(USAGE, f"{path.name}: {error}") from None
+    if path.name == PROJECT_FILE or ("checks" in data and "schema" in data):
+        data = from_project(data, path.name)
     settings = data.get("settings", {})
     project = str(settings.get("name", "project"))
     repositories = [Repository(project, root)]
@@ -896,16 +971,26 @@ def refusal(
     return f"{label} has not passed {', '.join(missing)}" if missing else None
 
 
+def file_at(repository: Path, commit: str) -> tuple[str, str] | None:
+    """The checks file a commit carries, as (file name, text): its project.toml, else its actions.toml."""
+    for file_name in config_names():
+        try:
+            return file_name, git(repository, "show", f"{commit}:{file_name}")
+        except (OSError, subprocess.CalledProcessError):
+            continue
+    return None
+
+
 def upstream_refusal(config: Config, repository: Repository, commit: str) -> str | None:
     """Why ``commit`` of ``repository`` has not passed its own project's required checks (read from that commit's
     own jobs file, against that project's records beside this one's), or None when it has."""
     records = config.runs.parent / str(repository.passed_by)
-    try:
-        text = git(repository.path, "show", f"{commit}:{DEFAULT_CONFIG}")
-    except (OSError, subprocess.CalledProcessError):
-        return f"its {repository.name} pin {commit[:8]} has no {DEFAULT_CONFIG}, so nothing shows it passed"
+    found = file_at(repository.path, commit)
+    if found is None:
+        return f"its {repository.name} pin {commit[:8]} has no {PROJECT_FILE} or {DEFAULT_CONFIG}, so nothing shows it passed"
+    file_name, text = found
     with tempfile.TemporaryDirectory(prefix="upstream-") as scratch:
-        copy = Path(scratch) / DEFAULT_CONFIG
+        copy = Path(scratch) / file_name
         copy.write_text(text + "\n", encoding="utf-8")
         upstream = load(repository.path, copy)
         upstream.runs = records
@@ -1043,7 +1128,10 @@ def _common() -> cli.Parser:
         "--root", type=Path, metavar="DIR", help="project root (default: the Git work tree)"
     )
     common.add_argument(
-        "--config", type=Path, metavar="FILE", help="actions file (default: actions.toml)"
+        "--config", type=Path, metavar="FILE", help="checks file (default: project.toml, else actions.toml)"
+    )
+    common.add_argument(
+        "--runs", type=Path, metavar="DIR", help="the run records folder (default: the file's own setting)"
     )
     return common
 
@@ -1273,6 +1361,8 @@ def run(args: argparse.Namespace, out: Output) -> int:
     if not root.is_dir():
         raise ToolError(USAGE, f"not a directory: {root}")
     config = load(root, args.config)
+    if getattr(args, "runs", None):
+        config.runs = args.runs
     if args.command == "list":
         return _list(config, out)
     if args.command == "run":

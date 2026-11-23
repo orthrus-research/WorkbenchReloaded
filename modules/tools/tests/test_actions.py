@@ -431,6 +431,64 @@ class RunTest(Project):
         self.assertTrue(Path(document["result"]["report"]).is_file())
 
 
+MANIFEST = f"""
+schema = 1
+gate = ["build"]
+[project]
+name = "demo"
+[artifacts.mod]
+check = "build"
+file = "out/*.jar"
+[checks.build]
+steps = [["{{python}}", "-c", "import pathlib; pathlib.Path('out').mkdir(exist_ok=True); pathlib.Path('out/demo.jar').write_bytes(b'jar')"]]
+[checks.docs]
+inputs = ["docs/*.md"]
+steps = [{PASS}]
+"""
+
+
+class ProjectManifestTest(Project):
+    """project.toml is read before actions.toml: each check a job, the gate the default workflow, each artifact's
+    glob on the check that makes it; unknown keys are refused, naming the key."""
+
+    def write_manifest(self, text):
+        (self.root / "project.toml").write_text(textwrap.dedent(text), encoding="utf-8")
+
+    def test_the_gate_is_the_default_and_artifacts_are_kept(self):
+        self.write_manifest(MANIFEST)
+        commit_all(self.root)
+        config = self.load()
+        self.assertEqual(config.path.name, "project.toml")
+        self.assertEqual((config.workflow, config.required()), ("gate", ["build"]))
+        self.assertEqual(config.jobs["build"]["artifacts"], ["out/*.jar"])
+        code, document = self.actions("run", "gate", "--runs", str(self.root / "records"))
+        self.assertEqual(code, cli.OK, document)
+        build = document["result"]["jobs"]["build"]
+        self.assertEqual(sorted(build["artifacts"]), ["demo.jar"])
+        self.assertTrue((self.root / "records" / document["result"]["runId"] / "summary.json").is_file())
+
+    def test_unknown_keys_and_gpu_gates_are_refused(self):
+        self.write_manifest(MANIFEST.replace('[checks.docs]', '[checks.docs]\nsurprise = 1'))
+        with self.assertRaises(actions.ToolError) as raised:
+            self.load()
+        self.assertIn("checks.docs.surprise", str(raised.exception))
+        self.write_manifest(MANIFEST.replace('gate = ["build"]', 'gate = ["build", "docs"]', 1)
+                            .replace('[checks.docs]', '[checks.docs]\ngpu = true'))
+        with self.assertRaises(actions.ToolError) as raised:
+            self.load()
+        self.assertIn("GPU", str(raised.exception))
+        self.write_manifest(MANIFEST.replace('gate = ["build"]\n', '', 1) + 'gate = ["build"]\n')
+        with self.assertRaises(actions.ToolError) as raised:
+            self.load()
+        self.assertIn("top-level key", str(raised.exception))
+
+    def test_a_commits_own_file_is_found_whichever_kind_it_is(self):
+        self.write_manifest(MANIFEST)
+        commit = commit_all(self.root)
+        self.assertEqual(actions.file_at(self.root, commit)[0], "project.toml")
+        self.assertEqual(actions.file_at(self.root, git(self.root, "rev-parse", "HEAD~1"))[0], "actions.toml")
+
+
 class GateTest(Project):
     def setUp(self):
         super().setUp()

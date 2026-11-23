@@ -151,7 +151,7 @@ class Ci(unittest.TestCase):
             gated = self.c.submit("ci.gate", {"project": "demo", "refs": lines}).result(timeout=120)
             self.assertEqual(gated.outcome, "finding", gated.summary)
             self.assertEqual([r["commit"] for r in gated.data.refused], [bare])  # the tested commit still passes
-            self.assertIn("no actions.toml", gated.data.refused[0]["reason"])
+            self.assertIn("no project.toml or actions.toml", gated.data.refused[0]["reason"])
         finally:
             git(self.demo, "reset", "-q", "--hard", self.head)
 
