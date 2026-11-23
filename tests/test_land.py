@@ -269,6 +269,35 @@ class Land(unittest.TestCase):
         self.assertNotIn("lib:adapter", self.set_json()["holds"])
 
 
+    def test_9b_pins_inside_a_held_files_entry_are_the_holds(self):
+        from wb import setview
+        from wb.workspace import Project
+        adapter = self.root / "held.jar"
+        adapter.write_bytes(b"held bytes")
+        first = git(self.lib, "rev-list", "--max-parents=0", "HEAD")
+        built_against = git(self.two, "rev-list", "--max-parents=0", "HEAD")
+        hold = {"file": str(adapter), "commit": first, "reason": "kept as qualified", "source": "a backup"}
+        self.assertEqual(self.lander().land({}, holds={"lib:held": hold})["state"], "landed", self.said)
+        digest = self.set_json()["holds"]["lib:held"]["artifacts"]["held"]["sha256"]
+        consumer, _ = project(self.root, "consumer")
+        (consumer / "project.toml").unlink()
+        (consumer / "lock.json").write_text(json.dumps({"mods": [
+            {"sha256": digest, "sourceCommit": first, "build": {"inputs": {"two": built_against}}},
+            {"sha256": "0" * 64, "commit": built_against}]}, indent=1) + "\n", encoding="utf-8")
+        git(consumer, "add", "-A")
+        git(consumer, "commit", "-q", "-m", "unconverted, with a held entry")
+        git(consumer, "push", "-q", "origin", "main")
+        git(consumer, "fetch", "-q", "origin")
+        workspace = Workspace(self.d.config)
+        workspace.projects()["consumer"] = Project("consumer", {}, consumer, None)
+        text = "\n".join(setview.report(workspace))
+        self.assertIn(f"pins {first[:12]} for the hold lib:held", text)
+        self.assertIn(f"pins {built_against[:12]} for the hold lib:held", text)  # built against, inside its entry
+        self.assertIn(f"pins two {built_against[:12]}", text)  # the same commit outside the entry is a real pin
+        self.assertIn("hold lib:held at", text)
+        self.assertNotIn(f"pins {digest[:12]}", text)  # a SHA-256 is not a commit, though it starts with 40 hex
+        self.assertEqual(self.lander().land({}, drop_holds=["lib:held"])["state"], "landed")
+
     def test_y_the_backup_keeps_the_set_and_the_seeded_bytes(self):
         from wb import backup
         folder = Path(tempfile.mkdtemp(prefix="wb-backup-"))
