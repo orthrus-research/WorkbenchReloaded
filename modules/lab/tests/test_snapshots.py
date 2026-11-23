@@ -1,6 +1,5 @@
-"""Checkouts a profile names by ref or pin: each job reads a snapshot fixed at the commit it resolves to, a pin is read
-from its holder's file at the holder's commit, a snapshot is never moved, and removing one never touches what its
-links point at."""
+"""Checkouts a profile names by ref: each job reads a snapshot fixed at the commit it resolves to, a snapshot is never
+moved, and removing one never touches what its links point at."""
 
 import json
 import os
@@ -58,9 +57,8 @@ class Snapshots(unittest.TestCase):
                                                  "lib.lock.json": json.dumps({"commit": self.lib_1})}, "one")
         self.config = {"snapshots": str(self.state / "checkouts"), "profile": dict(
             BASE, checkout={"repo": str(self.launcher), "ref": "main"},
-            checkouts={"lib": {"repo": "../lib", "pin": {"file": "lib.lock.json"}},
-                       "base": {"repo": "../base", "pin": {"checkout": "lib", "file": "platform.json",
-                                                           "key": "base.commit"}}})}
+            checkouts={"lib": {"repo": "../lib", "ref": "main"},
+                       "base": {"repo": "../base", "ref": self.base_1}})}
         self.env = mock.patch.dict(os.environ, {"WB_LAB_HOME": str(self.home)})
         self.env.start()
         self.jobs = 0
@@ -76,14 +74,14 @@ class Snapshots(unittest.TestCase):
                 "module_config": self.config, "machine": "host", "work": str(where / "work"), "out": str(where / "out")}
         return Context(spec, lambda event: None)
 
-    def test_each_checkout_is_read_at_the_commit_its_ref_or_pin_names(self):
+    def test_each_checkout_is_read_at_the_commit_its_ref_names(self):
         ctx = self.ctx()
         found = snapshots.resolve(ctx)
         self.assertEqual((found[""].commit, found["lib"].commit, found["base"].commit),
-                         (self.launcher_1, self.lib_1, self.base_1))  # base's HEAD moved on; lib pins b1
+                         (self.launcher_1, self.lib_1, self.base_1))  # base's HEAD moved on; the ref names b1
         self.assertEqual((commands._launcher(ctx) / "run.py").read_text(encoding="utf-8"), "# a launcher\n")
         self.assertEqual((commands._profile_path(ctx, "{base}/base.txt")).read_text(encoding="utf-8"), "b1")
-        self.assertIn("pin lib's platform.json base.commit", found["base"].via)
+        self.assertEqual(found["base"].via, f"ref {self.base_1}")
         record = json.loads((ctx.out / "checkouts.json").read_text(encoding="utf-8"))
         self.assertEqual(record["base"]["commit"], self.base_1)
         self.assertEqual(git(self.launcher, "status", "--porcelain"), "")  # the checkout itself is untouched
@@ -135,21 +133,16 @@ class Snapshots(unittest.TestCase):
         self.assertNotIn(old.name, git(self.launcher, "worktree", "list"))  # its worktree entry went with it
         self.assertTrue(snapshots.launcher(self.ctx()).is_dir())
 
-    def test_a_pin_its_holder_lacks_is_refused(self):
-        commit(self.launcher, {"lib.lock.json": json.dumps({"elsewhere": "x"})}, "no pin")
+    def test_a_ref_the_repository_lacks_is_refused(self):
+        self.config["profile"]["checkouts"]["lib"]["ref"] = "no-such-branch"
         with self.assertRaises(EnvironmentProblem) as raised:
             snapshots.resolve(self.ctx())
-        self.assertIn("lib.lock.json names no commit at commit", str(raised.exception))
+        self.assertIn("has no commit no-such-branch", str(raised.exception))
 
     def test_checkout_tables_are_checked(self):
-        cases = [({"checkout": {"repo": "x"}}, "a ref or a pin, one of them"),
-                 ({"checkouts": {"a": {"repo": "x", "ref": "main", "pin": {"file": "f"}}}},
-                  "a ref or a pin, one of them"),
-                 ({"checkout": {"repo": "x", "pin": {"file": "f"}}}, "names a ref, not a pin"),
+        cases = [({"checkout": {"repo": "x"}}, "ref names a branch, tag or commit"),
+                 ({"checkouts": {"a": {"repo": "x", "ref": "main", "pin": {"file": "f"}}}}, "a table with repo and ref"),
                  ({"checkout": {"ref": "main"}}, "a table with repo"),
-                 ({"checkouts": {"a": {"repo": "x", "pin": {"checkout": "b", "file": "f"}},
-                                 "b": {"repo": "y", "ref": "main"}}}, "not declared above it"),
-                 ({"checkouts": {"a": {"repo": "x", "pin": {"key": "k"}}}}, "pin is a table with a file"),
                  ({"checkouts": {"a": {"repo": "x", "ref": "main", "fetch": "yes"}}}, "fetch is true or false")]
         for keys, expected in cases:
             with self.subTest(expected=expected):

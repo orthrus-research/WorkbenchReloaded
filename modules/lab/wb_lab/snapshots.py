@@ -1,16 +1,13 @@
 """The checkouts a lab job reads, each fixed at a commit for the whole job.
 
 A profile's ``checkout`` (the launcher's) and each of its ``checkouts`` is either a folder, read as it is, or a table
-that names a repository and how to find the commit to read::
+that names a repository and the ref to read::
 
     checkout = { repo = '<checkout>', ref = "origin/main", fetch = true }    # a branch, fetched first
     [checkouts]
-    library = { repo = "../library", pin = { file = "library.lock.json", key = "commit" } }    # the launcher's pin
-    base = { repo = "../base", pin = { checkout = "library", file = "platform.json", key = "base.commit" } }
+    library = { repo = "../library", ref = "4c1d0e2" }                      # a commit
 
-A ``pin`` is read from a file at the commit of the checkout it names (empty: the launcher's), declared above it, so a
-dependency the launcher and a library share is named once, by the library. A relative ``repo`` is relative to the
-launcher's repository.
+A relative ``repo`` is relative to the launcher's repository.
 
 Each commit is read from a snapshot: a linked worktree of the repository, detached at exactly that commit, under the
 snapshot root (``modules.lab.snapshots``, else ``checkouts`` in the lab home). Being a worktree, it finds what the
@@ -32,8 +29,7 @@ from pathlib import Path
 
 from wb_core.module import Context, EnvironmentProblem, ParamError
 
-CHECKOUT_KEYS = {"repo", "ref", "pin", "fetch"}
-PIN_KEYS = {"checkout", "file", "key"}
+CHECKOUT_KEYS = {"repo", "ref", "fetch"}
 
 
 @dataclass
@@ -46,39 +42,24 @@ class Checkout:
 
 
 def check(profile: dict, error) -> None:
-    """Refuses a checkout table that names no repository, both a ref and a pin, unknown keys, or a pin whose holder is
-    not declared above it. ``error`` makes the exception."""
-    def one(label: str, value, holders: set[str]):
+    """Refuses a checkout table that names no repository or no ref, or has unknown keys. ``error`` makes the
+    exception."""
+    def one(label: str, value):
         if value is None or isinstance(value, str):
             return
         if not isinstance(value, dict) or set(value) - CHECKOUT_KEYS or not isinstance(value.get("repo"), str):
-            raise error(f"the instance profile's {label}: a folder, or a table with repo and a ref or a pin "
+            raise error(f"the instance profile's {label}: a folder, or a table with repo and ref "
                         f"(keys: {', '.join(sorted(CHECKOUT_KEYS))})")
-        if ("ref" in value) == ("pin" in value):
-            raise error(f"the instance profile's {label}: name a ref or a pin, one of them")
-        if "ref" in value and (not isinstance(value["ref"], str) or not value["ref"]):
+        if not isinstance(value.get("ref"), str) or not value["ref"]:
             raise error(f"the instance profile's {label}: ref names a branch, tag or commit")
         if "fetch" in value and not isinstance(value["fetch"], bool):
             raise error(f"the instance profile's {label}: fetch is true or false")
-        pin = value.get("pin")
-        if pin is not None:
-            if not isinstance(pin, dict) or set(pin) - PIN_KEYS or not isinstance(pin.get("file"), str):
-                raise error(f"the instance profile's {label}: pin is a table with a file (keys: "
-                            f"{', '.join(sorted(PIN_KEYS))})")
-            holder = pin.get("checkout") or ""
-            if holder not in holders:
-                raise error(f"the instance profile's {label}: its pin is read from {holder or 'the launcher'}'s "
-                            "checkout, which is not declared above it")
 
-    if isinstance(profile.get("checkout"), dict) and "pin" in profile["checkout"]:
-        raise error("the instance profile's checkout: the launcher's checkout names a ref, not a pin")
-    one("checkout", profile.get("checkout"), set())
+    one("checkout", profile.get("checkout"))
     if not isinstance(profile.get("checkouts") or {}, dict):
         raise error("the instance profile's checkouts is a table of checkouts by name")
-    holders = {""}
     for name, value in (profile.get("checkouts") or {}).items():
-        one(f"checkouts.{name}", value, set(holders))
-        holders.add(name)
+        one(f"checkouts.{name}", value)
 
 
 def resolve(ctx: Context) -> dict[str, Checkout]:
@@ -132,17 +113,9 @@ def _one(ctx: Context, name: str, value, found: dict[str, Checkout], base: Path 
     if isinstance(value, str):
         return Checkout(name, str(_absolute(value, base)), None, None, "folder")
     repo = _absolute(value["repo"], base)
-    if "ref" in value:
-        if value.get("fetch"):
-            _fetch(ctx, repo, value["ref"])
-        commit, via = _commit(ctx, repo, value["ref"]), f"ref {value['ref']}"
-    else:
-        pin = value["pin"]
-        holder = found[pin.get("checkout") or ""]
-        key = str(pin.get("key") or "commit")
-        named = _pin(ctx, holder, pin["file"], key)
-        commit = _commit(ctx, repo, named)
-        via = f"pin {holder.name or 'launcher'}'s {pin['file']} {key}"
+    if value.get("fetch"):
+        _fetch(ctx, repo, value["ref"])
+    commit, via = _commit(ctx, repo, value["ref"]), f"ref {value['ref']}"
     path = materialize(ctx, repo, commit, launcher_profile=profile if name == "" else None)
     return Checkout(name, str(path), str(repo), commit, via)
 
@@ -178,35 +151,6 @@ def _commit(ctx: Context, repo: Path, ref: str) -> str:
     if done.returncode != 0:
         raise EnvironmentProblem(f"{repo} has no commit {ref} (fetch it there first)")
     return done.stdout.strip()
-
-
-def _pin(ctx: Context, holder: Checkout, file: str, key: str) -> str:
-    """The commit ``key`` names in ``file``: at the holder's commit, or in its folder when it is read as it is."""
-    if holder.commit:
-        done = _git(["--git-dir", str(_common(ctx, Path(holder.repo))), "show", f"{holder.commit}:{file}"],
-                    check=False)
-        if done.returncode != 0:
-            raise EnvironmentProblem(f"{holder.name or 'the launcher'} {holder.commit[:12]} has no {file}")
-        text = done.stdout
-    else:
-        path = Path(holder.path) / file
-        if not path.is_file():
-            raise EnvironmentProblem(f"there is no {path}")
-        text = path.read_text(encoding="utf-8")
-    try:
-        document = json.loads(text)
-    except ValueError:
-        raise EnvironmentProblem(f"{holder.name or 'the launcher'}'s {file} is not JSON") from None
-    value = document.get(key) if isinstance(document, dict) and key in document else _dotted(document, key)
-    if not isinstance(value, str) or not value:
-        raise EnvironmentProblem(f"{holder.name or 'the launcher'}'s {file} names no commit at {key}")
-    return value
-
-
-def _dotted(document, key: str):
-    for part in key.split("."):
-        document = document.get(part) if isinstance(document, dict) else None
-    return document
 
 
 # -- snapshots ----------------------------------------------------------------------------------------------------

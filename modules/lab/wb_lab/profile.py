@@ -11,8 +11,8 @@ Command templates take ``{python}``, ``{name}``, ``{name_repr}``, ``{tour}`` and
 ``recipe_files``, ``default_artifact`` or an ``env`` value may start with ``{<checkout>}``, a name from
 ``checkouts`` (other checkouts the launcher reads, relative to the launcher checkout or absolute).
 
-The ``checkout`` and each of the ``checkouts`` is a folder, read as it is, or a table naming a repository and a ref or
-a pin: each job then reads a snapshot fixed at the commit it resolves to (wb_lab.snapshots).
+The ``checkout`` and each of the ``checkouts`` is a folder, read as it is, or a table naming a repository and a ref:
+each job then reads a snapshot fixed at the commit it resolves to (wb_lab.snapshots).
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ DEFAULTS = {
     "default_artifact": {},      # {flag, path}: a file prepare reads unless the flag is given
     "file_flags": [],            # prepare flags whose next argument is a file, hashed into the recipe
     "checkouts": {},             # other checkouts by name, for {name} in paths: folders, or tables {repo, ref, fetch}
-                                 # or {repo, pin = {checkout, file, key}} read as snapshots at the commit they name
+                                 # read as snapshots at the commit the ref names
     "manifest": None,            # the instance's JSON manifest, read for the world key
     "world_key": {},             # name -> dotted path in the manifest; a leading # keeps only its SHA-256
     "world_writer": None,        # dotted path in the manifest naming the build that writes worlds

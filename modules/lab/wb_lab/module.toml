@@ -7,7 +7,7 @@ summary = "Game sessions: native client sessions on the host through wb-host (in
 launcher = { type = "string", default = "", summary = "the checkout whose launcher (the profile's launcher script) prepares and plays instances" }
 python = { type = "string", default = "", summary = "the interpreter for the launcher; empty means the one running wb-host" }
 profile = { type = "object", default = {}, summary = "the instance profile: how the launcher prepares, plays and checks instances and how they are laid out (keys: wb_lab/profile.py)" }
-snapshots = { type = "string", default = "", summary = "where the lab keeps snapshots of the checkouts a profile names by ref or pin, each a clone at one commit that is never moved; empty: checkouts in the lab home" }
+snapshots = { type = "string", default = "", summary = "where the lab keeps snapshots of the checkouts a profile names by ref, each a clone at one commit that is never moved; empty: checkouts in the lab home" }
 keep_worlds = { type = "list", items = "string", default = [], summary = "glob patterns of world snapshots lab.store-gc never removes" }
 keep_instances = { type = "list", items = "string", default = [], summary = "glob patterns of instances lab.prune-instances never removes" }
 scripts = { type = "list", items = "string", default = [], summary = "folders whose scripts lab.script may run" }
@@ -91,7 +91,7 @@ result.agreement = { type = "object" }
 [[command]]
 name = "checkouts"
 requires = { config = ["modules.lab.profile"] }
-summary = "What the instance profile's checkouts resolve to now (a ref fetched and read, a pin read at its holder's commit), each read from a snapshot at its commit; with prune, removes snapshots past the newest keep of each repository that no job has used for unused_days."
+summary = "What the instance profile's checkouts resolve to now (a ref, fetched first when the profile says so), each read from a snapshot at its commit; with prune, removes snapshots past the newest keep of each repository that no job has used for unused_days."
 handler = "wb_lab.snapshots:checkouts_command"
 runs_on = ["host"]
 params.prune = { type = "bool", default = false, summary = "remove old snapshots (never one this profile resolves to now)" }
