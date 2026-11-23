@@ -63,8 +63,10 @@ def main() -> int:
     done = subprocess.run([sys.executable, "-W", "ignore", *VENDORED], cwd=REPO / "modules" / "tools", env=env,
                           capture_output=True, text=True)
     summary = [line for line in (done.stdout + done.stderr).splitlines() if line.startswith(("Ran ", "OK", "FAILED"))]
-    print(f"{'ok  ' if done.returncode == 0 else 'note'} {'modules/tools (former standalone tools)':<44} "
+    print(f"{'ok  ' if done.returncode == 0 else 'FAIL'} {'modules/tools (the actions engine and tools)':<44} "
           f"{time.time() - started:5.1f}s  {' '.join(summary)}")
+    if done.returncode != 0:
+        failed.append("modules/tools")
     print(f"\n{'all suites passed' if not failed else 'failed: ' + ', '.join(failed)}")
     return 1 if failed else 0
 
