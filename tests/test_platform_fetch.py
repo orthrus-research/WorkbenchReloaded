@@ -108,5 +108,25 @@ class Fetch(unittest.TestCase):
         self.assertFalse((self.store / "gradle").exists())
 
 
+class Plugins(unittest.TestCase):
+    """The Set's packed plugins go into the Store's plugins folder once, by logic id, never replaced."""
+
+    def test_unpacked_once_without_metadata_and_never_replaced(self):
+        from wb_ci import commands
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "store"
+            packed = Path(folder) / "set-plugins-1.zip"
+            with zipfile.ZipFile(packed, "w") as archive:
+                archive.writestr("set/base/set.base.gradle.plugin/1/set.base.gradle.plugin-1.pom", "<pom/>")
+                archive.writestr("set/base/set.base.gradle.plugin/maven-metadata.xml", "<metadata/>")
+            self.assertEqual(commands._store_plugins(root, packed), 1)
+            self.assertEqual(commands._store_plugins(root, packed), 0)  # the same bytes: nothing to add
+            self.assertFalse((root / "plugins" / "set/base/set.base.gradle.plugin/maven-metadata.xml").exists())
+            with zipfile.ZipFile(packed, "w") as archive:
+                archive.writestr("set/base/set.base.gradle.plugin/1/set.base.gradle.plugin-1.pom", "<other/>")
+            with self.assertRaises(EnvironmentProblem):
+                commands._store_plugins(root, packed)
+
+
 if __name__ == "__main__":
     unittest.main()

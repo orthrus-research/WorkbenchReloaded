@@ -390,7 +390,8 @@ def _gradle_launcher(ctx: Context, work: Path, revision: str) -> tuple[Path, str
     jdks = []
     for major, jdk in sorted((platform.get("jdk") or {}).items()):
         jdks += [str(p) for p in sorted((root / "jdks" / str(jdk.get("build")) / system).glob("*")) if p.is_dir()]
-    args = [str(found[0]), f"-Pset.dir={sets / revision}", f"-Pset.store={root}", f"-Pset.plugins={root / 'plugins'}",
+    args = [str(found[0]), f"-Pset.dir={sets / revision}", f"-Pset.store={root}",
+            f"-Pset.plugins={(root / 'plugins').resolve().as_uri()}",
             "-Pset.exact=true", "-Porg.gradle.java.installations.auto-detect=false",
             "-Porg.gradle.java.installations.auto-download=false"]
     if jdks:
@@ -525,6 +526,10 @@ def _store_artifacts(ctx: Context, project: str, sha: str, trees: dict, records:
                 continue
             kept[file_name] = {"sha256": item["sha256"], "bytes": item.get("bytes"), "job": name, "run": run_id,
                                "from": item.get("from")}  # where in the tree the build left it
+    for file_name, item in kept.items():
+        if project == "set" and file_name.startswith("set-plugins-") and file_name.endswith(".zip"):
+            placed = _store_plugins(root, store.path_of(root, item["sha256"], file_name))
+            ctx.log.info(f"the Set's plugins from {file_name}: {placed} file(s) added to the Store's plugins folder")
     if kept:
         store.record(root, project, tree, sha, kept)
         ctx.log.info(f"kept {len(kept)} artifact(s) of {project} tree {tree[:12]} in the Store: "
@@ -616,6 +621,35 @@ def store_import(ctx: Context, source: str):
         raise EnvironmentProblem(str(error)) from None
     ctx.summary(f"imported {counts['files']} file(s) and {counts['seeded']} new seeded file(s)")
     return counts
+
+
+def _store_plugins(root: Path, packed: Path) -> int:
+    """Unpacks the Set's plugins (a Maven folder its logic check packed, one version per logic id) into the Store's
+    plugins folder. A file is written once and never replaced; Maven's metadata files are left out, since a build asks
+    for an exact version and every landed logic id stays resolvable."""
+    import zipfile
+    target = root / "plugins"
+    placed = 0
+    with zipfile.ZipFile(packed) as archive:
+        for info in archive.infolist():
+            name = info.filename
+            if info.is_dir() or Path(name).name.startswith("maven-metadata"):
+                continue
+            path = (target / name).resolve()
+            if not path.is_relative_to(target.resolve()):
+                raise EnvironmentProblem(f"{packed.name}: {name} would be written outside the plugins folder")
+            data = archive.read(info)
+            if path.is_file():
+                if path.read_bytes() != data:
+                    raise EnvironmentProblem(f"the Store's plugins folder holds other bytes at {name}; a logic id's "
+                                             "files are never replaced")
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            part = path.with_name(path.name + f".{os.getpid()}.part")
+            part.write_bytes(data)
+            part.replace(path)
+            placed += 1
+    return placed
 
 
 def gate(ctx: Context, project: str, refs: list, refs_file=None):
