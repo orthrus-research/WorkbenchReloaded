@@ -252,6 +252,22 @@ class Land(unittest.TestCase):
         self.assertIn(f"copy commit {line['commit']} (mod {line['artifacts']['mod']['sha256']})", text)
         self.assertIn("lib ", text.split("not converted")[0])  # lib's own line is listed with its branch state
 
+    def test_9_a_hold_lands_with_seeded_bytes_and_is_dropped(self):
+        adapter = self.root / "adapter.jar"
+        adapter.write_bytes(b"qualified adapter bytes")
+        old = git(self.lib, "rev-list", "--max-parents=0", "HEAD")
+        hold = {"file": str(adapter), "commit": old, "reason": "qualified once; requalify on current lines",
+                "source": "the owner's backup"}
+        result = self.lander().land({}, holds={"lib:adapter": hold})
+        self.assertEqual(result["state"], "landed", self.said)
+        held = self.set_json()["holds"]["lib:adapter"]
+        self.assertEqual((held["commit"], held["artifacts"]["adapter"]["file"]), (old, "adapter.jar"))
+        self.assertTrue((self.store / "seeded" / f"{held['artifacts']['adapter']['sha256']}.json").is_file())
+        self.assertIn("Land hold lib:adapter", git(self.home, "log", "-1", "--format=%s", "main"))
+        dropped = self.lander().land({}, drop_holds=["lib:adapter"])
+        self.assertEqual(dropped["state"], "landed")
+        self.assertNotIn("lib:adapter", self.set_json()["holds"])
+
 
 if __name__ == "__main__":
     unittest.main()

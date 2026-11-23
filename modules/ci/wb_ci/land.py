@@ -100,9 +100,30 @@ def _member(ctx: Context, name: str, wanted: dict, base: dict) -> tuple[dict, st
     return line, body
 
 
-def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float = 600, caller: str = ""):
-    if not projects:
-        raise ParamError("nothing to land: name at least one project")
+def _hold(ctx: Context, name: str, hold: dict) -> tuple[dict, str]:
+    """A hold's entry: its files must be seeded in the Store (bytes no container builds, with their source)."""
+    root = commands._store_root(ctx)
+    files = {}
+    for artifact, item in (hold.get("artifacts") or {}).items():
+        try:
+            store.path_of(root, item["sha256"], item["file"])
+        except (store.StoreError, KeyError) as error:
+            raise ParamError(f"hold {name}: {error}; seed it first (wb store add)") from None
+        if not (root / "seeded" / f"{item['sha256']}.json").is_file():
+            raise ParamError(f"hold {name}: {item['file']} is in the Store but was not seeded with its source")
+        files[artifact] = {"sha256": item["sha256"], "file": item["file"]}
+    entry = {"commit": hold["commit"], "artifacts": files, "reason": hold["reason"],
+             "since": hold.get("since") or time.strftime("%Y-%m-%d")}
+    if hold.get("source"):
+        entry["source"] = hold["source"]
+    return entry, f"hold {name} at {hold['commit'][:12]}: {hold['reason']}"
+
+
+def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float = 600, caller: str = "",
+         holds: dict | None = None, drop_holds: list | None = None):
+    holds, drop_holds = holds or {}, list(drop_holds or [])
+    if not projects and not holds and not drop_holds:
+        raise ParamError("nothing to land: name a project, a hold or a hold to drop")
     sets = _sets(ctx)
     root = commands._store_root(ctx)
     head = setfile.read_head(sets)
@@ -122,11 +143,23 @@ def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float 
         lines[name], line_text = _member(ctx, name, projects[name], current)
         body.append(line_text)
     composed = setfile.with_lines(current, lines)
+    for name in drop_holds:
+        if name not in (composed.get("holds") or {}):
+            raise ParamError(f"there is no hold {name} to drop")
+        del composed["holds"][name]
+        body.append(f"hold {name} dropped")
+    for name in sorted(holds):
+        composed.setdefault("holds", {})[name], hold_text = _hold(ctx, name, holds[name])
+        body.append(hold_text)
     text = setfile.dump(composed)
     moved = [n for n in sorted(lines) if (setfile.line(current, n) or {}).get("commit") != lines[n]["commit"]]
-    subject = "Land " + ", ".join(f"{n} {lines[n]['commit'][:8]}" for n in (moved or sorted(lines)))
+    parts = [f"{n} {lines[n]['commit'][:8]}" for n in (moved or sorted(lines))]
+    parts += [f"hold {n}" for n in sorted(holds)] + [f"drop hold {n}" for n in drop_holds]
+    subject = "Land " + ", ".join(parts)
     message = subject + "\n\n" + "\n".join(body) + f"\n\nLanding {landing} (job {ctx.job}).\n"
     refs = [f"refs/landed/{landing}"] + [f"refs/heads/{lines[n]['branch']}" for n in sorted(lines)]
+    for name in list(holds) + drop_holds:
+        refs.append(name)  # hold names are published too, in set.json and the message
     findings = _scrub(ctx, {"set.json": text, "message": message, "refs": "\n".join(refs)})
     if findings:
         for finding in findings:
@@ -136,7 +169,8 @@ def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float 
         "id": landing, "state": "prepared", "job": ctx.job, "caller": caller, "base": base,
         "projects": {n: {"commit": lines[n]["commit"], "branch": lines[n]["branch"],
                          "old": (setfile.line(current, n) or {}).get("commit")} for n in sorted(lines)},
-        "set_json": text, "message": message, "created": time.time(), "deadline": time.time() + deadline})
+        "holds": sorted(holds) + list(drop_holds), "set_json": text, "message": message, "created": time.time(),
+        "deadline": time.time() + deadline})
     ctx.progress("publishing", msg=f"landing {landing}: waiting for wb land to publish (lock set held)")
     ctx.log.info(f"landing {landing} prepared: {subject}")
     while True:

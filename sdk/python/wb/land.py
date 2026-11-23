@@ -119,7 +119,8 @@ class Lander:
 
     # -- landing ------------------------------------------------------------------------------------------------
     def land(self, targets: dict[str, str], *, urls: dict[str, str] | None = None, branch: str | None = None,
-             deadline: float = 600, dry: bool = False, stop_after: str | None = None) -> dict:
+             deadline: float = 600, dry: bool = False, stop_after: str | None = None, holds: dict | None = None,
+             drop_holds: list | None = None) -> dict:
         from wb_core import setfile
         self.reconcile()
         revision, text = self.head()
@@ -144,9 +145,12 @@ class Lander:
                 item["url"] = urls[name]
             wanted[name] = item
         self.export(revision, text, head=True)
-        if not wanted:
+        holds, drop_holds = holds or {}, list(drop_holds or [])
+        if not wanted and not holds and not drop_holds:
             self.say(f"nothing moves: {', '.join(skipped) or 'no project'} already at its line")
             return {"state": "unchanged", "revision": revision}
+        for name, hold in holds.items():
+            hold["artifacts"] = self._seed(name, hold)
         for name, item in wanted.items():
             self.say(f"checking {name} at {item['commit'][:12]} (its gate checks; a recorded pass stands)")
             envelope = self.client.submit("ci.run", {"project": name, "commit": item["commit"]}).wait(None)
@@ -155,13 +159,27 @@ class Lander:
                                      f"({envelope.get('summary')}); nothing was landed: wb show {envelope.get('job')}")
         landing = time.strftime("l%Y%m%d%H%M%S") + secrets.token_hex(2)
         job = self.client.submit("set.land", {"landing": landing, "base": revision, "projects": wanted,
-                                             "deadline": deadline, "caller": os.environ.get("WB_CALLER", "")})
+                                             "deadline": deadline, "caller": os.environ.get("WB_CALLER", ""),
+                                             "holds": holds, "drop_holds": drop_holds})
         self.say(f"{job.id}  set.land {landing}  (wb show {job.id})")
         record = self._prepared(job, landing)
         if dry:
             self._abandon(record, "a dry landing publishes nothing")
             return {"state": "dry", "landing": landing, "set_json": record["set_json"], "message": record["message"]}
         return self.publish(record, stop_after=stop_after)
+
+    def _seed(self, name: str, hold: dict) -> dict:
+        """Seeds a hold's file into the Store with its source and reason; returns its artifacts entry."""
+        from wb_core import artifacts
+        project, _, rest = name.partition(":")
+        artifact = rest.split("@")[0] or project
+        path = Path(hold.pop("file"))
+        if not path.is_file():
+            raise WorkspaceError(f"hold {name}: no file at {path}")
+        note = artifacts.seed(self.store, path, f"{project}:{artifact}@{hold['commit']}", hold.get("source") or "",
+                              hold["reason"], self.workspace.host_path(str(self.workspace.ci.get("pin_cache") or ""))
+                              if self.workspace.ci.get("pin_cache") else None)
+        return {artifact: {"sha256": note["sha256"], "file": note["name"]}}
 
     def _default_branch(self, repo: Path) -> str:
         ref = git(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False)
@@ -229,7 +247,10 @@ class Lander:
         """The Set commit, made with plumbing in the bare home: the base's tree with set.json replaced."""
         blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=self.home, input=record["set_json"],
                               capture_output=True, text=True, check=True).stdout.strip()
-        first = self._repo(next(iter(record["projects"])))
+        names = list(record["projects"]) or [h.split(":")[0].split("@")[0] for h in record.get("holds") or []]
+        if not names:
+            raise WorkspaceError("a landing that names no project or hold has no identity to commit with")
+        first = self._repo(names[0])
         identity = {}
         for key, variable in (("user.name", "NAME"), ("user.email", "EMAIL")):
             value = git(first, "config", key, check=False)
@@ -297,10 +318,19 @@ def main(args) -> int:
         for item in args.add or []:
             name, _, url = item.partition("=")
             urls[name] = url
-        targets = _targets(workspace, list(args.targets or []))
+        holds = {}
+        if args.hold:
+            if not (args.file and args.commit and args.reason):
+                raise WorkspaceError("--hold needs --file, --commit and --reason (and --source: where the bytes "
+                                     "came from)")
+            holds[args.hold] = {"file": args.file, "commit": args.commit, "reason": args.reason,
+                                "source": args.source or ""}
+        given = list(args.targets or [])
+        targets = _targets(workspace, given) if given or not (holds or args.drop_hold) else {}
         for name in urls:
             targets.setdefault(name, "HEAD")
-        result = lander.land(targets, urls=urls, branch=args.branch, dry=args.dry)
+        result = lander.land(targets, urls=urls, branch=args.branch, dry=args.dry, holds=holds,
+                             drop_holds=list(args.drop_hold or []))
         if result.get("state") == "landed" and not args.targets:
             from . import setwork  # a landing from this folder moves this folder's .set
             found = setwork.find(Path.cwd())

@@ -504,6 +504,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--add", action="append", metavar="PROJECT=URL", help="a project's first line, with its public url")
     p.add_argument("--branch", help="the set-named branch (default: the line's, else the remote's default)")
     p.add_argument("--dry", action="store_true", help="validate and compose only; publish nothing")
+    p.add_argument("--hold", metavar="PROJECT:ARTIFACT[@CONSUMER]", help="keep one artifact on another commit, "
+                   "with seeded bytes (--file, --commit, --reason, --source)")
+    p.add_argument("--file", help="--hold: the bytes")
+    p.add_argument("--commit", help="--hold: the commit they were built from")
+    p.add_argument("--reason", help="--hold: why they are held")
+    p.add_argument("--source", help="--hold: where the bytes came from (a URL or a backup)")
+    p.add_argument("--drop-hold", action="append", metavar="NAME", help="remove a hold")
     p = add("backup", cmd_backup, "copy the job database, the ledger and the scrub rules off this drive")
     p.add_argument("--to", help="the folder to back up into (default [paths] backup, else ~/wb-backup)")
     p = add("store", cmd_store, "what CI built: by project and commit, a kept file's path, or bytes to seed")
