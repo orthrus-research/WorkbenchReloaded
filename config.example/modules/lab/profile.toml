@@ -28,11 +28,17 @@ inputs = [
   { name = "engine", checkout = "engine", run = ["{cwd}/build.sh"] },
 ]
 # What the launch set's projects share, and where each pins it (group 1: the commit). lab.inputs reports pins that
-# disagree and lab.ensure refuses them (allow_disagreement=true builds anyway, as a finding).
+# disagree and lab.ensure refuses them (allow_disagreement=true builds anyway, as a finding). Better, where you can:
+# pin a shared dependency once and read it through a chain of checkout pins (below), so nothing can disagree.
 agree = { physics = [
   { file = "launch.lock", pattern = 'physics@([0-9a-f]{7,40})' },
   { checkout = "engine", file = "build.lock", pattern = '"physics": "([0-9a-f]{7,40})"' },
 ] }
 
 [checkouts]                                                 # other checkouts, named in paths as {name}
-engine = "../Engine"
+engine = "../Engine"                                        # a folder, read as it is
+# Or read at a commit, from a snapshot that is never moved (wb_lab/snapshots.py): the launcher's own checkout at a
+# branch, fetched before each job, and a checkout at the commit another one pins (the launcher's, or one above it):
+#   checkout = { repo = '../MyLauncher', ref = "origin/main", fetch = true }
+#   engine = { repo = "../Engine", pin = { file = "engine.lock.json", key = "commit" } }
+#   physics = { repo = "../Physics", pin = { checkout = "engine", file = "build.lock", key = "physics" } }

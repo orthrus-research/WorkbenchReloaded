@@ -47,13 +47,8 @@ def _python(ctx: Context) -> str:
 
 def _launcher(ctx: Context) -> Path:
     """The checkout whose launcher prepares and plays instances (``modules.lab.launcher``)."""
-    from wb_core.service import REPO_ROOT
-    value = _profile(ctx).get("checkout") or ctx.config.get("launcher")
-    if not value:
-        raise EnvironmentProblem("modules.lab.launcher is not set (the checkout whose launcher builds instances), "
-                                 "and the instance profile names no checkout")
-    path = Path(value)
-    path = path if path.is_absolute() else (REPO_ROOT / path).resolve()
+    from . import snapshots
+    path = snapshots.launcher(ctx)  # a folder as it is, or a snapshot at the commit its ref names
     script = _profile(ctx)["launcher"]
     if not (path / script).is_file():
         raise EnvironmentProblem(f"no {script} at {path} (set modules.lab.launcher, or the profile's launcher)")
@@ -75,7 +70,15 @@ def _prepare_command(ctx: Context, name: str, seed, scale, args: list) -> list[s
         if not p[flag]:
             raise ParamError(f"the instance profile has no {flag}, so a {what} cannot be given")
         command += [p[flag], str(value)]
-    return command + [str(a) for a in args]
+    return command + [_arg(ctx, a) for a in args]
+
+
+def _arg(ctx: Context, value) -> str:
+    """A prepare argument as the launcher gets it: one that starts with a checkout's name (``{quadrature}/build/x.jar``)
+    names that file in the checkout the job reads, which for a snapshot moves with its commit."""
+    value = str(value)
+    name, _ = profiles.checkout_of(value)
+    return str(_profile_path(ctx, value)) if name is not None and name in _profile(ctx)["checkouts"] else value
 
 
 def _env(ctx: Context, extra: dict | None = None) -> dict:
@@ -497,15 +500,11 @@ def _store(ctx: Context):
 
 def _profile_path(ctx: Context, relative: str) -> Path:
     """A profile path: relative to the launcher checkout, or under a named checkout (``{name}/...``)."""
+    from . import snapshots
     name, rest = profiles.checkout_of(relative)
-    launcher = _launcher(ctx)
     if name is None:
-        return launcher / rest
-    checkouts = _profile(ctx)["checkouts"]
-    if name not in checkouts:
-        raise EnvironmentProblem(f"the instance profile uses {{{name}}} but its checkouts name no {name}")
-    base = Path(checkouts[name])
-    base = base if base.is_absolute() else (launcher / base).resolve()
+        return _launcher(ctx) / rest
+    base = snapshots.checkout(ctx, name)
     return base / rest if rest else base
 
 
@@ -550,10 +549,11 @@ def recipe_inputs(ctx: Context, seed, scale, args: list, packs: list | None = No
     previous = None
     for arg in args:
         arg = str(arg)
-        if previous in file_flags or (Path(arg).suffix.lower() in (".jar", ".json") and Path(arg).is_file()):
-            digest = _digest(Path(arg))
+        path = Path(_arg(ctx, arg))  # the recipe keeps a file's bytes, so a snapshot's folder never enters it
+        if previous in file_flags or (path.suffix.lower() in (".jar", ".json") and path.is_file()):
+            digest = _digest(path)
             if digest is None:
-                raise ParamError(f"{arg} does not exist")
+                raise ParamError(f"{arg} does not exist" + (f" ({path})" if str(path) != arg else ""))
             files[arg] = digest
             normal.append("sha256:" + digest)
         else:

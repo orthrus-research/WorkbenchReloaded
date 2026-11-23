@@ -10,6 +10,9 @@ starts ``from`` another profile (empty: the default) writes only the keys it cha
 Command templates take ``{python}``, ``{name}``, ``{name_repr}``, ``{tour}`` and ``{window}``. A path in
 ``recipe_files``, ``default_artifact`` or an ``env`` value may start with ``{<checkout>}``, a name from
 ``checkouts`` (other checkouts the launcher reads, relative to the launcher checkout or absolute).
+
+The ``checkout`` and each of the ``checkouts`` is a folder, read as it is, or a table naming a repository and a ref or
+a pin: each job then reads a snapshot fixed at the commit it resolves to (wb_lab.snapshots).
 """
 
 from __future__ import annotations
@@ -20,7 +23,8 @@ from dataclasses import dataclass, field
 
 REQUIRED = ("launcher", "instances", "prepare", "play")
 DEFAULTS = {
-    "checkout": None,            # the launcher's checkout for this profile; unset: [modules.lab] launcher
+    "checkout": None,            # the launcher's checkout for this profile; unset: [modules.lab] launcher; a table
+                                 # {repo, ref, fetch} reads a snapshot at the commit ref names (wb_lab.snapshots)
     "launcher": None,            # the launcher script, relative to the checkout; it must exist there
     "instances": None,           # the folder instances live in, relative to the checkout
     "prepare": None,             # command template that prepares an instance named {name}
@@ -40,7 +44,8 @@ DEFAULTS = {
     "recipe_files": [],          # files whose content is part of every recipe
     "default_artifact": {},      # {flag, path}: a file prepare reads unless the flag is given
     "file_flags": [],            # prepare flags whose next argument is a file, hashed into the recipe
-    "checkouts": {},             # other checkouts by name, for {name} in paths
+    "checkouts": {},             # other checkouts by name, for {name} in paths: folders, or tables {repo, ref, fetch}
+                                 # or {repo, pin = {checkout, file, key}} read as snapshots at the commit they name
     "manifest": None,            # the instance's JSON manifest, read for the world key
     "world_key": {},             # name -> dotted path in the manifest; a leading # keeps only its SHA-256
     "world_writer": None,        # dotted path in the manifest naming the build that writes worlds
@@ -120,6 +125,8 @@ def merged(config: dict, name: str = "") -> dict:
             re.compile(pattern)
         except (re.error, TypeError) as error:
             raise ProfileError(f"the instance profile's failures: {pattern!r} is not a regular expression ({error})") from None
+    from .snapshots import check as check_checkouts
+    check_checkouts(profile, ProfileError)
     _check_inputs(profile)
     _check_agree(profile)
     missing = [key for key in REQUIRED if not profile.get(key)]
