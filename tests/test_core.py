@@ -314,6 +314,14 @@ class Lifecycle(unittest.TestCase):
         with self.assertRaises(WbError) as wrong:
             job.approve("q_NOTTHEQUOTE")
         self.assertEqual(wrong.exception.status, 409)
+        # A job's own token reads what the job needs but never approves: the person's token does.
+        from wb.client import Client
+        token = self.d.workbench.job_token(job.id)
+        as_job = Client(self.c.url, token).job(job.id)
+        self.assertEqual(as_job.refresh().state, "awaiting_approval")
+        with self.assertRaises(WbError) as refused:
+            as_job.approve(first["id"])
+        self.assertEqual(refused.exception.status, 403)
         job.approve(first["id"], via="relayed")
         with self.assertRaises(ApprovalRequired) as again:
             job.result(timeout=60)  # the run found a higher price: a new quote, the old yes void
@@ -326,6 +334,9 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(result.data.quote, second["id"])
         self.assertEqual(result["approval"]["approved"]["via"], "direct")
         self.assertEqual(result["cost"]["amount"], 0.0)
+        with self.assertRaises(WbError) as ended:
+            as_job.refresh()  # the job ended, and its token with it
+        self.assertEqual(ended.exception.status, 401)
 
     def test_idempotency_key(self):
         a = self.c.submit("selftest.echo", {"text": "idem"}, idempotency_key="same-key-1")

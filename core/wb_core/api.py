@@ -104,11 +104,15 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(421, f"Host {host!r} is not served here (local only)")
         if self.headers.get("Origin"):
             raise ApiError(403, "browser requests are refused")
+        self.job = None  # the job whose token the request carries; None: the person's
         if self.server.token:
             given = self.headers.get("Authorization", "")
             expected = "Bearer " + self.server.token
             if not hmac.compare_digest(given.encode(), expected.encode()):
-                raise ApiError(401, "missing or wrong bearer token (see ~/.config/wb/run/token)")
+                token_job = getattr(self.server.workbench, "token_job", None)
+                self.job = token_job(given[7:]) if token_job and given.startswith("Bearer ") else None
+                if self.job is None:
+                    raise ApiError(401, "missing or wrong bearer token (see ~/.config/wb/run/token)")
 
     def _dispatch(self, method: str):
         parsed = urllib.parse.urlsplit(self.path)
@@ -224,6 +228,9 @@ def job(h: Handler, query, job_id):
 
 @route("POST", r"/v1/jobs/(j_\w+)/approve")
 def approve(h: Handler, query, job_id):
+    if h.job is not None:
+        raise ApiError(403, f"{h.job} carries a job's token, and a job never approves a quote: the person approves "
+                            f"with their own (wb approve {job_id} --quote <id>)")
     body = h._body()
     if not body.get("quote"):
         raise ApiError(400, "quote is required: approve one exact quote")

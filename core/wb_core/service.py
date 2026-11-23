@@ -129,6 +129,9 @@ class Workbench:
         self.waiting: dict[str, dict] = {}  # queued job -> {reason, since}: why the dispatcher has not started it
         self.stalled: list[dict] = []       # queued jobs nothing can start while every running job waits on them
         self.inline_calls = 0
+        # A job's own token (by its SHA-256): it may do what the job needs (submit children, call inline, read) but
+        # never approve a quote, which takes the person's token. Revoked when the job ends.
+        self.job_tokens: dict[str, str] = {}
         self.hooks: dict[str, dict] = {}    # module -> the outcome of its start-up hook, shown by health
         self.quoting: set[str] = set()
         self.seq: dict[str, int] = {}
@@ -783,14 +786,25 @@ class Workbench:
                 "reservation": dict(zip(("cpu", "mem_gb"), self._resources(entry.command, "container", params)[:2])),
                 "env": {"WB_URL": f"http://127.0.0.1:{self.settings.core['api']['port']}",
                         "WB_INSTALL_ID": self.install_id,
-                        "WB_TOKEN": self._token(), "WB_JOB": job, "WB_STATE_DIR": str(self.state)}}
+                        "WB_TOKEN": self.job_token(job), "WB_JOB": job, "WB_STATE_DIR": str(self.state)}}
 
-    def _token(self) -> str:
-        path = Path(self.settings.core["api"]["token_file"])
-        try:
-            return path.read_text(encoding="ascii").strip() if path.is_file() else os.environ.get("WB_TOKEN", "")
-        except OSError:
-            return ""
+    def job_token(self, job: str) -> str:
+        """The token a job's worker calls the API with. An inline call's worker acts for the job that called it."""
+        owner = job.split("-inline-")[0]
+        token = pysecrets.token_urlsafe(32)
+        with self.cond:
+            self.job_tokens[hashlib.sha256(token.encode()).hexdigest()] = owner
+        return token
+
+    def token_job(self, token: str) -> str | None:
+        """The job a token belongs to, or None when it is no job's."""
+        with self.cond:
+            return self.job_tokens.get(hashlib.sha256(token.encode()).hexdigest())
+
+    def _revoke(self, job: str):
+        with self.cond:
+            for digest in [d for d, owner in self.job_tokens.items() if owner == job]:
+                del self.job_tokens[digest]
 
     def _spawn(self, spec: dict) -> subprocess.Popen:
         env = dict(os.environ)
@@ -1112,6 +1126,7 @@ class Workbench:
                 collected: Collected, reasons: list, cache_hit: str | None = None):
         if outcome not in CODES and state == "settled":
             outcome = "environment"
+        self._revoke(job)
         row = self._job_row(job)
         self._store(job, collected.artifacts, bool(row["out_dir"]))
         extra = {"measurements": collected.measurements, "phases": collected.phases, "cost": collected.cost,
