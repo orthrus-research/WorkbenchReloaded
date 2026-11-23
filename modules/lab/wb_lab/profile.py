@@ -61,7 +61,7 @@ DEFAULTS = {
                                  # store = {project, files}: CI's JARs of a clean checkout's tree replace the run
                                  # with {python} and {cwd}, run in checkout (a name from checkouts; empty: the
                                  # launcher's) with env, and brings the launch set to its state before lab.ensure
-    "agree": {},                 # dependency -> [{file, pattern, checkout}]: where each project of the launch set
+    "agree": {},                 # dependency -> [{file, pattern, checkout} or {set}]: where each project of the launch set
                                  # pins a dependency they share (pattern's group 1 is the commit); lab.inputs reports
                                  # and lab.ensure refuses pins that disagree
 }
@@ -175,10 +175,12 @@ def _check_agree(profile: dict) -> None:
         if not isinstance(pins, list) or len(pins) < 2:
             raise ProfileError(f"the instance profile's agree.{dependency}: two or more pins to compare")
         for pin in pins:
+            if isinstance(pin, dict) and set(pin) == {"set"} and isinstance(pin["set"], str) and pin["set"]:
+                continue  # { set = "<project>" }: that project's line in the Set
             if not isinstance(pin, dict) or set(pin) - {"file", "pattern", "checkout"} or \
                     not isinstance(pin.get("file"), str) or not isinstance(pin.get("pattern"), str):
                 raise ProfileError(f"the instance profile's agree.{dependency}: {pin!r} is not a pin "
-                                   "(keys: file, pattern, checkout)")
+                                   "(keys: file, pattern, checkout; or set = <project>)")
             try:
                 groups = re.compile(pin["pattern"]).groups
             except re.error as error:

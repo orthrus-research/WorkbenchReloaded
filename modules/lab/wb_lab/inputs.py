@@ -31,6 +31,9 @@ def agreement(ctx: Context) -> dict:
     for dependency, pins in commands._profile(ctx)["agree"].items():
         seen = []
         for pin in pins:
+            if "set" in pin:  # the line the Set names: what a converted project builds against
+                seen.append({"checkout": "set", "file": "line", "commit": _set_line(dependency, pin["set"])})
+                continue
             checkout = pin.get("checkout") or ""
             path = folder(ctx, checkout) / pin["file"]
             if not path.is_file():
@@ -43,6 +46,14 @@ def agreement(ctx: Context) -> dict:
         found[dependency] = {"agrees": all(a.startswith(b) or b.startswith(a) for a in commits for b in commits),
                              "pins": seen}
     return found
+
+
+def _set_line(dependency: str, project: str) -> str:
+    from wb.workspace import Workspace
+    line = Workspace().set_line(project)
+    if not line:
+        raise EnvironmentProblem(f"agree.{dependency}: the Set on this machine has no line for {project}")
+    return line["commit"].lower()
 
 
 def disagreements(found: dict) -> list[str]:

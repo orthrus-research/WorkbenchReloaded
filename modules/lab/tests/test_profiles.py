@@ -130,6 +130,20 @@ class Agreement(Checkouts):
         with self.assertRaises(EnvironmentProblem):
             inputs.agreement(self.ctx())  # a pin its pattern cannot find is no agreement
 
+    def test_a_pin_may_be_the_sets_line(self):
+        from unittest import mock
+        from wb_lab import inputs
+        pins = [{"file": "pins.json", "pattern": r'"lib"\s*:\s*"([0-9a-f]+)"'}, {"set": "lib"}]
+        self.config["profile"] = dict(BASE, agree={"lib": pins})
+        self.write(self.main, '{"lib": "0c2995e"}')
+        line = {"commit": "0c2995e6c1d838be8c2b4975eec68b923eb0f1c4"}
+        with mock.patch("wb.workspace.Workspace.set_line", lambda self, name: line if name == "lib" else None):
+            self.assertTrue(inputs.agreement(self.ctx())["lib"]["agrees"])
+            line = {"commit": "84a58e84e4" + "0" * 30}
+            with self.assertRaises(EnvironmentProblem) as raised:
+                inputs.check_agreement(self.ctx(), False)
+        self.assertIn("set line 84a58e84e400", str(raised.exception))
+
     def test_pins_are_checked(self):
         cases = [({"lib": [{"file": "a", "pattern": "(x)"}]}, "two or more pins"),
                  ({"lib": [{"file": "a", "pattern": "x"}, {"file": "b", "pattern": "(x)"}]}, "no group"),
