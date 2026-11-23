@@ -231,6 +231,27 @@ class Land(unittest.TestCase):
         self.assertIn("/.set", (Path(git(tree, "rev-parse", "--git-common-dir")) / "info" / "exclude")
                       .read_text(encoding="utf-8"))
 
+    def test_8_an_unconverted_consumer_is_listed_with_its_legacy_pin(self):
+        from wb import setview
+        from wb.workspace import Project
+        old = git(self.lib, "rev-list", "--max-parents=0", "HEAD")  # lib's first commit, well behind its line
+        app, _ = project(self.root, "app")
+        (app / "project.toml").unlink()
+        (app / "actions.toml").write_text("[jobs.x]\nsteps = [{ name = 'x', run = ['true'] }]\n", encoding="utf-8")
+        (app / "lib.lock.json").write_text(json.dumps({"commit": old}) + "\n", encoding="utf-8")
+        git(app, "add", "-A")
+        git(app, "commit", "-q", "-m", "unconverted")
+        git(app, "push", "-q", "origin", "main")
+        git(app, "fetch", "-q", "origin")
+        workspace = Workspace(self.d.config)
+        workspace.projects()["app"] = Project("app", {}, app, None)
+        text = "\n".join(setview.report(workspace))
+        line = self.set_json()["projects"]["lib"]
+        self.assertIn("app (no project.toml on origin/main)", text)
+        self.assertIn(f"lib.lock.json:1 pins lib {old[:12]}", text)
+        self.assertIn(f"copy commit {line['commit']} (mod {line['artifacts']['mod']['sha256']})", text)
+        self.assertIn("lib ", text.split("not converted")[0])  # lib's own line is listed with its branch state
+
 
 if __name__ == "__main__":
     unittest.main()

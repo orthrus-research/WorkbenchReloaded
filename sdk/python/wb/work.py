@@ -108,6 +108,9 @@ def view(workspace: Workspace, everything: bool) -> int:
             if item.get("bare") or not path.is_dir():
                 continue
             _say(_line(_state(workspace, project, path)))
+    from . import setview
+    for text in setview.report(workspace):
+        _say(text)
     return 0
 
 
