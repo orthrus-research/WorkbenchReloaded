@@ -411,6 +411,8 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
     run_id = result.get("runId")
     if run_id and (records / run_id).is_dir():
         ctx.output("run", records / run_id)
+    stored = {} if result.get("treesChanged") else _store_artifacts(ctx, project, sha, result.get("trees") or {},
+                                                                     records, run_id, jobs_done)
     failed = [n for n, j in jobs_done.items() if j.get("status") == "failed"]
     passed = [n for n, j in jobs_done.items() if j.get("status") == "passed"]
     trees = result.get("trees") or {}
@@ -426,7 +428,38 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
                     + (f", {len(jobs_done) - len(passed)} skipped" if len(jobs_done) > len(passed) else "")
                     + ("" if jobs_done else f" ({document.get('summary') or 'nothing to run'})"))
     return {"project": project, "commit": sha, "worktree": worktree, "pinned": pinned, "run": run_id,
-            "trees": trees, "passed": passed, "failed": failed, "repository": served, "engine": result}
+            "trees": trees, "passed": passed, "failed": failed, "repository": served, "stored": stored,
+            "engine": result}
+
+
+def _store_artifacts(ctx: Context, project: str, sha: str, trees: dict, records: Path, run_id: str | None,
+                     jobs_done: dict) -> dict:
+    """Keeps what each passed producing job built (its ``artifacts``) in the Store, by SHA-256 and under the
+    project's tree, and in the pin cache. The copy comes from the run record, which the engine wrote after the
+    job passed and its trees held still; a run whose trees moved records no pass and keeps nothing."""
+    from wb_core import artifacts as store
+    tree = next(iter(trees.values()), None)  # the project's own tree comes first
+    if not run_id or not tree:
+        return {}
+    root = _folder(ctx, "store", _state() / "store")
+    pins = _folder(ctx, "pin_cache", _state() / "cache" / "pins")
+    kept = {}
+    for name, job in jobs_done.items():
+        if job.get("status") != "passed" or job.get("cached"):
+            continue
+        for file_name, item in (job.get("artifacts") or {}).items():
+            source = records / run_id / name / "artifacts" / file_name
+            try:
+                store.put(root, source, item["sha256"], pins)
+            except (OSError, store.StoreError) as error:
+                ctx.reason("store", file_name, f"not kept: {error}", None)
+                continue
+            kept[file_name] = {"sha256": item["sha256"], "bytes": item.get("bytes"), "job": name, "run": run_id}
+    if kept:
+        store.record(root, project, tree, sha, kept)
+        ctx.log.info(f"kept {len(kept)} artifact(s) of {project} tree {tree[:12]} in the Store: "
+                     + ", ".join(f"{n} {k['sha256'][:12]}" for n, k in kept.items()))
+    return kept
 
 
 def gate(ctx: Context, project: str, refs: list, refs_file=None):

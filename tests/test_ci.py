@@ -31,6 +31,10 @@ steps = [{ name = "say", run = ["{python}", "-c", "import pathlib; print(pathlib
 [jobs.pinned]
 steps = [{ name = "lib", run = ["{python}", "-c", "import pathlib, sys; t = pathlib.Path('../lib/lib.txt').read_text(); sys.exit(0 if t == 'v1' else 3)"] }]
 
+[jobs.built]
+artifacts = ["build/out.jar"]
+steps = [{ name = "build", run = ["{python}", "-c", "import pathlib; p = pathlib.Path('build'); p.mkdir(exist_ok=True); (p / 'out.jar').write_bytes(b'built bytes')"] }]
+
 [jobs.lines]
 steps = [{ name = "lines", run = ["{python}", "-c", "import pathlib, sys; t = pathlib.Path('src/a.txt').read_text().splitlines(); sys.exit(0 if t == ['line one', 'line two'] else 3)"] }]
 """
@@ -207,6 +211,22 @@ class Ci(unittest.TestCase):
             self.assertEqual(host_tree(clone, excludes), host_tree(self.demo, excludes))
         finally:
             git(self.demo, "checkout", "--", "src/a.txt")
+
+    def test_a_producing_jobs_artifacts_are_kept_in_the_store_by_tree(self):
+        import hashlib
+        sys.path.insert(0, str(REPO / "core"))
+        from wb_core import artifacts
+        result = self.c.submit("ci.run", {"project": "demo", "workflow": "built"}).result(timeout=600)
+        self.assertEqual(result.outcome, "ok", result.summary)
+        digest = hashlib.sha256(b"built bytes").hexdigest()
+        self.assertEqual(result.data.stored["out.jar"]["sha256"], digest)
+        store = self.d.state / "store"
+        tree = git(self.demo, "rev-parse", "HEAD^{tree}")
+        index = artifacts.find(store, "demo", tree)
+        self.assertEqual(index["artifacts"]["out.jar"]["sha256"], digest)
+        self.assertIn(self.head, index["commits"])
+        self.assertEqual(artifacts.path_of(store, digest, "out.jar").read_bytes(), b"built bytes")
+        self.assertTrue((self.d.state / "cache" / "pins" / digest).is_file())  # where WB_PIN_CACHE readers look
 
     def test_working_tree_run_and_a_failing_job(self):
         (self.demo / "src" / "a.txt").write_text("uncommitted", encoding="utf-8")

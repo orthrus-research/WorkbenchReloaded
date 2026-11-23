@@ -277,6 +277,10 @@ def cmd_backup(args) -> int:
     from . import backup
     return backup.main(args)
 
+def cmd_store(args) -> int:
+    from . import store
+    return store.main(args)
+
 def cmd_check(args) -> int:
     """ci.run for the worktree you stand in: its project from the repository, the commit from HEAD, or the tree
     the host's git would commit when the worktree has changes. No commit= or checkout= to type."""
@@ -490,6 +494,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--all", action="store_true", help="every registered project's worktrees")
     p = add("backup", cmd_backup, "copy the job database, the ledger and the scrub rules off this drive")
     p.add_argument("--to", help="the folder to back up into (default [paths] backup, else ~/wb-backup)")
+    p = add("store", cmd_store, "what CI built: by project and commit, a kept file's path, or bytes to seed")
+    p.add_argument("action", nargs="?", default=None)
+    p.add_argument("names", nargs="*")
+    p.add_argument("--as", dest="label", help="add: what the bytes are, as project:artifact@commit")
+    p.add_argument("--source", help="add: where the bytes came from")
+    p.add_argument("--reason", help="add: why they are seeded rather than built")
     p = add("job", cmd_job, "show a job's envelope, or the newest job's")
     p.add_argument("job", nargs="?")
     p = add("hook", cmd_hook, "a git hook, answered on the host (the hook stubs call this)")

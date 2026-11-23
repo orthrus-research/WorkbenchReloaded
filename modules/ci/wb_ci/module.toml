@@ -13,6 +13,7 @@ git_config = { type = "object", default = {}, summary = "the host's system and g
 workdir = { type = "string", default = "", summary = "where clean trees are built; empty: <state>/ci/trees" }
 records = { type = "string", default = "", summary = "where run records are kept, one folder per project; inside an rw root, given to Workbench's user at container start; empty: <state>/ci/records" }
 gradle_home = { type = "string", default = "", summary = "a Gradle home that survives the container, whose init.d serves toolchain's rescue repository and substitutions to every build (written each run); empty: <state>/cache/gradle" }
+store = { type = "string", default = "", summary = "the Store: what producing jobs built, by SHA-256 and by project and tree; inside an rw root, given to Workbench's user at container start; empty: <state>/store" }
 pin_cache = { type = "string", default = "", summary = "the shared cache of pinned files by SHA-256 (WB_PIN_CACHE in every job); inside an rw root, given to Workbench's user at container start; empty: <state>/cache/pins" }
 python_cache = { type = "string", default = "", summary = "where projects' Python environments are cached by requirements; empty: <state>/cache/python" }
 

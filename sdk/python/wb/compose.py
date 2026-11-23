@@ -23,7 +23,7 @@ from . import config as wbconfig
 DEFAULT_PORT = 7377
 STATE = "/var/lib/wb"
 # Settings naming a folder Workbench itself writes, as a container path: the entrypoint gives each to Workbench's user.
-OWNED_SETTINGS = ("modules.ci.pin_cache", "modules.ci.records", "modules.toolchain.pin_cache")
+OWNED_SETTINGS = ("modules.ci.pin_cache", "modules.ci.records", "modules.ci.store", "modules.toolchain.pin_cache")
 
 
 class ComposeError(Exception):

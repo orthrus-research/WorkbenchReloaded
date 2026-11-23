@@ -12,6 +12,13 @@
 - A tool runs until its process exits, not its pipe; deadlines fire without output; nothing a job started
   outlives it (a Job Object on Windows, a child subreaper on Linux); a run stopped at its limit is a finding with
   reason kind timeout, never cached.
+- From the folder you stand in, on the host: `wb setup` installs scrub and push-gate hooks that need no daemon;
+  `wb check`, `wb job`, `wb work` (start, add, adopt, finish), `wb backup`. `wb deploy` tests, builds, drains and
+  restarts the daemon and host runner together onto an immutable release; every part reports its commit and a
+  CLI or host runner on other code is named with the fix.
+- The Store: a producing job's artifacts are kept by SHA-256 and by project and tree, and in the pin cache;
+  `wb store` finds them, gives a kept file's path, or seeds bytes no container builds. A pinned repository with
+  `passed` must have passed its own checks, so a consumer need not build and test it again.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,
   ledger, vast, ci, release, plan, frames, tools (the former standalone tools, 0.6.0), selftest.
 - The lab reads a profile's checkouts at a ref, each from a snapshot fixed at its commit for the whole job

@@ -472,6 +472,42 @@ class GateTest(Project):
         reason = self.refusal("demo", commit, {})
         self.assertEqual(reason, "its other pin ffffffff is not in the other checkout")
 
+    def test_a_pin_named_passed_must_have_passed_its_own_projects_checks(self):
+        records = self.root / ".local" / "other-records"
+        (self.other / "actions.toml").write_text(textwrap.dedent(f"""
+            [settings]
+            name = "other"
+            runs = "{records.as_posix()}"
+
+            [workflows]
+            ci = ["check"]
+
+            [jobs.check]
+            steps = [{{ name = "check", run = {PASS} }}]
+        """), encoding="utf-8")
+        pin = commit_all(self.other, "other's own checks")
+        text = (self.root / "actions.toml").read_text(encoding="utf-8")
+        (self.root / "actions.toml").write_text(
+            text.replace('pin = { file = "pin.json" }', 'pin = { file = "pin.json" }\npassed = "other-records"'),
+            encoding="utf-8")
+        commit = self.pinned(pin)
+        tree = git(self.root, "rev-parse", "HEAD^{tree}")
+        other_tree = git(self.other, "rev-parse", "HEAD^{tree}")
+        passed = {(tree, other_tree): {"lint", "test"}}
+        reason = self.refusal("demo", commit, passed)
+        self.assertIn("its other pin", reason)
+        self.assertIn("has not passed its own checks", reason)
+        code, _ = capture_json(actions.main, "run", "ci", "--root", str(self.other))
+        self.assertEqual(code, 0)
+        self.assertIsNone(self.refusal("demo", commit, passed))  # the upstream's own pass is enough
+
+    def test_passed_needs_a_pin(self):
+        self.write_config(self.config.replace(
+            "[workflows]", '[repositories.lib]\npath = "other"\npassed = "lib"\n\n[workflows]'))
+        with self.assertRaises(actions.ToolError) as raised:
+            self.load()
+        self.assertIn("needs a pin", str(raised.exception))
+
     def test_another_repository_needs_every_job_in_one_combination(self):
         split = {("p1", self.other_tree): {"lint"}, ("p2", self.other_tree): {"test"}}
         self.assertIn("has not passed", self.refusal("other", self.pin, split))

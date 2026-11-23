@@ -42,6 +42,7 @@ identity_env = ["JAVA_TOOL_OPTIONS"]
 path = "../library"
 env = "LIBRARY_HOME"      # overrides path when set
 pin = { file = "library.lock.json", key = "commit" }   # optional, see the push gate
+passed = "library"        # optional, with a pin: the pinned commit must have passed its own checks
 
 [repositories.upstream]   # a checkout jobs only build pinned commits from
 path = "../upstream"
@@ -151,7 +152,10 @@ whose pushed commit's tree has not passed every job of the workflow in one run c
 - a project commit's tree must have passed together with the tree of each repository commit it
   pins, read from `pin.file` at that commit as the JSON key `key`, or a dotted path to a nested
   one (`orthlib.commit`); repositories without a `pin` may be any tree tested with it;
-- a repository commit's tree must have passed with any project tree.
+- a repository commit's tree must have passed with any project tree;
+- a pinned repository with `passed = "<name>"` must have passed its own required checks at the
+  pinned commit, judged by that commit's own jobs file against the records in `<name>` beside this
+  project's records. A consumer then needs no job that builds and tests its dependency again.
 
 To push: check out the commits with nothing uncommitted, run
 `orthrus-tools actions run ci --if-needed`, and push again. `git push --no-verify` skips the

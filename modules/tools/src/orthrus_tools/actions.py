@@ -81,6 +81,9 @@ class Repository:
     # False for a checkout that jobs only build pinned commits from: its own tree is not what a
     # run tests, so it is not recorded, matched or gated, and its new commits leave passes standing.
     tested: bool = True
+    # The records folder (beside this project's) of the project this repository is: when set, a pinned commit
+    # must have passed that project's own required checks, so a consumer need not build and test it again.
+    passed_by: str | None = None
 
 
 @dataclass
@@ -155,8 +158,13 @@ def load(root: Path, given: Path | None = None) -> Config:
         if not isinstance(tested, bool) or (pin and not tested):
             raise ToolError(USAGE, f"{path.name}: [repositories.{name}] tested is true or false, "
                                    "and a pinned repository is tested")
+        passed_by = entry.get("passed")
+        if passed_by is not None and (not isinstance(passed_by, str) or not passed_by or not pin):
+            raise ToolError(USAGE, f"{path.name}: [repositories.{name}] passed names the project whose records "
+                                   "show the pinned commit passed its own checks, and needs a pin")
         repositories.append(
-            Repository(name, checkout.resolve(), pin.get("file"), str(pin.get("key", "commit")), tested)
+            Repository(name, checkout.resolve(), pin.get("file"), str(pin.get("key", "commit")), tested,
+                       passed_by=passed_by)
         )
     runs = root / str(settings.get("runs", DEFAULT_RUNS))
     config = Config(root, path, data, repositories, runs)
@@ -872,12 +880,37 @@ def refusal(
                 return f"its {other.name} pin {pin[:8]} is not in the {other.name} checkout"
             fixed[names.index(other.name)] = pinned
             label += f" with {other.name} {pin[:8]}"
+            if other.passed_by:
+                upstream = upstream_refusal(config, other, pin)
+                if upstream:
+                    return upstream
     candidates = [
         jobs for key, jobs in passed.items() if all(key[i] == t for i, t in fixed.items())
     ]
     done = max(candidates, key=lambda jobs: len(jobs & set(required)), default=set())
     missing = [job for job in required if job not in done]
     return f"{label} has not passed {', '.join(missing)}" if missing else None
+
+
+def upstream_refusal(config: Config, repository: Repository, commit: str) -> str | None:
+    """Why ``commit`` of ``repository`` has not passed its own project's required checks (read from that commit's
+    own jobs file, against that project's records beside this one's), or None when it has."""
+    records = config.runs.parent / str(repository.passed_by)
+    try:
+        text = git(repository.path, "show", f"{commit}:{DEFAULT_CONFIG}")
+    except (OSError, subprocess.CalledProcessError):
+        return f"its {repository.name} pin {commit[:8]} has no {DEFAULT_CONFIG}, so nothing shows it passed"
+    with tempfile.TemporaryDirectory(prefix="upstream-") as scratch:
+        copy = Path(scratch) / DEFAULT_CONFIG
+        copy.write_text(text + "\n", encoding="utf-8")
+        upstream = load(repository.path, copy)
+        upstream.runs = records
+        passed = passed_jobs(records, upstream.names) if records.is_dir() else {}
+        reason = refusal(upstream, upstream.names[0], commit, passed, upstream.required())
+    if reason:
+        return (f"its {repository.name} pin {commit[:8]} has not passed its own checks ({reason}); run them "
+                f"in {repository.name} at that commit")
+    return None
 
 
 def gate_check(config: Config, repository: str, lines: Iterable[str]) -> list[dict[str, str]]:
