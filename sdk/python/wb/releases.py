@@ -4,7 +4,8 @@ that a merge cannot change under them.
     <releases>/<commit12>/      what ``git archive <commit>`` holds, plus RELEASE.json (commit, tree, tests, override)
     <releases>/current          a link to the release in service; wb deploy moves it last
 
-<releases> is [paths] releases in machine config, else a folder named releases in the config folder. git config
+<releases> is WB_RELEASES, else wb/releases in the user's local application data (never the config folder,
+whose folders are all read as config). git config
 wb.cli names <releases>/current/bin/wb, so a hook always runs the deployed release, never a working tree; a working
 tree runs only when started as such (its own bin/wb, with WB_DEV=1)."""
 
@@ -25,8 +26,19 @@ KEEP = 10
 
 
 def root(config) -> Path:
-    configured = ((config.values.get("paths") or {}).get("releases"))
-    folder = Path(str(configured)) if configured else Path(config.folder or wbconfig.default_folder()) / "releases"
+    """Where releases live: WB_RELEASES, else the user's local application data. Never inside the config folder,
+    where every folder is read as config (a release carries example config files)."""
+    named = os.environ.get("WB_RELEASES")
+    if named:
+        folder = Path(named)
+    elif os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        folder = Path(os.environ["LOCALAPPDATA"]) / "wb" / "releases"
+    else:
+        folder = Path.home() / ".local" / "share" / "wb" / "releases"
+    settings = Path(config.folder or wbconfig.default_folder()).resolve()
+    if settings == folder.resolve() or settings in folder.resolve().parents:
+        raise RuntimeError(f"releases may not live in the config folder {settings}: every folder there is read as "
+                           "config; set WB_RELEASES to another folder")
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 

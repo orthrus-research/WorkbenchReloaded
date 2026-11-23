@@ -43,13 +43,29 @@ class Releases(unittest.TestCase):
         (self.repo / "bin" / "wb").write_text("two\n", encoding="utf-8")
         git(self.repo, "commit", "-q", "-am", "two")
         self.second = git(self.repo, "rev-parse", "HEAD")
-        self.config = Config({"paths": {"releases": str(base / "releases")}}, base / "config")
+        self.config = Config({}, base / "config")
+        self.saved = os.environ.get("WB_RELEASES")
+        os.environ["WB_RELEASES"] = str(base / "releases")
 
     def tearDown(self):
         link = releases.current(self.config)
         if link.exists() or link.is_symlink():
             os.rmdir(link) if os.name == "nt" else link.unlink()
+        if self.saved is None:
+            os.environ.pop("WB_RELEASES", None)
+        else:
+            os.environ["WB_RELEASES"] = self.saved
         self.folder.cleanup()
+
+    def test_releases_never_live_in_the_config_folder(self):
+        good = os.environ["WB_RELEASES"]
+        os.environ["WB_RELEASES"] = str(self.config.folder / "releases")
+        try:
+            with self.assertRaises(RuntimeError) as raised:
+                releases.root(self.config)
+            self.assertIn("read as config", str(raised.exception))
+        finally:
+            os.environ["WB_RELEASES"] = good
 
     def test_a_release_is_the_commits_files_and_names_its_commit(self):
         made = releases.make(self.config, self.repo, self.first, {"tree": "t"})
