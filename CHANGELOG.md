@@ -8,10 +8,8 @@
   logs with a JSONL sidecar; retention.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,
   ledger, vast, ci, release, plan, frames, tools (the former standalone tools, 0.6.0), selftest.
-- Pins that chain: a repository's pin may be read from another pinned repository's file at that one's pin, in
-  the push gate and `ci.run`, so a dependency two projects share is pinned once. The lab reads a profile's
-  checkouts at a ref or a pin, each from a snapshot fixed at its commit for the whole job (`lab.checkouts`
-  shows and prunes them), so no checkout is moved by hand after a push or under a running job.
+- The lab reads a profile's checkouts at a ref, each from a snapshot fixed at its commit for the whole job
+  (`lab.checkouts` shows and prunes them), so no checkout is moved by hand after a push or under a running job.
 - The Windows host runner, sharing the GPU lease and lanes with gpu_queue.py; host routines that need no GPU run
   beside the lease holder.
 - SDKs: Python with the `wb` CLI, Node/TypeScript, Java with a Gradle plugin (the same JAR bytes on every machine,
