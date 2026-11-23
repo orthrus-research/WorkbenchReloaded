@@ -3,8 +3,9 @@
     wb backup [--to DIR]
 
 It takes SQLite's online backup of the daemon's database (jobs, their records and the ledger) while the daemon
-runs, and copies the machine's scrub rules file beside it, into <DIR>/<date-time>/ with a manifest of what each
-file holds. DIR is [paths] backup in machine config, else wb-backup in the user's home folder. Run it nightly with
+runs, and copies beside it the machine's scrub rules file, a git bundle of the Set's home (every landing, even one
+its public remote has lost), and the seeded Store entries (bytes no container can build, with their sources), into
+<DIR>/<date-time>/ with a manifest of what each file holds. DIR is [paths] backup in machine config, else wb-backup in the user's home folder. Run it nightly with
 the operating system's scheduler (wb setup prints the line)."""
 
 from __future__ import annotations
@@ -53,6 +54,40 @@ def _counts(path: Path) -> dict:
         connection.close()
 
 
+def _set_bundle(config, folder: Path) -> dict:
+    home = str((config.values.get("workspace") or {}).get("set") or "")
+    if not home or not (Path(home) / "HEAD").is_file():
+        return {}
+    target = folder / "set.bundle"
+    done = subprocess.run(["git", "bundle", "create", str(target), "--all"], cwd=home, capture_output=True, text=True)
+    if done.returncode != 0:
+        print(f"wb: the Set could not be bundled: {done.stderr.strip()[-300:]}", file=sys.stderr)
+        return {}
+    head = subprocess.run(["git", "rev-parse", "refs/heads/main"], cwd=home, capture_output=True, text=True).stdout
+    return {"set.bundle": {"sha256": _sha256(target), "holds": f"the Set's home, main at {head.strip()[:12]}"}}
+
+
+def _seeded(config, folder: Path) -> dict:
+    """Seeded Store entries with their notes: the one part of the Store no build can make again."""
+    from .workspace import Workspace
+    store = Workspace(config).store_root()
+    if store is None or not (store / "seeded").is_dir():
+        return {}
+    kept = {}
+    for note in sorted((store / "seeded").glob("*.json")):
+        meta = json.loads(note.read_text(encoding="utf-8"))
+        source = store / "files" / meta["sha256"] / meta["name"]
+        if not source.is_file():
+            continue
+        target = folder / "seeded" / meta["sha256"] / meta["name"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        shutil.copy2(note, folder / "seeded" / note.name)
+        kept[f"seeded/{meta['sha256']}/{meta['name']}"] = {"sha256": _sha256(target),
+                                                           "holds": f"seeded: {meta.get('as')}"}
+    return kept
+
+
 def main(args) -> int:
     config = wbconfig.load()
     folder = _target(config, args.to) / time.strftime("%Y%m%d-%H%M%S")
@@ -78,6 +113,8 @@ def main(args) -> int:
     if rules.is_file():
         shutil.copy2(rules, folder / rules.name)
         manifest["files"][rules.name] = {"sha256": _sha256(folder / rules.name), "holds": "the machine's scrub rules"}
+    manifest["files"].update(_set_bundle(config, folder))
+    manifest["files"].update(_seeded(config, folder))
     (folder / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     jobs = manifest["files"]["wb.sqlite"]["jobs"]
     print(f"backed up to {folder}: {sum(jobs.values())} jobs ({', '.join(f'{n} {s}' for s, n in sorted(jobs.items()))}), "

@@ -269,6 +269,16 @@ class Land(unittest.TestCase):
         self.assertNotIn("lib:adapter", self.set_json()["holds"])
 
 
+    def test_y_the_backup_keeps_the_set_and_the_seeded_bytes(self):
+        from wb import backup
+        folder = Path(tempfile.mkdtemp(prefix="wb-backup-"))
+        bundled = backup._set_bundle(self.d.config, folder)
+        self.assertIn("set.bundle", bundled)
+        self.assertEqual(subprocess.run(["git", "bundle", "verify", str(folder / "set.bundle")], cwd=self.home,
+                                        capture_output=True).returncode, 0)
+        seeded = backup._seeded(self.d.config, folder)
+        self.assertTrue(any(name.endswith("/adapter.jar") for name in seeded), seeded)  # test_9's hold bytes
+
     def test_z_a_landing_made_elsewhere_is_built_on(self):
         remote = self.root / "remotes" / "set.git"
         git(self.root, "clone", "-q", "--bare", str(self.home), str(remote))
