@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -538,6 +539,89 @@ class ProjectManifestTest(Project):
             moved = actions.input_key(config, "docs", actions.placeholders(config, "r"))
         self.assertEqual(first, same)
         self.assertNotEqual(first, moved)
+
+
+class LibraryTest(unittest.TestCase):
+    """``actions.execute``: the engine as a library. The caller gives the steps' whole environment, the interpreter
+    ``{python}`` names and the set's identities; nothing comes from this process's environment."""
+
+    def setUp(self):
+        self.root = git_repo(Path(tempfile.mkdtemp(prefix="wb-engine-lib-")).resolve())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        (self.root / ".gitignore").write_text(".local/\n", encoding="utf-8")
+        show = '["{python}", "-c", "import os; print(os.environ.get(\'GIVEN\'), os.environ.get(\'OURS\'))"]'
+        sleep = '["{python}", "-c", "import time; time.sleep(60)"]'
+        (self.root / "actions.toml").write_text(textwrap.dedent(f"""
+            [settings]
+            name = "demo"
+            identity_env = ["GIVEN"]
+
+            [workflows]
+            ci = ["show"]
+
+            [jobs.show]
+            inputs = ["actions.toml"]
+            steps = [{{ name = "show", run = {show} }}]
+
+            [jobs.slow]
+            steps = [{{ name = "sleep", run = {sleep} }}]
+        """), encoding="utf-8")
+        commit_all(self.root, "base")
+        self.runs = Path(tempfile.mkdtemp(prefix="wb-engine-runs-"))
+        self.addCleanup(shutil.rmtree, self.runs, True)
+
+    def environ(self, **extra):
+        keep = ("PATH", "SYSTEMROOT", "TEMP", "TMP", "HOME", "USERPROFILE")
+        return {**{k: v for k, v in os.environ.items() if k.upper() in keep}, **extra}
+
+    def test_the_steps_get_the_given_environment_and_none_of_this_process(self):
+        with mock.patch.dict(os.environ, {"OURS": "leaked"}):
+            document = actions.execute(self.root, ["ci"], runs=self.runs, run_id="r1",
+                                       environ=self.environ(GIVEN="given"), python=sys.executable)
+        self.assertEqual(document["status"], "ok", document)
+        self.assertEqual(document["schema"], cli.RESULT_SCHEMA)
+        self.assertEqual(document["result"]["jobs"]["show"]["status"], "passed")
+        log = next((self.runs / "r1" / "show").glob("*.log")).read_text(encoding="utf-8")
+        self.assertIn("given None", log)
+        # The identity_env value is read from the given environment, so it keys the pass.
+        moved = actions.execute(self.root, ["ci"], runs=self.runs, run_id="r2",
+                                environ=self.environ(GIVEN="other"), python=sys.executable)
+        self.assertFalse(moved["result"]["jobs"]["show"].get("cached"))
+        same = actions.execute(self.root, ["ci"], runs=self.runs, run_id="r3",
+                               environ=self.environ(GIVEN="other"), python=sys.executable)
+        self.assertEqual(same["result"]["jobs"]["show"].get("cached"), "r2")
+
+    def test_python_and_identity_are_given_not_read(self):
+        project = str(self.root / "project-python")
+        with mock.patch.dict(os.environ, {actions.SET_IDENTITY: "e" * 64}):
+            plan = actions.execute(self.root, ["ci"], runs=self.runs, dry_run=True, environ=self.environ(),
+                                   python=project, identity={"set": "a" * 64, "jdk": "b" * 64})
+            plain = actions.execute(self.root, ["ci"], runs=self.runs, run_id="r3", environ=self.environ(),
+                                    python=sys.executable, identity={})
+        self.assertEqual(plan["result"]["commands"]["show"][0][0], project)
+        self.assertNotIn("set", plain["result"]["trees"])  # an explicit identity: the variable is not read
+        named = actions.execute(self.root, ["ci"], runs=self.runs, run_id="r4", environ=self.environ(),
+                                python=sys.executable, identity={"set": "a" * 64})
+        self.assertEqual(named["result"]["trees"]["set"], "a" * 64)
+
+    def test_a_refusal_is_a_document_not_an_exception(self):
+        document = actions.execute(self.root, ["nope"], runs=self.runs, environ=self.environ())
+        self.assertEqual(document["status"], "usage")
+        self.assertTrue(any("nope" in m["text"] for m in document["messages"]))
+
+    def test_a_stop_kills_the_running_step_and_raises(self):
+        import threading
+        import time
+        stop = threading.Event()
+        threading.Timer(1.0, stop.set).start()
+        started = time.monotonic()
+        with self.assertRaises(actions.Stopped):
+            actions.execute(self.root, ["slow"], runs=self.runs, run_id="r5", environ=self.environ(),
+                            python=sys.executable, stop=stop)
+        self.assertLess(time.monotonic() - started, 30)
+        summary = json.loads((self.runs / "r5" / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["jobs"]["slow"]["status"], "failed")
+        self.assertIn("stopped", next((self.runs / "r5" / "slow").glob("*.log")).read_text(encoding="utf-8"))
 
 
 class GateTest(Project):

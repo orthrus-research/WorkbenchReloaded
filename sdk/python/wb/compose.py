@@ -22,8 +22,9 @@ from . import config as wbconfig
 
 DEFAULT_PORT = 7377
 STATE = "/var/lib/wb"
-# Settings naming a folder Workbench itself writes, as a container path: the entrypoint gives each to Workbench's user.
-OWNED_SETTINGS = ("modules.ci.pin_cache", "modules.ci.records", "modules.ci.store", "modules.toolchain.pin_cache")
+# The folders Workbench itself writes under [paths] out, as container paths: the entrypoint gives each to Workbench's
+# user. The old [modules.toolchain] pin_cache is still one of them for this release (see wbconfig.OLD_FOLDER_KEYS).
+OWNED_FOLDERS = ("pin_cache", "records", "store")
 
 
 class ComposeError(Exception):
@@ -64,16 +65,16 @@ def ensure_host_token(run: Path) -> Path:
 
 
 def owned_dirs(config: wbconfig.Config) -> list[str]:
-    """The folders OWNED_SETTINGS name inside an rw root or the state volume: never a root itself, and nothing under a
+    """The folders of OWNED_FOLDERS inside an rw root or the state volume: never a root itself, and nothing under a
     ro root. A folder made on the host, or by root, does not belong to the user Workbench runs as, so a job could not
     write there; the entrypoint, still root, makes each one and gives it and its contents to that user (WB_OWNED_DIRS)."""
     writable, readonly = [PurePosixPath(STATE)], []
-    for name, root in (config.table("paths").get("roots") or {}).items():
+    for name, root in wbconfig.roots(config).items():
         mount = PurePosixPath(wbconfig.root_mount(name, root))
         (writable if root.get("mode", "ro") == "rw" else readonly).append(mount)
     owned = []
-    for key in OWNED_SETTINGS:
-        value = config.get(key)
+    folders = wbconfig.folders(config, container=True)
+    for value in [folders.get(key) for key in OWNED_FOLDERS] + [config.get("modules.toolchain.pin_cache")]:
         if not isinstance(value, str) or not value.startswith("/"):
             continue  # empty: the default under the state volume, which the entrypoint already owns
         path = PurePosixPath(value)
@@ -104,7 +105,7 @@ def generate(config: wbconfig.Config, run: Path, profile=None, warnings: list | 
     layer_mounts = [f"/etc/wb-layers/{index}" for index in range(len(config.layers))]
     for layer, mount in zip(config.layers, layer_mounts):
         volumes.append(f"{layer}:{mount}:ro")
-    for name, root in (config.table("paths").get("roots") or {}).items():
+    for name, root in wbconfig.roots(config).items():
         host = os.path.expanduser(root["host"])
         container = wbconfig.root_mount(name, root)
         mode = root.get("mode", "ro")

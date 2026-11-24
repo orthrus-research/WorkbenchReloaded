@@ -104,13 +104,13 @@ def places_from(config) -> Places:
     from .workspace import REPO, Workspace
     workspace = Workspace(config)
     store = workspace.store_root()
-    records = workspace.ci.get("records")
+    records = workspace.folder("records")
     runner = config.values.get("runner") or {}
     lab = Path(os.path.expanduser(str(runner.get("lab_home") or "../Lab")))
     lab = lab if lab.is_absolute() else (REPO / lab).resolve()
     previous = ((deploy._records(config).get("releases") or [{}])[-1] or {}).get("previous")
     return Places(
-        store=store, records=workspace.host_path(str(records)) if records else None,
+        store=store, records=records,
         sets=store.parent / "sets" if store else None, out=store.parent if store else None,
         lab_home=lab, releases=releases.root(config), previous_release=str(previous)[:12] if previous else None,
         lease_file=Path(runner.get("lease_file") or lab / "lease" / "gpu.lock"),

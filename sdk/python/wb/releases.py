@@ -6,8 +6,8 @@ that a merge cannot change under them.
 
 Old releases are wb gc's class ``releases``: every release but the one in service and the one deployed before it.
 
-<releases> is WB_RELEASES, else ~/.local/share/wb/releases (never the config folder, whose folders are all read as
-config, and not AppData, which a packaged app redirects). git config
+<releases> is WB_RELEASES, else [paths] releases in machine config, else ~/.local/share/wb/releases (never the config
+folder, whose folders are all read as config, and not AppData, which a packaged app redirects). git config
 wb.cli names <releases>/current/bin/wb, so a hook always runs the deployed release, never a working tree; a working
 tree runs only when started as such (its own bin/wb, with WB_DEV=1)."""
 
@@ -27,16 +27,16 @@ from . import config as wbconfig
 
 
 def root(config) -> Path:
-    """Where releases live: WB_RELEASES, else the user's local application data. Never inside the config folder,
-    where every folder is read as config (a release carries example config files)."""
-    named = os.environ.get("WB_RELEASES")
+    """Where releases live: WB_RELEASES, else [paths] releases, else the user's local application data. Never inside
+    the config folder, where every folder is read as config (a release carries example config files)."""
+    named = os.environ.get("WB_RELEASES") or os.path.expanduser(str(config.get("paths.releases") or "")) or None
     # The home folder, not AppData: a packaged app's writes to AppData are redirected into its own package folder,
     # which no process outside it (a terminal's git, the scheduled host runner) can see.
     folder = Path(named) if named else Path.home() / ".local" / "share" / "wb" / "releases"
     settings = Path(config.folder or wbconfig.default_folder()).resolve()
     if settings == folder.resolve() or settings in folder.resolve().parents:
         raise RuntimeError(f"releases may not live in the config folder {settings}: every folder there is read as "
-                           "config; set WB_RELEASES to another folder")
+                           "config; set [paths] releases to another folder")
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 

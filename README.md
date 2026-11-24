@@ -124,9 +124,10 @@ every clean clone:
   (`python = [...]`). Jobs name no interpreter paths and no `.local` environments.
 - **Third-party files outside the build tool are pinned by SHA-256** and fetched (`toolchain.pins`), never found by
   scanning a cache. Every job gets `WB_PIN_CACHE`, a folder of files named by their SHA-256: a tool that builds or
-  downloads a pinned file looks there first and stores what it made, so each is made once per machine. A pin cache
-  or records folder configured inside an rw root is given to Workbench's user each time the container starts, so a
-  folder made on the host or by root still takes writes.
+  downloads a pinned file looks there first and stores what it made, so each is made once per machine. The pin
+  cache, the run records and the Store are folders under `[paths] out` (`cache/pins`, `ci/records`, `store`), each
+  named once; they are given to Workbench's user each time the container starts, so a folder made on the host or by
+  root still takes writes.
 - **Outputs go under `{run_dir}`**, never into the tree. A file a job writes into the tree changes the tree the run
   vouches for. What a build tool writes inside the tree on its own (`build/libs`) is kept by listing it in the
   job's `artifacts`: the records then hold each file by SHA-256 beside the run that passed it, where the host can
@@ -193,6 +194,13 @@ A machine's config folder can lie over shared folders: `[core.config] layers = [
 team keeps its common config (launcher profiles, CI projects, card lists, plans) in one versioned folder, and each
 machine adds only its paths and secrets. The machine folder merges last and wins, and `wb config show --origin` names
 the layer behind every value.
+
+A machine's paths are named once, as the host names them, in `[paths]`: `out` (the read-write root, mounted at
+`/mnt/out`, holding the Store, the run records and the pin cache), `releases`, `backup`, and `[paths.roots.<name>]`
+for the other folders the container may read or write (mounted at `/mnt/<name>`). The old spellings
+(`[paths.roots.out]`, a root's `container`, `[modules.ci] store`, `records` and `pin_cache`, `[modules.toolchain]
+pin_cache`) are still read for one release, each with a warning in `wb status`, `wb config show --local` and the
+daemon's log.
 
 ## Game instances
 

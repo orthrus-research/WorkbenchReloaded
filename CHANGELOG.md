@@ -81,6 +81,21 @@
   member by its producing check first (or refuses with `--no-rebuild`), builds or reuses the instance and plays a
   session on this machine under the lease, printing the job, launch, instance and session at once, streaming the
   consoles, and naming the decisive line, crash report and next command on a failure.
+- The actions engine is a library inside the job: `ci.run` and `ci.host-run` call `actions.execute` in their worker,
+  giving it the steps' whole environment, the project's interpreter as `{python}` and the set's identities, instead
+  of starting the engine as a process and reading its JSON from the output. Steps still run as processes of their
+  own under the project's interpreter, and cancelling the job kills them; the `actions` command line still reads the
+  identities from WB_SET_IDENTITY, WB_JDK_IDENTITY and WB_TOOLS_ROOTS.
+- `[paths]` names each folder once, as the host names it: `out` (the read-write root, mounted at `/mnt/out`, holding
+  the Store, the run records and the one pin cache as `store`, `ci/records` and `cache/pins`), `releases`, `backup`
+  and `[paths.roots]` for the rest, each mounted at `/mnt/<name>`. The old spellings, `[paths.roots.out]`, a root's
+  `container`, `[modules.ci] store`, `records` and `pin_cache` and `[modules.toolchain] pin_cache`, are read for one
+  more release with a warning in the daemon's log, `wb status` and `wb config show --local`.
+- Typed module tables: a config object may name its `fields` (a table of fixed keys) or its `entries` (one spec for
+  every value of a table by name). `[modules.ci.projects]` (repo, config, jdk, env, python, workflow, gate),
+  `[modules.ci] tool_env`, `[modules.toolchain] substitutions` and `[modules.ledger] parsers` are checked at load
+  like every other key, so a wrong key or type stops the daemon with its file and line instead of failing the first
+  command that reads it.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,
   ledger, vast, ci, release, plan, frames, tools (the former standalone tools, 0.6.0), selftest.
 - The instance profile and its commands are retired: `lab.inputs`, `lab.checkouts`, `lab.ensure`, `lab.script`,

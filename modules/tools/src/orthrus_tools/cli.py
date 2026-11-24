@@ -115,18 +115,23 @@ class Output:
     def error(self, text: str) -> None:
         self.note(text, "error")
 
+    def document(self, code: int) -> dict[str, Any]:
+        """The JSON document of a command that ended with ``code``, as plain JSON values (what ``--json`` prints)."""
+        document = {
+            "schema": RESULT_SCHEMA,
+            "tool": self.tool,
+            "command": self.command,
+            "exitCode": code,
+            "status": STATUS.get(code, "error"),
+            "result": self.result,
+            "messages": self.messages,
+        }
+        loaded: dict[str, Any] = json.loads(json.dumps(document, default=str))
+        return loaded
+
     def finish(self, code: int) -> int:
         if self.json_mode:
-            document = {
-                "schema": RESULT_SCHEMA,
-                "tool": self.tool,
-                "command": self.command,
-                "exitCode": code,
-                "status": STATUS.get(code, "error"),
-                "result": self.result,
-                "messages": self.messages,
-            }
-            print(json.dumps(document, indent=2, default=str), file=self.stdout)
+            print(json.dumps(self.document(code), indent=2), file=self.stdout)
         return code
 
 

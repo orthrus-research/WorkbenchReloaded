@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -30,8 +31,8 @@ SNAPSHOT = "/var/lib/wb/db/backup.sqlite"
 def _target(config, given: str | None) -> Path:
     if given:
         return Path(given)
-    configured = ((config.values.get("paths") or {}).get("backup"))
-    return Path(str(configured)) if configured else Path.home() / "wb-backup"
+    configured = config.get("paths.backup")
+    return Path(os.path.expanduser(str(configured))) if configured else Path.home() / "wb-backup"
 
 
 def _sha256(path: Path) -> str:

@@ -62,9 +62,11 @@ def _state() -> Path:
 
 
 def _folder(ctx: Context, key: str, default: Path) -> Path:
-    """A folder ``[modules.ci]`` names, else its default in Workbench's state. On the host (ci.host-run) a configured
-    container path is translated back through the machine's roots, and a default is under the lab home's
-    ``wb-state``, since the container's state is not the host's to write; the records must be reachable from both."""
+    """A folder of ci's, else its default in Workbench's state. The Store, the records and the pin cache are folders
+    under [paths] out, which the daemon gives this module as its ``store``, ``records`` and ``pin_cache`` (the old
+    keys of the same names, when set, for one more release). On the host (ci.host-run) a container path is
+    translated back through the machine's roots, and a default is under the lab home's ``wb-state``, since the
+    container's state is not the host's to write; the records must be reachable from both."""
     value = ctx.config.get(key)
     if ctx.machine != "host":
         return Path(value) if value else default
@@ -72,9 +74,9 @@ def _folder(ctx: Context, key: str, default: Path) -> Path:
     if found is not None:
         return found
     if key == "records":
-        where = f"= {str(value)!r} is under no root this host has" if value else "is not set"
-        raise EnvironmentProblem(f"[modules.ci] records {where}, so a host check's pass would be kept where ci.run "
-                                 "never looks; set it to a folder in an rw root (the out root's ci/records)")
+        where = f"{str(value)!r} is under no root this host has" if value else "are nowhere"
+        raise EnvironmentProblem(f"CI's records {where}, so a host check's pass would be kept where ci.run never "
+                                 "looks; set [paths] out, the read-write root they are kept in (<out>/ci/records)")
     return _host_state(ctx) / default.relative_to(_state())
 
 
@@ -344,25 +346,21 @@ def _config_at(ctx: Context, entry: dict, records: Path, sha: str) -> engine.Con
     return config
 
 
-def _engine(ctx: Context, root: Path, jobs_file: Path, argv: list[str], env: dict, python: str,
-            names: tuple = STEP_ENV) -> dict:
-    """The actions runner, under the project's interpreter: its ``{python}`` is the interpreter running it. Its
-    steps get ``names`` of this worker's environment and ``env``."""
-    args = [python, "-m", "orthrus_tools", "actions", *argv, "--root", str(root), "--config", str(jobs_file),
-            "--json"]
+def _engine(ctx: Context, root: Path, jobs_file: Path, options: dict, env: dict, python: str,
+            names: tuple = STEP_ENV, identity: dict | None = None) -> dict:
+    """The actions engine, as a library inside this job: its document, as ``actions run --json`` prints it. Nothing
+    reaches it through this worker's environment: its steps start from ``names`` of that environment and ``env``, its
+    ``{python}`` is ``python`` (the project's interpreter, which the steps still run under as processes of their own)
+    and the set's identities come in ``identity``. Cancelling the job kills the running steps."""
+    from wb_core.module import Cancelled
     base = {key: value for key, value in os.environ.items() if key.upper() in names}
-    env = {**base, **GIT_SAFE, **env, "PYTHONPATH": str(TOOLS_SRC)}
-    done = ctx.run(args, cwd=root, env=env, timeout=None, log_output=False, inherit=False)
-    text = done.stdout
-    start = text.find("\n{")
-    start = 0 if text.startswith("{") else (start + 1 if start >= 0 else -1)
-    if start < 0:
-        raise EnvironmentProblem(f"the actions engine said nothing parseable (exit {done.returncode}): "
-                                 f"{text.strip()[-600:]}")
+    environ = {**base, **GIT_SAFE, **env, "PYTHONPATH": str(TOOLS_SRC)}
     try:
-        return json.loads(text[start:])
-    except ValueError:
-        raise EnvironmentProblem(f"the actions engine's JSON did not parse: {text.strip()[-600:]}") from None
+        return engine.execute(root, options["targets"], config=jobs_file, environ=environ, python=python,
+                              identity=identity or {}, stop=ctx.cancelled,
+                              **{k: v for k, v in options.items() if k != "targets"})
+    except engine.Stopped:
+        raise Cancelled() from None
 
 
 def _jobs_copy(root: Path, entry: dict, records: Path, work: Path) -> Path:
@@ -609,30 +607,32 @@ def _environment(ctx: Context, entry: dict, config, root: Path, work: Path, set:
     gradle_home, served = _gradle_home(ctx)
     launcher, set_revision, gradle_opts = _gradle_launcher(ctx, work, set, _stand_ins(ctx, work, stand_ins or {}))
     tools = _tools(ctx, config, work, set_revision or set)
-    identity = _set_identity(ctx, config, set_revision or set)
-    if tools:  # a pure check's key covers the files it reads from another project, as laid out here
-        identity["WB_TOOLS_ROOTS"] = json.dumps({p: str(work / _project(ctx, p)["source"].name) for p in tools})
+    identities = _set_identity(ctx, config, set_revision or set)
+    identity = {"set": identities.get("WB_SET_IDENTITY", ""), "jdk": identities.get("WB_JDK_IDENTITY", ""),
+                # a pure check's key covers the files it reads from another project, as laid out here
+                "tools": {p: str(work / _project(ctx, p)["source"].name) for p in tools}}
     env = {**_jdk_env(ctx, major), "GRADLE_USER_HOME": str(gradle_home), "WB_PIN_CACHE": str(pins),
            "WB_GRADLE": str(launcher), **({"GRADLE_OPTS": gradle_opts} if gradle_opts else {}),
-           **{k: str(v) for k, v in (entry.get("env") or {}).items()}, **({"WB_COLD": "1"} if cold else {}),
-           **identity}
+           **{k: str(v) for k, v in (entry.get("env") or {}).items()}, **({"WB_COLD": "1"} if cold else {})}
     python = _python(ctx, root, [str(r) for r in entry.get("python") or config.data.get("project", {}).get("python")
                                  or []])
-    return {"env": env, "python": python, "served": served, "set": set_revision, "tools": tools}
+    return {"env": env, "python": python, "served": served, "set": set_revision, "tools": tools,
+            "identity": identity}
 
 
-def _engine_argv(ctx: Context, targets: list[str], run_id: str, records: Path, if_needed: bool, keep_going: bool,
-                 dry_run: bool, cold: bool = False) -> list[str]:
-    # The engine runs inside this job's reservation: the job id names its run, and its budget is what the
-    # scheduler holds for the job, not the machine.
-    argv = ["run", *targets, "--run-id", run_id, "--runs", str(records)]
-    if ctx.reservation.get("mem_gb"):
-        argv += ["--memory", str(ctx.reservation["mem_gb"])]
-    # Cold: every job runs, none vouched for by an earlier pass or its input cache, and no build cache is read.
-    argv += ["--no-cache"] if cold else (["--if-needed"] if if_needed else [])
-    argv += ["--keep-going"] if keep_going else []
-    argv += ["--dry-run"] if dry_run else []
-    return argv
+def _engine_options(ctx: Context, targets: list[str], run_id: str, records: Path, if_needed: bool,
+                    keep_going: bool, dry_run: bool, cold: bool = False) -> dict:
+    """What the engine is asked: the targets and the run's options. It runs inside this job's reservation: the job
+    id names its run, and its budget is what the scheduler holds for the job, not the machine. Cold: every job runs,
+    none vouched for by an earlier pass or its input cache, and no build cache is read."""
+    return {"targets": list(targets), "run_id": run_id, "runs": records,
+            "memory": float(ctx.reservation["mem_gb"]) if ctx.reservation.get("mem_gb") else None,
+            "no_cache": cold, "if_needed": if_needed and not cold, "keep_going": keep_going, "dry_run": dry_run}
+
+
+def _options_text(options: dict) -> str:
+    flags = [name.replace("_", "-") for name in ("no_cache", "if_needed", "keep_going", "dry_run") if options[name]]
+    return " ".join([*options["targets"], *(f"--{flag}" for flag in flags)])
 
 
 def _container_targets(ctx: Context, config, targets: list[str]) -> list[str]:
@@ -676,9 +676,10 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
             records.mkdir(parents=True, exist_ok=True)
         targets = [*([workflow] if workflow else []), *[str(j) for j in jobs]] or [config.workflow]
         targets = _container_targets(ctx, config, targets)
-        argv = _engine_argv(ctx, targets, ctx.job, records, if_needed, keep_going, dry_run, cold)
-        ctx.progress("jobs", msg=" ".join([*targets, *argv[len(targets) + 3:]]))
-        document = _engine(ctx, root, jobs_file, argv, prepared["env"], prepared["python"])
+        options = _engine_options(ctx, targets, ctx.job, records, if_needed, keep_going, dry_run, cold)
+        ctx.progress("jobs", msg=_options_text(options))
+        document = _engine(ctx, root, jobs_file, options, prepared["env"], prepared["python"],
+                           identity=prepared["identity"])
         _failing_tails(ctx, (document.get("result") or {}).get("jobs") or {})
     finally:
         if not keep:

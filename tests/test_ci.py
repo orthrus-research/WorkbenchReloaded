@@ -393,6 +393,70 @@ class Tools(unittest.TestCase):
         self.assertEqual(self.lay_out([])[0], {})
 
 
+class EngineInProcess(unittest.TestCase):
+    """ci runs the actions engine as a library inside its job: the steps start from the allow-listed environment and
+    what ci gives them, {python} is the project's interpreter, the identities are given, not exported, and cancelling
+    the job kills the running step."""
+
+    @classmethod
+    def setUpClass(cls):
+        for module in ("tools", "build", "lab", "ci"):
+            sys.path.insert(0, str(REPO / "modules" / module))
+        from wb_ci import commands
+        cls.commands = commands
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp(prefix="wb-ci-engine-"))
+        self.addCleanup(__import__("shutil").rmtree, self.base, True)
+        self.root = self.base / "demo"
+        self.root.mkdir()
+        show = ('["{python}", "-c", "import os, sys; print(sorted(k for k in os.environ if k.startswith(\'WB_\')), '
+                'os.environ.get(\'GIVEN\'), sys.executable)"]')
+        sleep = '["{python}", "-c", "import time; time.sleep(60)"]'
+        (self.root / "actions.toml").write_text(
+            f'[settings]\nname = "demo"\n\n[workflows]\nci = ["show"]\n\n'
+            f'[jobs.show]\nsteps = [{{ name = "show", run = {show} }}]\n\n'
+            f'[jobs.slow]\nsteps = [{{ name = "sleep", run = {sleep} }}]\n', encoding="utf-8")
+        for args in (["init", "-q", "-b", "main"], ["add", "-A"],
+                     ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "jobs"]):
+            subprocess.run(["git", *args], cwd=self.root, check=True, capture_output=True)
+        self.records = self.base / "records"
+        self.records.mkdir()
+
+    def context(self):
+        from wb_core.module import Context
+        return Context({"job": "direct", "command": "ci.run", "module": "ci", "work": str(self.base / "job" / "work"),
+                        "out": str(self.base / "job" / "out"), "module_config": {}}, lambda *a, **k: None)
+
+    def test_the_steps_get_what_ci_gives_them_and_the_identity_is_given(self):
+        from unittest import mock
+        ctx = self.context()
+        options = self.commands._engine_options(ctx, ["ci"], "run-1", self.records, False, False, False)
+        with mock.patch.dict(os.environ, {"WB_TOKEN": "secret", "GIVEN": "leaked"}):
+            document = self.commands._engine(ctx, self.root, self.root / "actions.toml", options,
+                                             {"GIVEN": "given"}, sys.executable,
+                                             identity={"set": "a" * 64, "jdk": "b" * 64, "tools": {}})
+        self.assertEqual(document["status"], "ok", document)
+        self.assertEqual(document["result"]["trees"]["set"], "a" * 64)
+        log = next((self.records / "run-1" / "show").glob("*.log")).read_text(encoding="utf-8")
+        self.assertIn("[] given", log)  # no WB_ variable reached the step: neither the token nor the identities
+        self.assertIn(str(Path(sys.executable)), log)
+
+    def test_cancelling_the_job_kills_the_running_step(self):
+        import threading
+        import time
+        from wb_core.module import Cancelled
+        ctx = self.context()
+        options = self.commands._engine_options(ctx, ["slow"], "run-2", self.records, False, False, False)
+        threading.Timer(1.0, ctx.cancelled.set).start()
+        started = time.monotonic()
+        with self.assertRaises(Cancelled):
+            self.commands._engine(ctx, self.root, self.root / "actions.toml", options, {}, sys.executable)
+        self.assertLess(time.monotonic() - started, 30)
+        summary = json.loads((self.records / "run-2" / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["jobs"]["slow"]["status"], "failed")
+
+
 class SetIdentity(unittest.TestCase):
     """A converted project's run is given the set's identity: the platform and the lines, holds and third entries it
     uses (a line it does not use moves nothing), and the platform's JDK builds; a project on actions.toml gets none."""
@@ -718,7 +782,7 @@ class HostChecks(unittest.TestCase):
         from wb_core.module import EnvironmentProblem
         ctx = self.context("r1")
         ctx.config.pop("records")
-        with self.assertRaisesRegex(EnvironmentProblem, "records is not set"):
+        with self.assertRaisesRegex(EnvironmentProblem, r"records are nowhere.*set \[paths\] out"):
             self.commands._records(ctx, "demo")
 
 

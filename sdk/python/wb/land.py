@@ -53,10 +53,10 @@ class Lander:
         self.home = Path(configured)
         if not (self.home / "HEAD").is_file():
             raise WorkspaceError(f"{self.home} is not a bare repository: [workspace] set names the Set's bare home")
-        store = workspace.ci.get("store")
-        if not store:
-            raise WorkspaceError("no Store: set [modules.ci] store")
-        self.store = workspace.host_path(str(store))
+        store = workspace.store_root()
+        if store is None:
+            raise WorkspaceError("no Store: set [paths] out (the Store is <out>/store)")
+        self.store = store
         self.sets = self.store.parent / "sets"
 
     # -- the Set ------------------------------------------------------------------------------------------------
@@ -218,8 +218,7 @@ class Lander:
         if not path.is_file():
             raise WorkspaceError(f"hold {name}: no file at {path}")
         note = artifacts.seed(self.store, path, f"{project}:{artifact}@{hold['commit']}", hold.get("source") or "",
-                              hold["reason"], self.workspace.host_path(str(self.workspace.ci.get("pin_cache") or ""))
-                              if self.workspace.ci.get("pin_cache") else None)
+                              hold["reason"], self.workspace.folder("pin_cache"))
         return {artifact: {"sha256": note["sha256"], "file": note["name"]}}
 
     def _default_branch(self, repo: Path) -> str:

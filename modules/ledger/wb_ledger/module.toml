@@ -4,7 +4,7 @@ version = "0.2.0"
 summary = "Formal results, costs and market prices in one queryable database."
 
 [config]
-parsers = { type = "object", default = {}, summary = "log parsers for parse-log by name, [modules.ledger.parsers.<name>]: a table of metric = regex, each regex naming its number (?P<value>...) and optionally (?P<unit>...) and (?P<part>...) (see wb_ledger/importers.py)" }
+parsers = { type = "object", entries = { type = "object", entries = "string" }, default = {}, summary = "log parsers for parse-log by name, [modules.ledger.parsers.<name>]: a table of metric = regex, each regex naming its number (?P<value>...) and optionally (?P<unit>...) and (?P<part>...) (see wb_ledger/importers.py)" }
 readers = { type = "object", default = {}, summary = "JSON readers for import-json by name, [modules.ledger.readers.<name>]: label, measurements and optionally each, require, date, fields and inputs, each by dotted path (see wb_ledger/importers.py)" }
 
 [[command]]

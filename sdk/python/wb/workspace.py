@@ -63,19 +63,31 @@ class Workspace:
     # -- paths ------------------------------------------------------------------------------------------------
     def host_path(self, value: str) -> Path:
         """A configured path as the host names it: a container path under a root is translated back."""
-        for root in ((self.values.get("paths") or {}).get("roots") or {}).values():
-            container = str(root.get("container") or "").rstrip("/")
+        for name, root in wbconfig.roots(self._config()).items():
+            container = wbconfig.root_mount(name, root).rstrip("/")
             if container and (value == container or value.startswith(container + "/")):
                 rest = value[len(container):].lstrip("/")
                 return Path(str(root["host"])) / rest if rest else Path(str(root["host"]))
         return Path(value)
 
+    def folder(self, key: str) -> Path | None:
+        """A folder under [paths] out (``store``, ``records``, ``pin_cache``) as the host names it; an old
+        [modules.ci] key that is set still wins for this release. None when the machine names neither."""
+        value = wbconfig.folders(self._config(), container=False).get(key)
+        return self.host_path(value) if value else None
+
+    def _config(self) -> wbconfig.Config:
+        """The machine config this workspace reads, with its [modules.ci] table as ``ci`` holds it."""
+        config = getattr(self, "config", None)
+        values = dict(getattr(self, "values", None) or {})
+        values["modules"] = {**(values.get("modules") or {}), "ci": self.ci}
+        return wbconfig.Config(getattr(config, "folder", None), values, getattr(config, "origins", {}))
+
     def records(self, project: str) -> Path:
-        configured = self.ci.get("records")
-        if not configured:
-            raise WorkspaceError("modules.ci.records is not set, so the host cannot read CI's records "
-                                 "(set it to a folder in an rw root, such as the out root's ci/records)")
-        return self.host_path(str(configured)) / project
+        folder = self.folder("records")
+        if folder is None:
+            raise WorkspaceError("[paths] out is not set, so the host cannot read CI's records (<out>/ci/records)")
+        return folder / project
 
     # -- projects ---------------------------------------------------------------------------------------------
     def projects(self) -> dict[str, Project]:
@@ -183,8 +195,7 @@ class Workspace:
             return None
 
     def store_root(self) -> Path | None:
-        value = self.ci.get("store")
-        return self.host_path(str(value)) if value else None
+        return self.folder("store")
 
     def landing_rule(self, project: Project, commit: str, remote_ref: str) -> str | None:
         """For a push to a landing ref or to the project's set-named branch: '' when a publishing landing names the

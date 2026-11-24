@@ -121,6 +121,98 @@ class ConfigMerge(unittest.TestCase):
         self.write("workbench.toml", "")
         self.assertEqual(resolve(wbconfig.load(self.folder)).lab["trusted"], [])
 
+    # [paths]: each folder named once, in host form; the container's spelling derived.
+    FOLDER_SCHEMAS = {"ci": {key: {"type": "string", "default": ""} for key in ("store", "records", "pin_cache")},
+                      "toolchain": {"pin_cache": {"type": "string", "default": ""}}}
+
+    def test_paths_out_names_the_out_root_and_the_folders_in_it_once(self):
+        import os
+        from unittest import mock
+        from wb import compose, platform
+        from wb.workspace import Workspace
+        out, projects = Path(tempfile.mkdtemp(prefix="wb-out-")), Path(tempfile.mkdtemp(prefix="wb-projects-"))
+        self.write("paths.toml", f"out = '{out.as_posix()}'\n[roots.projects]\nhost = '{projects.as_posix()}'\n")
+        config = wbconfig.load(self.folder)
+        settings = resolve(config, self.FOLDER_SCHEMAS)
+        self.assertEqual(settings.warnings, [])
+        roots = {root.name: root for root in settings.roots}
+        self.assertEqual((roots["out"].host, roots["out"].mode), (out.as_posix(), "rw"))
+        ci = settings.modules["ci"]
+        self.assertEqual(Path(ci["store"]), out / "store")  # natively: the host's own path
+        self.assertEqual(Path(ci["records"]), out / "ci" / "records")
+        self.assertEqual(Path(ci["pin_cache"]), out / "cache" / "pins")
+        self.assertEqual(settings.modules["toolchain"]["pin_cache"], ci["pin_cache"])  # one pin cache
+        with mock.patch.dict(os.environ, {"WB_IN_CONTAINER": "1"}):
+            inside = resolve(config, self.FOLDER_SCHEMAS)
+        self.assertEqual(inside.modules["ci"]["store"], "/mnt/out/store")
+        self.assertEqual(inside.modules["ci"]["pin_cache"], "/mnt/out/cache/pins")
+        self.assertEqual({r.name: r.container for r in inside.roots}, {"out": "/mnt/out", "projects": "/mnt/projects"})
+        workspace = Workspace(config)  # the host reads the same folders, in its own spelling
+        self.assertEqual(workspace.store_root(), Path(out.as_posix()) / "store")
+        self.assertEqual(workspace.folder("pin_cache"), Path(out.as_posix()) / "cache" / "pins")
+        self.assertEqual(workspace.records("demo"), Path(out.as_posix()) / "ci" / "records" / "demo")
+        self.assertEqual(workspace.host_path("/mnt/out/store/x"), Path(out.as_posix()) / "store" / "x")
+        run = Path(tempfile.mkdtemp(prefix="wb-run-"))
+        (run / "token").write_text("t", encoding="ascii")
+        service = compose.generate(config, run, platform.Profile("windows", "desktop"))["services"]["wb"]
+        self.assertIn(f"{out.as_posix()}:/mnt/out:rw", service["volumes"])
+        self.assertIn(f"{projects.as_posix()}:/mnt/projects:ro", service["volumes"])
+        self.assertEqual(service["environment"]["WB_OWNED_DIRS"],
+                         "/mnt/out/cache/pins:/mnt/out/ci/records:/mnt/out/store")
+
+    def test_the_old_path_keys_are_read_for_one_release_with_a_warning(self):
+        from wb.workspace import Workspace
+        out = Path(tempfile.mkdtemp(prefix="wb-out-"))
+        self.write("paths.toml", f"[roots.out]\nhost = '{out.as_posix()}'\ncontainer = '/mnt/out'\nmode = 'rw'\n")
+        self.write("modules/ci.toml", "store = '/mnt/out/store'\n")
+        self.write("modules/toolchain.toml", "pin_cache = '/mnt/out/cache/pins'\n")
+        config = wbconfig.load(self.folder)
+        settings = resolve(config, self.FOLDER_SCHEMAS)
+        warnings = "\n".join(settings.warnings)
+        self.assertEqual(len(settings.warnings), 4, warnings)
+        self.assertIn(f"paths.toml:2: [paths.roots.out] is the old spelling of the out root: write [paths] out = "
+                      f"'{out.as_posix()}'", warnings)
+        self.assertIn("paths.toml:3: paths.roots.out.container: container paths are derived", warnings)
+        self.assertIn("modules/ci.toml:1: modules.ci.store: this folder is <out>/store", warnings)
+        self.assertIn("modules/toolchain.toml:1: modules.toolchain.pin_cache", warnings)
+        self.assertEqual(settings.modules["ci"]["store"], "/mnt/out/store")  # still read, as given
+        self.assertEqual(settings.modules["ci"]["records"], "")  # the old spelling derives nothing new
+        workspace = Workspace(config)
+        self.assertEqual(workspace.store_root(), Path(out.as_posix()) / "store")
+        self.assertIsNone(workspace.folder("records"))
+        self.assertEqual(wbconfig.deprecations(config), settings.warnings)
+
+    def test_the_out_root_named_twice_and_unknown_paths_keys_are_refused(self):
+        out = Path(tempfile.mkdtemp(prefix="wb-out-"))
+        self.write("paths.toml", f"out = '{out.as_posix()}'\n[roots.out]\nhost = '{out.as_posix()}'\nmode = 'rw'\n")
+        with self.assertRaises(SettingsError) as raised:
+            resolve(wbconfig.load(self.folder))
+        self.assertIn("both name the out root", str(raised.exception))
+        self.write("paths.toml", "out = 3\n")
+        with self.assertRaises(SettingsError) as raised:
+            resolve(wbconfig.load(self.folder))
+        self.assertIn("paths.toml:1", str(raised.exception))
+        self.write("paths.toml", "store = 'x'\n")
+        with self.assertRaises(SettingsError) as raised:
+            resolve(wbconfig.load(self.folder))
+        self.assertIn("unknown key paths.store (known: backup, out, releases, roots)", str(raised.exception))
+
+    def test_releases_and_backup_are_read_from_paths(self):
+        import os
+        from unittest import mock
+        from wb import backup, releases
+        target, kept = Path(tempfile.mkdtemp(prefix="wb-releases-")), Path(tempfile.mkdtemp(prefix="wb-backup-"))
+        self.write("paths.toml", f"releases = '{target.as_posix()}'\nbackup = '{kept.as_posix()}'\n")
+        config = wbconfig.load(self.folder)
+        resolve(config)
+        environ = {k: v for k, v in os.environ.items() if k != "WB_RELEASES"}
+        with mock.patch.dict(os.environ, environ, clear=True):
+            self.assertEqual(releases.root(config), Path(target.as_posix()))
+        other = Path(tempfile.mkdtemp(prefix="wb-releases-env-"))
+        with mock.patch.dict(os.environ, {"WB_RELEASES": str(other)}):
+            self.assertEqual(releases.root(config), other)  # the variable still wins
+        self.assertEqual(backup._target(config, None), Path(kept.as_posix()))
+
     def test_wrong_type(self):
         self.write("core/api.toml", "port = 'seven'\n")
         with self.assertRaises(SettingsError) as raised:
@@ -153,6 +245,61 @@ class Types(unittest.TestCase):
             with self.assertRaises(ManifestError):  # a cached command is cached by its inputs' content
                 parse(path, "m")
 
+
+    def test_an_object_says_what_it_holds(self):
+        table = types.normalise_spec("t", {"type": "object", "fields": {"a": "int", "b": {"type": "bool",
+                                                                                          "optional": True}}})
+        self.assertEqual(types.coerce("t", table, {"a": 1}), {"a": 1})  # an optional key left out stays out
+        with self.assertRaises(types.ValueError_) as raised:
+            types.coerce("t", table, {"a": 1, "c": 2})
+        self.assertEqual(raised.exception.field, "t.c")
+        by_name = types.normalise_spec("m", {"type": "object", "entries": {"type": "object", "fields": {"x": "string"}}})
+        with self.assertRaises(types.ValueError_) as raised:
+            types.coerce("m", by_name, {"one": {"x": "s"}, "two": {"x": 3}})
+        self.assertEqual(raised.exception.field, "m.two.x")
+        self.assertEqual(types.json_schema(by_name)["additionalProperties"]["properties"]["x"], {"type": "string"})
+        for bad in ({"type": "string", "entries": "int"}, {"type": "object", "fields": {}, "entries": "int"},
+                    {"type": "object", "fields": {"a": "nope"}}):
+            with self.assertRaises(types.ValueError_):
+                types.normalise_spec("p", bad)
+
+    def test_the_module_tables_read_as_maps_are_typed_at_load(self):
+        """[modules.ci.projects], [modules.ci] tool_env, [modules.toolchain] substitutions and [modules.ledger]
+        parsers are checked with the rest of the config: a wrong key or type stops the daemon with its file and line,
+        not the first command that reads it."""
+        from wb_core.manifest import discover
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from harness import REPO
+        schemas = {m.name: m.config for m in discover([REPO / "modules"]) if m.name in ("ci", "toolchain", "ledger")}
+        folder = Path(tempfile.mkdtemp(prefix="wb-typed-"))
+        (folder / "modules").mkdir()
+
+        def check(name, text):
+            (folder / "modules" / name).write_text(text, encoding="utf-8")
+            try:
+                return resolve(wbconfig.load(folder), schemas)
+            finally:
+                (folder / "modules" / name).unlink()
+
+        good = check("ci.toml", "[projects.demo]\nrepo = 'Demo'\npython = ['r.txt']\ngate = false\n"
+                                "[projects.demo.env]\nGRADLE_OPTS = '-Xmx1g'\n")
+        self.assertEqual(good.modules["ci"]["projects"],
+                         {"demo": {"repo": "Demo", "python": ["r.txt"], "gate": False, "env": {"GRADLE_OPTS": "-Xmx1g"}}})
+        for name, text, where, key in (
+                ("ci.toml", "[projects.demo]\nrepo = 'Demo'\nbranch = 'main'\n", "modules/ci.toml:3",
+                 "modules.ci.projects.demo.branch"),
+                ("ci.toml", "[projects.demo]\ngate = 3\n", "modules/ci.toml:2", "modules.ci.projects.demo.gate"),
+                ("ci.toml", "[projects.demo.env]\nN = 3\n", "modules/ci.toml:2", "modules.ci.projects.demo.env.N"),
+                ("ci.toml", "[tool_env]\nORTHRUS_SCRUB_RULES_FILE = 1\n", "modules/ci.toml:2",
+                 "modules.ci.tool_env.ORTHRUS_SCRUB_RULES_FILE"),
+                ("toolchain.toml", "[substitutions]\n'a:b:1' = 2\n", "modules/toolchain.toml:",
+                 "modules.toolchain.substitutions.a:b:1"),
+                ("ledger.toml", "[parsers.client]\nfps = 1\n", "modules/ledger.toml:2", "modules.ledger.parsers.client.fps")):
+            with self.subTest(key=key):
+                with self.assertRaises(SettingsError) as raised:
+                    check(name, text)
+                self.assertIn(where, str(raised.exception))
+                self.assertIn(f": {key}: ", str(raised.exception))
 
 class TreeDigests(unittest.TestCase):
     def test_unchanged_files_are_not_read_again(self):
