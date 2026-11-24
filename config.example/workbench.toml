@@ -24,6 +24,9 @@ lab_home = '../Lab'    # relative to the Workbench checkout
 # To share a GPU lease and lanes with another tool on this PC:
 # lease_file = 'D:\work\locks\native-measurement.lock'  # scrub: allow
 # coordination_dir = 'D:\work\coordination'  # scrub: allow
+# and the variable names its launchers join a held lease by (wb gpu run and host routines set them too):
+# token_env = ['CUBIC_LAB_TURN_LEASE']
+# lane_env = ['GPU_QUEUE_LANE']
 
 [lab]
 # The game lab on this machine (wb setup asks for each key it lacks).

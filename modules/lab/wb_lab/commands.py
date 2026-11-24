@@ -107,14 +107,12 @@ def queue(ctx: Context):
     settings_lease = os.environ.get("WB_LEASE_FILE")
     lock = Path(settings_lease) if settings_lease else lab / "lease" / "gpu.lock"
     coordination = Path(os.environ.get("WB_COORDINATION_DIR") or lab / "coordination")
-    held = lease.occupied(lock)
-    lanes = {name: {"state": e.get("state"), "waiting_since": e.get("waiting_since"), "note": e.get("note"),
-                    "live": lease.live(e, __import__("time").time())}
-             for name, e in lease.entries(coordination).items()}
-    owner = lease.owner(lock) if held else None
+    report = lease.status(lock, coordination)  # what wb gpu shows
+    held, owner = report["lease"]["held"], report["lease"]["holder"]
+    report["lease"]["owner"] = owner
     ctx.summary(f"lease {'held by ' + str((owner or {}).get('lane') or (owner or {}).get('name')) if held else 'free'}; "
-                f"{sum(1 for v in lanes.values() if v['live'])} live lane(s)")
-    return {"lease": {"file": str(lock), "held": held, "owner": owner}, "lanes": lanes}
+                f"{len(report['waiters'])} waiting, {len(report['stuck'])} stuck")
+    return report
 
 
 def prepare(ctx: Context, name: str, args: list, seed=None, scale=None, profile: str = "",

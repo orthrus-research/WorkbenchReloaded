@@ -40,7 +40,10 @@ In development: version 0.1.0 is unreleased, and there are no releases yet;
 - **The host runner** (`host/wb_host`, `wb host serve`) runs declared routines natively on the host (game
   sessions on the local GPU) under a GPU lease that every GPU user on the machine follows: one lock file and a folder
   of lanes. Launchers join a held lease through `WB_TURN_TOKEN` (or variable names of their own, `[runner]
-  token_env`).
+  token_env`). `wb gpu` shows the holder, the waiters in the order they are served and stuck lanes; `wb gpu run
+  [--note T] [--limit D] [--detach] [--quiet] -- <command>` gives any command a turn in a lane of its own (one that
+  was waiting keeps its place when started again, and a detached one outlives its shell); `wb gpu leave <lane>`
+  withdraws one.
 - **SDKs** (`sdk/`) for Python (with the `wb` CLI), Node/TypeScript, Java with a Gradle plugin, and PowerShell,
   their envelope types generated from `schema/envelope.schema.json`.
 

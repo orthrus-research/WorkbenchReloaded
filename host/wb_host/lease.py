@@ -6,12 +6,20 @@
   the lease must have been free for the cooldown, and no live lane may be running or have waited longer.
 - Launchers under a Workbench job join the held lease through WB_TURN_TOKEN (the owner's turnToken), or through
   their own variable names listed in ``[runner] token_env``.
+- Any command takes a turn as a lane of its own (``turn``, ``wb gpu run``): one lane file per taker, served in
+  ``waiting_since`` order. A lane that was already waiting keeps its place when its taker restarts; a lane whose
+  heartbeat is old or whose process is gone holds nobody back, and ``stuck`` names it. A turn has a limit, past which
+  its command is stopped and the lease released, and may be detached, so it outlives the shell that asked for it.
+
+The old route's lock path and variable names stay usable as configured aliases: ``[runner] lease_file`` names the
+lock, ``[runner] token_env`` and ``lane_env`` (and ``[lab] env``) the extra variables a turn's command gets.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -25,6 +33,8 @@ COOLDOWN = 15.0
 PASS_AFTER = 600.0
 LIVE_FOR = 300.0
 POLL = 5.0
+HEARTBEAT = 30.0
+LIMIT = 3600.0  # the longest turn by default; past it the command is stopped and the lease released
 
 
 def stamp(ts: float | None = None) -> str:
@@ -165,13 +175,23 @@ def _pid_alive(pid) -> bool:
         pid = int(pid)
     except (TypeError, ValueError):
         return False
+    if pid <= 0:
+        return False
     if sys.platform == "win32":
         import ctypes
-        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
         if not handle:
-            return False
-        ctypes.windll.kernel32.CloseHandle(handle)
-        return True
+            return ctypes.get_last_error() == 5  # access denied: it exists
+        try:
+            code = wintypes.DWORD()
+            if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == 259  # STILL_ACTIVE: an exited process's handle may still open
+        finally:
+            kernel.CloseHandle(handle)
     try:
         os.kill(pid, 0)
         return True
@@ -262,3 +282,239 @@ def release(lease: Lease, lane: Lane, coordination: Path | None):
         except OSError:
             pass
     lane.close()
+
+
+
+# --- turns for any command: wb gpu --------------------------------------------------------------------------------
+
+
+def write_entry(path: Path, value: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    temporary.write_text(json.dumps(value, indent=1), encoding="utf-8")
+    for attempt in range(50):  # Windows refuses the replace while a reader has the file open, for milliseconds
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if attempt == 49:
+                temporary.unlink(missing_ok=True)
+                raise
+            time.sleep(0.02)
+
+
+def read_entry(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def lane_name(text: str) -> str:
+    if not text or not all(c.isalnum() or c in "-_." for c in text) or text.startswith("."):
+        raise ValueError(f"lane {text!r}: letters, digits, - _ and . only")
+    return text
+
+
+def status(lock: Path, coordination: Path | None, at: float | None = None) -> dict:
+    """The holder, the waiters in the order they are served, and the other lanes."""
+    at = time.time() if at is None else at
+    held = occupied(lock)
+    lanes = {}
+    for name, entry in entries(coordination).items():
+        beat = parse(entry.get("updatedUtc"))
+        lanes[name] = {"state": entry.get("state"), "waiting_since": entry.get("waiting_since"),
+                       "heartbeat_age": None if beat is None else round(at - beat), "live": live(entry, at),
+                       "pid": entry.get("pid"), "note": entry.get("note"), "session": entry.get("session"),
+                       "quiet": bool(entry.get("quiet")), "limit": entry.get("limit")}
+    waiting = sorted((n for n, e in lanes.items() if str(e["state"] or "").startswith("waiting") and e["live"]),
+                     key=lambda n: parse(lanes[n]["waiting_since"]) or float("inf"))
+    since = None if held else free_since(lock, coordination)
+    return {"lease": {"file": str(lock), "held": held, "holder": owner(lock) if held else None,
+                      "last": None if held else owner(lock),
+                      "free_for": None if held or since is None else round(max(0.0, at - since))},
+            "waiters": waiting, "lanes": lanes, "stuck": stuck(lock, coordination, at, lanes)}
+
+
+def stuck(lock: Path, coordination: Path | None, at: float | None = None, lanes: dict | None = None) -> list[dict]:
+    """What needs a person: lanes marked running whose holder is gone, a lease left free while a lane with no live
+    process waits, and a lease held past the longest turn."""
+    at = time.time() if at is None else at
+    if lanes is None:
+        lanes = {name: {"state": e.get("state"), "live": live(e, at), "note": e.get("note"),
+                        "session": e.get("session")} for name, e in entries(coordination).items()}
+    held = occupied(lock)
+    since = None if held else free_since(lock, coordination)
+    free_for = None if held or since is None else at - since
+    issues = []
+    for name, lane in lanes.items():
+        state = str(lane.get("state") or "")
+        if lane.get("live") or not state.startswith(("waiting", "running")):
+            continue
+        if state.startswith("running"):
+            issues.append({"lane": name, "problem": "marked running, but its holder is gone", "note": lane.get("note"),
+                           "fix": f"wb gpu leave {name}"})
+        elif free_for is not None and free_for >= PASS_AFTER:
+            issues.append({"lane": name, "problem": f"waiting with no live process while the lease has been free "
+                                                    f"{free_for // 60:.0f} min", "note": lane.get("note"),
+                           "fix": f"wb gpu leave {name}"})
+    holder = owner(lock) if held else None
+    started = parse((holder or {}).get("startedUtc"))
+    limit = float((holder or {}).get("limit") or LIMIT)
+    if held and started and at - started > limit + 600:
+        issues.append({"lane": (holder or {}).get("lane"), "problem": f"the lease has been held "
+                       f"{(at - started) / 60:.0f} min, past the turn's limit", "note": (holder or {}).get("note"),
+                       "fix": "find the holder's process (wb gpu shows its pid)"})
+    return issues
+
+
+def leave(coordination: Path, lane: str):
+    """Withdraws a lane's request (or clears a stale entry): it goes idle and loses its place."""
+    path = Path(coordination) / f"{lane_name(lane)}.json"
+    entry = read_entry(path)
+    entry.update(state="idle", waiting_since=None, updatedUtc=stamp(), pid=os.getpid(), left=stamp())
+    write_entry(path, entry)
+
+
+def stop_tree(process: subprocess.Popen):
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True)
+    else:
+        try:
+            os.killpg(process.pid, 9)
+        except OSError:
+            process.kill()
+
+
+def turn(lock: Path, coordination: Path, lane: str, command: list[str], *, note: str = "", limit: float = LIMIT,
+         quiet: bool = False, session: str | None = None, token_env: list[str] = (), lane_env: list[str] = (),
+         extra_env: dict | None = None, log=print, cancelled: threading.Event | None = None,
+         poll: float | None = None) -> int:
+    """Queues ``lane``, waits for its turn, holds the lease while ``command`` runs (at most ``limit`` seconds), then
+    releases it; returns the command's exit code. The command gets the turn token in WB_TURN_TOKEN and every name
+    in ``token_env``, the lane in WB_TURN_LANE and ``lane_env``, so launchers under it join the held lease."""
+    lane = lane_name(lane)
+    cancelled = cancelled or threading.Event()
+    path = Path(coordination) / f"{lane}.json"
+    earlier = read_entry(path)
+    # A lane that was already waiting keeps its place: a restarted turn is the same request.
+    since = earlier.get("waiting_since") if str(earlier.get("state", "")).startswith("waiting") else None
+    mine = parse(since) or time.time()
+    entry = {"state": "waiting", "waiting_since": stamp(mine), "note": note, "session": session,
+             "command": list(command), "pid": os.getpid(), "quiet": bool(quiet), "limit": limit,
+             "updatedUtc": stamp()}
+    guard = threading.Lock()
+
+    def publish(**changes):
+        with guard:
+            entry.update(changes, updatedUtc=stamp(), pid=os.getpid())
+            write_entry(path, entry)
+
+    publish()
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(HEARTBEAT):
+            try:
+                publish()
+            except OSError as error:  # one missed beat is harmless; a dead heartbeat thread is not
+                log(f"{stamp()} heartbeat write failed: {error}")
+    threading.Thread(target=beat, daemon=True).start()
+    log(f"{stamp()} queued {lane} (waiting since {entry['waiting_since']})")
+    held, reason, held_seen = None, None, None
+    try:
+        while held is None:
+            if cancelled.is_set():
+                raise InterruptedError("cancelled while waiting for the lease")
+            at = time.time()
+            if occupied(lock):
+                held_seen = at
+                holder = owner(lock) or {}
+                why = f"lease held by {holder.get('lane') or holder.get('name') or 'another job'}"
+            else:
+                since = free_since(lock, coordination)
+                free_for = float("inf") if since is None else max(0.0, at - max(since, held_seen or 0))
+                ok, why = may_take(lane, mine, entries(coordination), free_for, at)
+                if ok:
+                    token = uuid.uuid4().hex
+                    try:
+                        held = Lease(lock, {"pid": os.getpid(), "name": f"turn-{lane}", "lane": lane, "turnToken": token,
+                                            "note": note, "quiet": bool(quiet), "limit": limit, "startedUtc": stamp()})
+                        break
+                    except OSError:
+                        held_seen = time.time()
+                        why = "another taker took the lease first"
+            if why != reason:
+                log(f"{stamp()} waiting: {why}")
+                reason = why
+            cancelled.wait(POLL if poll is None else poll)
+        publish(state="running", startedUtc=stamp())
+        log(f"{stamp()} running {lane}: {' '.join(command)}")
+        env = dict(os.environ, **(extra_env or {}))
+        env.update({name: token for name in [TOKEN_ENV, *token_env]})
+        env.update({name: lane for name in [LANE_ENV, *lane_env]})
+        env.update({"WB_LEASE_FILE": str(lock), "WB_COORDINATION_DIR": str(coordination)})
+        flags = {"start_new_session": True} if os.name != "nt" else {}
+        try:
+            process = subprocess.Popen(list(command), env=env, **flags)
+        except OSError as error:
+            log(f"{stamp()} cannot start {command[0]}: {error}")
+            return 127
+        try:
+            code = process.wait(timeout=limit)
+        except subprocess.TimeoutExpired:
+            log(f"{stamp()} the turn passed its {limit:.0f} s limit; stopping its command")
+            stop_tree(process)
+            code = process.wait()
+        except KeyboardInterrupt:
+            stop_tree(process)
+            process.wait()
+            raise
+        log(f"{stamp()} turn finished with exit {code}")
+        return code
+    finally:
+        stop.set()
+        if held is not None:
+            held.close()
+            write_entry(Path(coordination) / "last-release.json", {"utc": stamp(), "lane": lane})
+            log(f"{stamp()} released the lease")
+        publish(state="idle", waiting_since=None, **({"releasedUtc": stamp()} if held is not None else {}))
+
+
+def detach(argv: list[str], coordination: Path, lane: str, cwd: Path | None = None) -> dict:
+    """Runs ``argv`` (a ``wb gpu run`` without --detach) as a process of its own that outlives the shell: no console,
+    a new process group, and out of the shell's job where the job allows it. Its log is in <coordination>/logs."""
+    logs = Path(coordination) / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    log = logs / f"{lane_name(lane)}-{time.strftime('%Y%m%d-%H%M%S')}.log"
+    flags = 0
+    if sys.platform == "win32":
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    with open(log, "w", encoding="utf-8") as stream:
+        def launch(creationflags: int) -> subprocess.Popen:
+            return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT,
+                                    cwd=str(cwd) if cwd else None, close_fds=True, creationflags=creationflags,
+                                    start_new_session=sys.platform != "win32")
+        try:
+            process = launch(flags | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0))
+            breakaway = sys.platform == "win32"
+        except OSError:  # the shell's job allows no breakaway: the turn still has no console to lose
+            process = launch(flags)
+            breakaway = False
+    return {"detached": process.pid, "log": str(log), "left_job": breakaway}
+
+
+def paths(settings) -> tuple[Path, Path, dict]:
+    """The lock, the coordination folder and the alias names, as this machine's config names them."""
+    runner = settings.runner
+    lab = getattr(settings, "lab", None) or {}
+    home = Path(os.path.expanduser(lab.get("home") or runner["lab_home"]))
+    if not home.is_absolute():
+        home = (Path(__file__).resolve().parents[2] / home).resolve()
+    lock = Path(runner.get("lease_file") or home / "lease" / "gpu.lock")
+    coordination = Path(runner.get("coordination_dir") or home / "coordination")
+    env = lab.get("env") or {}
+    aliases = {"token": [*runner.get("token_env", []), *[n for n, v in env.items() if v == "token"]],
+               "lane": [*runner.get("lane_env", []), *[n for n, v in env.items() if v == "lane"]]}
+    return lock, coordination, aliases

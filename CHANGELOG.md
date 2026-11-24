@@ -59,6 +59,10 @@
   JDWP on loopback and writes an attach configuration. A stop waits at least 180 s for the server; a failure names
   the decisive line, the crash report and the next command. `lab.keep` keeps a session as a retention root.
   `lab.resolve` carries a launch's `tour` rules and `drivers` into launch.json.
+- `wb gpu`: the lease's holder, its waiters in the order they are served and stuck lanes; `wb gpu run` gives any
+  command a turn in a lane of its own, with a note, a limit, `--detach` (outlives the shell) and `--quiet`; a
+  waiter started again keeps its place; `wb gpu leave` withdraws a lane. The old lock path and variable names stay
+  configured aliases (`[runner] lease_file`, `token_env`, `lane_env`, `[lab] env`).
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,
   ledger, vast, ci, release, plan, frames, tools (the former standalone tools, 0.6.0), selftest.
 - The lab reads a profile's checkouts at a ref, each from a snapshot fixed at its commit for the whole job

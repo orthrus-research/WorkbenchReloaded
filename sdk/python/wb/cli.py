@@ -8,6 +8,7 @@
     wb approve JOB --quote Q [--via relayed] | wb cancel JOB
     wb config show [--origin] | wb prune [--yes] | wb schema
     wb host serve | install | status
+    wb gpu [run [--note T] [--limit D] [--detach] [--quiet] -- CMD | leave LANE | stuck]
 
 Exit codes: 0 ok, 1 finding, 2 usage, 3 environment, 4 cancelled or interrupted, 5 still pending,
 6 awaiting approval (the quote and a ready-made prompt are printed; with --json, as JSON).
@@ -285,6 +286,12 @@ def cmd_store(args) -> int:
 def cmd_land(args) -> int:
     from . import land
     return land.main(args)
+
+
+def cmd_gpu(args) -> int:
+    from . import gpu
+    return gpu.main(args)
+
 
 def _stand_ins(workspace, given: list, args) -> dict:
     """Each --with name=<ref|folder>: that project's checks run first on the commit (a folder: its would-be tree, as
@@ -567,6 +574,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--report", action="store_true", help="scrub unpushed commits and ref names; change nothing")
     p.add_argument("--undo", action="store_true", help="remove Workbench's hooks, restoring those kept at install")
     p.add_argument("--repo", action="append", default=[], help="another repository to cover")
+    p = add("gpu", cmd_gpu, "the GPU lease: who holds it and who waits; a turn for any command (wb gpu run -- ...)")
+    p.add_argument("action", nargs="?", choices=["status", "run", "leave", "stuck"])
+    p.add_argument("--lane", help="run: the lane's name (default: one named after this folder and the command)")
+    p.add_argument("--note", help="run: what the turn is for")
+    p.add_argument("--limit", help="run: the longest turn (1h by default); past it the command is stopped")
+    p.add_argument("--detach", action="store_true", help="run: as a process of its own that outlives the shell")
+    p.add_argument("--quiet", action="store_true", help="run: a measurement; recorded in the lane and the lease")
+    p.add_argument("rest", nargs=argparse.REMAINDER, metavar="-- COMMAND | LANE")
     p = add("host", cmd_host, "the Windows host runner")
     p.add_argument("action", choices=["serve", "install", "uninstall", "status"])
     p.add_argument("rest", nargs=argparse.REMAINDER)
