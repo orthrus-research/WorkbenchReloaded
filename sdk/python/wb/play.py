@@ -245,7 +245,10 @@ def main(args) -> int:
         say("--measure refuses a session that is not evidence (--debug, --no-rebuild)")
         return 2
     host = Host()
+    from wb_core import process as owned_processes
     from wb_core.module import EnvironmentProblem, ParamError
+    # As a worker does: the game and everything it starts die with this process, a kill of wb play included.
+    owned_processes.own_tree()
     from wb_lab import instance as instances
     from wb_lab import run as runs
     session = runs.new_id()

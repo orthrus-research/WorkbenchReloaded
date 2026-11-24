@@ -138,11 +138,14 @@ def kill_descendants() -> int:
     return killed
 
 
-def start(args: list, *, cwd=None, env: dict | None = None, stdin: bool = False, owned: bool = False
-          ) -> subprocess.Popen:
+def start(args: list, *, cwd=None, env: dict | None = None, stdin: bool = False, owned: bool = False,
+          no_window: bool = False) -> subprocess.Popen:
     """Starts ``args`` with stdout and stderr merged into one text pipe. Outside Windows it leads a session of its
-    own, so ``kill_tree`` reaches what it starts; ``owned`` (Linux) also kills it when this process dies."""
+    own, so ``kill_tree`` reaches what it starts; ``owned`` (Linux) also kills it when this process dies (on Windows
+    the Job Object ``own_tree`` made does). ``no_window`` (Windows): no console window of its own."""
     kwargs: dict = {}
+    if os.name == "nt" and no_window:
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     if os.name != "nt":
         kwargs["start_new_session"] = True
         if owned and _PRCTL is not None:
