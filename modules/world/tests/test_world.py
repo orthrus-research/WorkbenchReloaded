@@ -343,7 +343,15 @@ class Formats(unittest.TestCase):
             finally:
                 holder.kill()
                 holder.wait()
-            Save(world).check_stopped(0)
+            # Windows releases a killed process's file locks a moment after it has exited: allow that moment.
+            for attempt in range(50):
+                try:
+                    Save(world).check_stopped(0)
+                    break
+                except EnvironmentProblem:
+                    if attempt == 49:
+                        raise
+                    time.sleep(0.1)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

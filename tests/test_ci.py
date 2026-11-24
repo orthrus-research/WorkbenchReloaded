@@ -70,6 +70,9 @@ def host_tree(repo: Path, excludes: Path) -> str:
     return tree.stdout.strip()
 
 
+# What the check script prints for the interpreter running these tests: a host check runs them in its own venv.
+OWN_KIND = "venv" if sys.prefix != sys.base_prefix else "bare"
+
 class Ci(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -790,7 +793,7 @@ class Matrix(unittest.TestCase):
         self.assertEqual(result["commit"], self.good)
         [one] = result["results"]
         self.assertEqual((one["exit"], one["version"]), (0, sys.version.split()[0]))
-        self.assertEqual(one["tail"], [f"on {sys.version.split()[0]} bare"])
+        self.assertEqual(one["tail"], [f"on {sys.version.split()[0]} {OWN_KIND}"])
         record = json.loads((self.root / "linked" / "out" / "matrix.json").read_text(encoding="utf-8"))
         self.assertEqual(record["schema"], "wb.ci.matrix/1")
         self.assertFalse((self.root / "linked" / "work" / "tree").exists())
@@ -798,7 +801,7 @@ class Matrix(unittest.TestCase):
     def test_a_failing_version_and_a_missing_one_are_findings(self):
         ctx, result = self.run_matrix("bad", self.repo, [sys.executable, "9.99"])
         self.assertEqual(result["commit"], self.bad)
-        self.assertIn(f"Python {sys.version.split()[0]} exited 3: on {sys.version.split()[0]} bare", ctx.findings)
+        self.assertIn(f"Python {sys.version.split()[0]} exited 3: on {sys.version.split()[0]} {OWN_KIND}", ctx.findings)
         self.assertIn("no Python 9.99 on this host", ctx.findings)
 
     def test_requirements_give_each_version_its_own_environment(self):
