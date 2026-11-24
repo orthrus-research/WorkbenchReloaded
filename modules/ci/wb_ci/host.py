@@ -128,19 +128,19 @@ def host_run(ctx: Context, project: str, checks: list, commit: str = "HEAD", if_
         groups = [(names, lease) for names, lease in ((plain, False), (gpu, True)) if names]
         for index, (names, lease) in enumerate(groups):
             run_id = ctx.job if index == 0 else f"{ctx.job}-gpu"
-            argv = ci._engine_argv(ctx, names, run_id, records, if_needed, keep_going, dry_run)
+            options = ci._engine_options(ctx, names, run_id, records, if_needed, keep_going, dry_run)
             if lease and if_needed and not dry_run:
                 # No turn of the GPU only to find the checks passed: the engine's plan says what is left to run.
-                probe = ci._engine(ctx, root, jobs_file, [*argv, "--dry-run"], prepared["env"], prepared["python"],
-                                   HOST_ENV)
+                probe = ci._engine(ctx, root, jobs_file, {**options, "dry_run": True}, prepared["env"],
+                                   prepared["python"], HOST_ENV, prepared["identity"])
                 if probe.get("status") == "ok" and not (probe.get("result") or {}).get("order"):
                     ctx.log.info(f"{', '.join(names)} already passed for these trees; no turn of the GPU lease taken")
                     documents.append({**probe, "lease": False})
                     continue
             with (_turn(ctx, project, names) if lease and not dry_run else contextlib.nullcontext({})) as turn:
                 ctx.progress("checks", msg=" ".join(names) + (" under the GPU lease" if lease and not dry_run else ""))
-                document = ci._engine(ctx, root, jobs_file, argv, {**prepared["env"], **turn}, prepared["python"],
-                                      HOST_ENV)
+                document = ci._engine(ctx, root, jobs_file, options, {**prepared["env"], **turn}, prepared["python"],
+                                      HOST_ENV, prepared["identity"])
             document["lease"] = lease and not dry_run
             documents.append(document)
             ci._failing_tails(ctx, (document.get("result") or {}).get("jobs") or {})

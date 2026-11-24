@@ -28,6 +28,7 @@ import concurrent.futures
 import fnmatch
 import glob
 import hashlib
+import io
 import json
 import os
 import re
@@ -66,11 +67,20 @@ exec "{python}" -m orthrus_tools actions gate check --root "{root}" {repository}
 GIT_LOCATION = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX"}
 
 
+class Stopped(Exception):
+    """A run given a ``stop`` event saw it set: its steps were killed and no new job started."""
+
+
 class Environment:
-    """``{env.NAME}`` in a placeholder is the environment variable NAME, or empty."""
+    """``{env.NAME}`` in a placeholder is the environment variable NAME of the run's environment, or empty."""
+
+    def __init__(self, environ: Any = None) -> None:
+        self._environ = environ
 
     def __getattr__(self, name: str) -> str:
-        return os.environ.get(name, "")
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return (os.environ if self._environ is None else self._environ).get(name, "")
 
 
 @dataclass
@@ -94,6 +104,39 @@ class Config:
     data: dict[str, Any]
     repositories: list[Repository]
     runs: Path
+    # What a run sees, given explicitly by a caller that runs the engine as a library (see ``execute``). Left None,
+    # the engine reads this process's environment, its own interpreter and the identity variables, as the CLI does.
+    environ: dict[str, str] | None = None
+    python: str | None = None
+    identity: dict[str, Any] | None = None
+    stop: threading.Event | None = None
+
+    @property
+    def env(self) -> Any:
+        """The environment the run's steps start from and ``{env.NAME}`` reads."""
+        return os.environ if self.environ is None else self.environ
+
+    @property
+    def set_identity(self) -> str:
+        """The set's identity (a tree of its own in the pass key): ``identity["set"]``, else ``WB_SET_IDENTITY``."""
+        if self.identity is not None:
+            return str(self.identity.get("set") or "")
+        return self.env.get(SET_IDENTITY, "")
+
+    @property
+    def jdk_identity(self) -> str:
+        """The platform's JDK digest (in a pure check's key): ``identity["jdk"]``, else ``WB_JDK_IDENTITY``."""
+        if self.identity is not None:
+            return str(self.identity.get("jdk") or "")
+        return self.env.get(JDK_IDENTITY, "")
+
+    @property
+    def tools_roots(self) -> dict[str, str]:
+        """Where the caller laid out each project's files a check reads: ``identity["tools"]``, else the JSON in
+        ``WB_TOOLS_ROOTS``."""
+        if self.identity is not None:
+            return {str(k): str(v) for k, v in (self.identity.get("tools") or {}).items()}
+        return dict(json.loads(self.env.get(TOOLS_ROOTS) or "{}"))
 
     @property
     def settings(self) -> dict[str, Any]:
@@ -122,7 +165,7 @@ class Config:
         """The trees a pass is keyed on: each tested repository's, and the run's set identity when it builds from a
         set (``WB_SET_IDENTITY``), so a platform or line move needs a new pass."""
         own = tuple(repository.name for repository in self.tested)
-        return own + ((SET_TREE,) if os.environ.get(SET_IDENTITY) else ())
+        return own + ((SET_TREE,) if self.set_identity else ())
 
     def required(self) -> list[str]:
         if self.workflow not in self.workflows:
@@ -231,7 +274,9 @@ def from_project(data: dict, name: str) -> dict:
             "project": project, "artifacts": artifacts, "uses": data.get("uses") or {}}
 
 
-def load(root: Path, given: Path | None = None) -> Config:
+def load(root: Path, given: Path | None = None, *, environ: dict[str, str] | None = None) -> Config:
+    """The jobs file of ``root`` (``given`` names another). ``environ`` is the environment the run will see (a
+    repository's ``env`` location is read from it); None reads this process's."""
     path = config_path(root, given)
     if not path.is_file():
         raise ToolError(USAGE, f"no actions configuration at {path} (see docs/actions.md)")
@@ -248,7 +293,7 @@ def load(root: Path, given: Path | None = None) -> Config:
         if not isinstance(entry, dict) or "path" not in entry:
             raise ToolError(USAGE, f"{path.name}: [repositories.{name}] needs a path")
         variable = entry.get("env")
-        location = os.environ.get(variable) if variable else None
+        location = (os.environ if environ is None else environ).get(variable) if variable else None
         checkout = Path(location) if location else root / str(entry["path"])
         pin = entry.get("pin", {})
         tested = entry.get("tested", True)
@@ -264,7 +309,7 @@ def load(root: Path, given: Path | None = None) -> Config:
                        passed_by=passed_by)
         )
     runs = root / str(settings.get("runs", DEFAULT_RUNS))
-    config = Config(root, path, data, repositories, runs)
+    config = Config(root, path, data, repositories, runs, environ=environ)
     validate(config)
     return config
 
@@ -332,11 +377,11 @@ def placeholders(config: Config, run_id: str) -> dict[str, Any]:
     """Values for ``{name}`` in steps: python, run_id, run_dir, root, each repository by name,
     each interpreter, ``env.NAME`` and the ``[placeholders]`` table, in that order."""
     values: dict[str, Any] = {
-        "python": sys.executable,
+        "python": config.python or sys.executable,
         "run_id": run_id,
         "run_dir": str(config.runs / run_id),
         "root": str(config.root),
-        "env": Environment(),
+        "env": Environment(config.environ),
     }
     for repository in config.repositories:
         values[repository.name] = str(repository.path)
@@ -363,8 +408,8 @@ def expand(arguments: list[str], values: dict[str, Any], where: str = "step") ->
 # --- trees and passes ------------------------------------------------------------------------
 
 
-def git(repo: Path, *arguments: str, index: Path | None = None) -> str:
-    environment = {k: v for k, v in os.environ.items() if k not in GIT_LOCATION}
+def git(repo: Path, *arguments: str, index: Path | None = None, environ: Any = None) -> str:
+    environment = {k: v for k, v in (os.environ if environ is None else environ).items() if k not in GIT_LOCATION}
     if index is not None:
         environment["GIT_INDEX_FILE"] = str(index)
     return subprocess.run(
@@ -378,13 +423,15 @@ def git(repo: Path, *arguments: str, index: Path | None = None) -> str:
     ).stdout.strip()
 
 
-def working_tree(repo: Path, exclude: Path | None = None) -> str | None:
+def working_tree(repo: Path, exclude: Path | None = None, environ: Any = None) -> str | None:
     """The tree ``git add --all`` would commit in repo, written through a scratch copy of its
     index so the real one is untouched; None without a checkout. ``exclude`` (the runs folder)
-    stays out of the tree even when the project does not ignore it."""
+    stays out of the tree even when the project does not ignore it. git runs in ``environ`` (None: this
+    process's environment)."""
     if not (repo / ".git").exists():
         return None
-    index = repo / git(repo, "rev-parse", "--git-path", "index")
+    environ = os.environ if environ is None else environ
+    index = repo / git(repo, "rev-parse", "--git-path", "index", environ=environ)
     with tempfile.TemporaryDirectory() as scratch:
         scratch_index = Path(scratch) / "index"
         if index.is_file():
@@ -397,13 +444,13 @@ def working_tree(repo: Path, exclude: Path | None = None) -> str | None:
                 ["git", "check-ignore", "-q", relative + "/"],
                 cwd=repo,
                 capture_output=True,
-                env={k: v for k, v in os.environ.items() if k not in GIT_LOCATION},
+                env={k: v for k, v in environ.items() if k not in GIT_LOCATION},
             )
             # git refuses an exclude pathspec naming an ignored path, which needs none anyway.
             if ignored.returncode != 0:
                 pathspec.append(f":(exclude){relative}")
-        git(repo, "add", "--all", *pathspec, index=scratch_index)
-        return git(repo, "write-tree", index=scratch_index)
+        git(repo, "add", "--all", *pathspec, index=scratch_index, environ=environ)
+        return git(repo, "write-tree", index=scratch_index, environ=environ)
 
 
 def pin_value(document: Any, key: str) -> Any:
@@ -429,9 +476,11 @@ SET_TREE = "set"
 TOOLS_ROOTS = "WB_TOOLS_ROOTS"
 
 
-def tools_files(job: dict[str, Any]) -> list[tuple[str, Path]]:
-    """The files a check's tools globs match where ci.run laid them out, each with its label (<project>:<path>)."""
-    roots = json.loads(os.environ.get(TOOLS_ROOTS) or "{}")
+def tools_files(job: dict[str, Any], roots: dict[str, str] | None = None) -> list[tuple[str, Path]]:
+    """The files a check's tools globs match where ci.run laid them out (``roots``, else ``WB_TOOLS_ROOTS``), each
+    with its label (<project>:<path>)."""
+    if roots is None:
+        roots = json.loads(os.environ.get(TOOLS_ROOTS) or "{}")
     found = []
     for item in job.get("tools") or []:
         project, _, glob = str(item).partition(":")
@@ -446,11 +495,11 @@ def trees(config: Config) -> dict[str, str | None]:
     found: dict[str, str | None] = {}
     for repository in config.tested:
         try:
-            found[repository.name] = working_tree(repository.path, config.runs)
+            found[repository.name] = working_tree(repository.path, config.runs, config.env)
         except (OSError, subprocess.SubprocessError):
             found[repository.name] = None
-    if os.environ.get(SET_IDENTITY):
-        found[SET_TREE] = os.environ[SET_IDENTITY]
+    if config.set_identity:
+        found[SET_TREE] = config.set_identity
     return found
 
 
@@ -641,9 +690,9 @@ def identity(config: Config, values: dict[str, Any]) -> list[str]:
         except OSError:
             lines.append(f"{template}: missing")
     for variable in settings.get("identity_env", []):
-        lines.append(f"${variable}={os.environ.get(variable, '')}")
-    if os.environ.get(JDK_IDENTITY):
-        lines.append(f"platform jdk {os.environ[JDK_IDENTITY]}")
+        lines.append(f"${variable}={config.env.get(variable, '')}")
+    if config.jdk_identity:
+        lines.append(f"platform jdk {config.jdk_identity}")
     return lines
 
 
@@ -661,7 +710,7 @@ def input_key(config: Config, name: str, values: dict[str, Any]) -> str | None:
     for path in files:
         digest.update(input_label(config, path).encode() + b"\0")
         digest.update(hashlib.sha256(path.read_bytes()).digest())
-    for label, path in tools_files(job):  # another project's files the check reads, as laid out for the run
+    for label, path in tools_files(job, config.tools_roots):  # another project's files, as laid out for the run
         digest.update(label.encode() + b"\0")
         digest.update(hashlib.sha256(path.read_bytes()).digest())
     for line in identity(config, values):
@@ -717,9 +766,14 @@ def run_step(
     cwd: Path,
     env: dict[str, str],
     echo: Any = None,
+    *,
+    base: Any = None,
+    stop: threading.Event | None = None,
 ) -> tuple[int, float, list[Any]]:
     """(exit code, seconds, timing records). A step may print ``timing {json}`` lines, which the
-    summary keeps and ``actions report`` tabulates. A command that cannot start exits 127."""
+    summary keeps and ``actions report`` tabulates. A command that cannot start exits 127. The step's
+    environment is ``base`` (None: this process's) with ``env`` over it. When ``stop`` is set while the step
+    runs, the step and what it started are killed."""
     started = time.monotonic()
     timings: list[Any] = []
     with log.open("w", encoding="utf-8", errors="replace") as stream:
@@ -735,7 +789,9 @@ def run_step(
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                env={**os.environ, "PYTHONUNBUFFERED": "1", **env},
+                env={**(os.environ if base is None else base), "PYTHONUNBUFFERED": "1", **env},
+                # A step that may be stopped leads a session of its own, so killing its group reaches what it started.
+                start_new_session=stop is not None and os.name != "nt",
             )
         except OSError as error:
             stream.write(f"cannot start {command[0]}: {error}\n")
@@ -762,13 +818,46 @@ def run_step(
         # gets a few seconds to finish writing and is then left behind, never waited for.
         reader = threading.Thread(target=pump, name="step-output", daemon=True)
         reader.start()
-        code = process.wait()
+        code = _wait(process, stop)
+        if code is None:
+            with lock:
+                stream.write("\n(stopped: the run was stopped)\n")
+            code = process.wait()
         reader.join(PIPE_GRACE)
         with lock:
             if reader.is_alive():
                 stream.write("\n(the step exited; output a process it started still holds open is not kept)\n")
             stream.flush()
+        if not reader.is_alive():
+            process.stdout.close()  # the engine may live on in its caller's process: no pipe is left behind
     return code, time.monotonic() - started, timings
+
+
+def _wait(process: subprocess.Popen[str], stop: threading.Event | None) -> int | None:
+    """The step's exit code; None when ``stop`` was set first, after killing the step and what it started."""
+    if stop is None:
+        return process.wait()
+    while True:
+        try:
+            return process.wait(timeout=0.25)
+        except subprocess.TimeoutExpired:
+            if stop.is_set():
+                _kill_tree(process)
+                return None
+
+
+def _kill_tree(process: subprocess.Popen[str]) -> None:
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
+    else:
+        try:
+            os.killpg(process.pid, 9)
+        except OSError:
+            pass
+    try:
+        process.kill()
+    except OSError:
+        pass
 
 
 def tail(log: Path, lines: int = 15) -> str:
@@ -800,7 +889,8 @@ def run_job(
         def echo(line: str) -> None:
             out.line(f"    [{name}] {line}")
 
-        code, seconds, timings = run_step(command, log, cwd, env, echo if verbose else None)
+        code, seconds, timings = run_step(command, log, cwd, env, echo if verbose else None, base=config.env,
+                                          stop=config.stop)
         entry: dict[str, Any] = {
             "name": step["name"],
             "exitCode": code,
@@ -894,6 +984,11 @@ def run_jobs(
     workers = concurrency or max(1, len(order))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         while pending or active:
+            if config.stop is not None and config.stop.is_set():
+                # The running steps are being killed, so their jobs end failed; nothing new starts.
+                for name in pending:
+                    results[name] = {"status": "skipped", "reason": "stopped"}
+                pending.clear()
             failed = any(r["status"] == "failed" for r in results.values())
             for name in list(pending):
                 needs = jobs[name].get("needs", [])
@@ -929,7 +1024,9 @@ def run_jobs(
             if not active:
                 continue
             done, _ = concurrent.futures.wait(
-                active, return_when=concurrent.futures.FIRST_COMPLETED
+                active,
+                timeout=None if config.stop is None else 0.25,
+                return_when=concurrent.futures.FIRST_COMPLETED,
             )
             for future in done:
                 name = active.pop(future)
@@ -949,6 +1046,8 @@ def run_jobs(
                 # Only inputs that held still for the whole job may vouch for it later.
                 if keys[name] == input_key(config, name, values):
                     record_pass(config, name, keys[name], values["run_id"], results[name])
+    if config.stop is not None and config.stop.is_set():
+        raise Stopped("the run was stopped")
 
 
 def new_run(runs: Path, run_id: str | None = None) -> tuple[str, Path]:
@@ -1436,6 +1535,53 @@ def run(args: argparse.Namespace, out: Output) -> int:
         )
         return FINDING
     return OK
+
+
+def execute(
+    root: Path,
+    targets: list[str],
+    *,
+    config: Path | None = None,
+    runs: Path | None = None,
+    run_id: str | None = None,
+    environ: dict[str, str] | None = None,
+    python: str | None = None,
+    identity: dict[str, Any] | None = None,
+    stop: threading.Event | None = None,
+    if_needed: bool = False,
+    keep_going: bool = False,
+    dry_run: bool = False,
+    no_cache: bool = False,
+    memory: float | None = None,
+    jobs: int = 0,
+) -> dict[str, Any]:
+    """``actions run --json`` as a library call: the same document (schema, status, result, messages), with nothing
+    read from this process's environment or interpreter.
+
+    ``environ`` is the whole environment the steps start from and git runs in (None: this process's); ``python`` is
+    what ``{python}`` names (None: this interpreter); ``identity`` carries the set's identity (``set``), the
+    platform's JDK digest (``jdk``) and where another project's files were laid out (``tools``: {project: folder}),
+    which the CLI reads from WB_SET_IDENTITY, WB_JDK_IDENTITY and WB_TOOLS_ROOTS. When ``stop`` is set the running
+    steps are killed and ``Stopped`` is raised after the run's summary is written; KeyboardInterrupt is not caught.
+    Steps still run as processes of their own; only the engine runs in the caller."""
+    out = Output("actions", True, io.StringIO(), io.StringIO())
+    out.command = "run"
+    try:
+        loaded = load(root.resolve(), config, environ=environ)
+        loaded.python, loaded.identity, loaded.stop = python, identity, stop
+        if runs is not None:
+            loaded.runs = runs
+        arguments = argparse.Namespace(
+            targets=list(targets), if_needed=if_needed, keep_going=keep_going, dry_run=dry_run,
+            no_cache=no_cache, memory=memory, jobs=jobs, run_id=run_id, verbose=False,
+        )
+        code = _run(loaded, arguments, out)
+    except ToolError as error:
+        if error.result is not None:
+            out.result = error.result
+        out.error(error.message)
+        code = error.code
+    return out.document(code)
 
 
 def main(argv: list[str] | None = None) -> int:

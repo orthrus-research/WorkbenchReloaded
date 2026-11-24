@@ -81,6 +81,11 @@
   member by its producing check first (or refuses with `--no-rebuild`), builds or reuses the instance and plays a
   session on this machine under the lease, printing the job, launch, instance and session at once, streaming the
   consoles, and naming the decisive line, crash report and next command on a failure.
+- The actions engine is a library inside the job: `ci.run` and `ci.host-run` call `actions.execute` in their worker,
+  giving it the steps' whole environment, the project's interpreter as `{python}` and the set's identities, instead
+  of starting the engine as a process and reading its JSON from the output. Steps still run as processes of their
+  own under the project's interpreter, and cancelling the job kills them; the `actions` command line still reads the
+  identities from WB_SET_IDENTITY, WB_JDK_IDENTITY and WB_TOOLS_ROOTS.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,
   ledger, vast, ci, release, plan, frames, tools (the former standalone tools, 0.6.0), selftest.
 - The lab reads a profile's checkouts at a ref, each from a snapshot fixed at its commit for the whole job

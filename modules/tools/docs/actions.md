@@ -189,6 +189,14 @@ ran is not cached. List every file the job reads, or the cache will vouch for st
 repository's working tree against its own HEAD, matched against `[[quick.<name>]]` rules
 (`**` crosses folders, `*` does not). A path no rule matches takes every job.
 
+`actions.execute(root, targets, ...)` is `run --json` as a library call, returning the same
+document. Workbench's `ci.run` uses it inside its job. The caller gives everything a run would
+otherwise read from its process: `environ` (the whole environment the steps start from and git
+runs in), `python` (what `{python}` names) and `identity` (`set`, `jdk` and `tools`, which the
+command line reads from `WB_SET_IDENTITY`, `WB_JDK_IDENTITY` and `WB_TOOLS_ROOTS`). Steps still
+run as processes of their own. Setting the `stop` event kills the running steps, and the call
+raises `Stopped` after the run's summary is written.
+
 ## Run records
 
 `summary.json` (`orthrus.actions.summary.v1`) holds `runId`, `targets`, `order`, `trees`,
