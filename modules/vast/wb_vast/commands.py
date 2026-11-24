@@ -253,6 +253,7 @@ def _check_offer(ctx: Context, offer: dict | None, offer_id: str, max_dph: float
 
 
 SSH_SETTLED = 3  # answers in a row before a rental's SSH counts as settled
+KEY_REATTACH = 4  # key refusals in a row after which the key is attached again
 
 # Vast states prices to a few decimals; a bill this close to the quote is the same price, not a rise. It is at most
 # $0.00015 over a 90-minute rental.
@@ -385,7 +386,7 @@ def rent(ctx: Context, offer: str, bundle: str, max_dph: float, cap: float, min_
         ctx.progress("ssh", msg=f"ssh {host}:{port}")
         # SSH has settled when it answers several times in a row: a container's sshd often restarts once just after
         # it first answers (the key Vast attaches), and the next command then loses its connection.
-        answered, last = 0, None
+        answered, last, refusals = 0, None, 0
         for attempt in range(40):
             ctx.check_cancel()
             try:
@@ -396,6 +397,11 @@ def rent(ctx: Context, offer: str, bundle: str, max_dph: float, cap: float, min_
                 ctx.sleep(float(ctx.config.get("ssh_settle_seconds", 5)))
             except Exception as error:  # noqa: BLE001
                 answered, last = 0, error
+                refusals = refusals + 1 if "Permission denied" in str(error) else 0
+                if refusals and refusals % KEY_REATTACH == 0:
+                    # The host took no key from the first attach (seen on some hosts for many minutes): attach again.
+                    ctx.log.info(f"SSH refuses the key {refusals} times in a row; attaching it again")
+                    vast.call("POST", f"/instances/{instance}/ssh", {"ssh_key": _public_key(ctx)}, purpose="attach")
                 ctx.sleep(float(ctx.config.get("ssh_retry_seconds", 10)))
         else:
             raise EnvironmentProblem(f"SSH never answered {SSH_SETTLED} times in a row: {last}")
