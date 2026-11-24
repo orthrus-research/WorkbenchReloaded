@@ -509,8 +509,8 @@ class ProjectManifestTest(Project):
         self.assertEqual(plain.names, ("demo",))
         with mock.patch.dict(os.environ, {actions.SET_IDENTITY: "a" * 64, actions.JDK_IDENTITY: "b" * 64}):
             config = self.load()
-            self.assertEqual(config.names, ("demo", "set"))
-            self.assertEqual(actions.trees(config)["set"], "a" * 64)
+            self.assertEqual(config.names, ("demo", "@set"))
+            self.assertEqual(actions.trees(config)["@set"], "a" * 64)
             first = actions.input_key(config, "docs", actions.placeholders(config, "r"))
             with mock.patch.dict(os.environ, {actions.JDK_IDENTITY: "c" * 64}):
                 moved = actions.input_key(config, "docs", actions.placeholders(config, "r"))
@@ -599,10 +599,10 @@ class LibraryTest(unittest.TestCase):
             plain = actions.execute(self.root, ["ci"], runs=self.runs, run_id="r3", environ=self.environ(),
                                     python=sys.executable, identity={})
         self.assertEqual(plan["result"]["commands"]["show"][0][0], project)
-        self.assertNotIn("set", plain["result"]["trees"])  # an explicit identity: the variable is not read
+        self.assertNotIn("@set", plain["result"]["trees"])  # an explicit identity: the variable is not read
         named = actions.execute(self.root, ["ci"], runs=self.runs, run_id="r4", environ=self.environ(),
                                 python=sys.executable, identity={"set": "a" * 64})
-        self.assertEqual(named["result"]["trees"]["set"], "a" * 64)
+        self.assertEqual(named["result"]["trees"]["@set"], "a" * 64)
 
     def test_a_refusal_is_a_document_not_an_exception(self):
         document = actions.execute(self.root, ["nope"], runs=self.runs, environ=self.environ())

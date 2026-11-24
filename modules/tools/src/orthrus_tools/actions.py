@@ -471,7 +471,7 @@ def pin_value(document: Any, key: str) -> Any:
 # identity_files). A platform or line move then needs a new pass; a pure check reruns only on a JDK move.
 SET_IDENTITY = "WB_SET_IDENTITY"
 JDK_IDENTITY = "WB_JDK_IDENTITY"
-SET_TREE = "set"
+SET_TREE = "@set"  # not a project name ([a-z0-9._-]), so it never takes a repository's place (the Set is "set")
 # Where ci.run laid out each project's files a check reads (tools): {"<project>": "<folder>"} as JSON.
 TOOLS_ROOTS = "WB_TOOLS_ROOTS"
 

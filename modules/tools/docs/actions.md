@@ -115,7 +115,7 @@ folder beside the clone where that project's checkout would be.
 
 A project.toml run that builds from a set is keyed on more than its tree. `ci.run` gives the engine the set's
 identity (`WB_SET_IDENTITY`: a digest of the platform and of the lines, holds and third entries the project
-`[uses]`), which a run records as a tree named `set`, so a platform or line move needs a new pass; and the
+`[uses]`), which a run records as a tree named `@set`, so a platform or line move needs a new pass; and the
 platform's JDK digest (`WB_JDK_IDENTITY`), which joins a pure check's key, so a JDK move reruns it and a line
 move alone does not. The push gate judges a commit by its tree, whatever set it passed on.
 
