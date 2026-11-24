@@ -520,5 +520,25 @@ class LaunchBundles(unittest.TestCase):
         self.assertEqual(Path(seen["jdk"]), files / info["store"] / "jdks" / "26.0.2+7" / "linux" / "jdk-26.0.2+7")
 
 
+
+class Memory(unittest.TestCase):
+    def test_a_launch_bundle_needs_two_heaps_and_headroom(self):
+        from wb_vast import launch_bundle
+        doc = {"base": {"definition": {"jvm_profile": {"arguments": ["-Xms512M", "-Xmx8G"]}}}}
+        self.assertEqual(launch_bundle.ram_needed(doc), 20)
+        self.assertEqual(launch_bundle.ram_needed({"jvm": {"client": ["-Xmx3072M"]}}), 10)
+        self.assertEqual(launch_bundle.ram_needed({}), 12)  # no heap named: a 4 GB default each
+        self.assertIn("killed by signal", launch_bundle.RUN_SH)
+
+    def test_an_offer_with_too_little_memory_is_refused(self):
+        from wb_vast import commands
+        from wb_core.module import ParamError
+        offer = {"id": 1, "cpu_cores_effective": 10, "cpu_ram": 16 * 1024}
+        with self.assertRaises(ParamError) as raised:
+            commands._check_offer(None, offer, "1", 0.1, 8, 20)
+        self.assertIn("16 GB of memory", str(raised.exception))
+        commands._check_offer(None, dict(offer, cpu_ram=32 * 1024), "1", 0.1, 8, 20)
+        commands._check_offer(None, dict(offer, cpu_ram=None), "1", 0.1, 8, 20)  # unknown: not refused here
+
 if __name__ == "__main__":
     unittest.main()

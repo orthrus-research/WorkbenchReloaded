@@ -71,5 +71,7 @@ def describe(offer: dict) -> str:
 
 
 def host_text(offer: dict) -> str:
+    ram = offer.get("cpu_ram")
     return (f"machine {offer.get('machine_id')}, {offer.get('geolocation') or '?'}, {offer.get('cpu_name') or '?'}, "
-            f"{offer.get('cpu_cores_effective')} effective cores")
+            f"{offer.get('cpu_cores_effective')} effective cores"
+            + (f", {float(ram) / 1024:.0f} GB memory" if ram is not None else ""))

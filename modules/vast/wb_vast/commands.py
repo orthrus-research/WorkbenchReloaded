@@ -78,17 +78,18 @@ def cards(ctx: Context, card: str | None = None) -> list[str]:
 # ----------------------------------------------------------------------------------------------
 # read-only commands
 @_guard
-def offers(ctx: Context, gpu: str, max_dph: float, driver_branch=None, min_cores: float = 0):
+def offers(ctx: Context, gpu: str, max_dph: float, driver_branch=None, min_cores: float = 0, min_ram_gb: float = 0):
     vast = client(ctx)
     found = market.search(vast, cards(ctx, gpu), max_dph, driver_branch=driver_branch, repeats=2, pause=1,
                           purpose="offers")
-    listed = sorted((o for o in found.values() if (o.get("cpu_cores_effective") or 0) >= min_cores),
+    listed = sorted((o for o in found.values() if (o.get("cpu_cores_effective") or 0) >= min_cores
+                     and (not min_ram_gb or float(o.get("cpu_ram") or 0) >= min_ram_gb * 1024)),
                     key=lambda o: o.get("dph_total", 0))
     for offer in listed[:20]:
         ctx.log.info(market.describe(offer))
     ctx.summary(f"{len(listed)} offer(s) for {gpu or 'the configured cards'} at or below ${max_dph}/h"
                 + (f" on {driver_branch}" if driver_branch else ""))
-    keep = ("id", "gpu_name", "gpu_ram", "dph_total", "driver_version", "cpu_cores_effective", "cpu_name",
+    keep = ("id", "gpu_name", "gpu_ram", "dph_total", "driver_version", "cpu_cores_effective", "cpu_name", "cpu_ram",
             "reliability", "geolocation", "machine_id", "pcie_bw", "inet_down", "verified")
     return {"offers": [{k: o.get(k) for k in keep} for o in listed]}
 
@@ -237,13 +238,18 @@ def _launch_ready(b: bundles.Bundle):
                          "then makes it again. Nothing was quoted")
 
 
-def _check_offer(ctx: Context, offer: dict | None, offer_id: str, max_dph: float, min_cores: float):
+def _check_offer(ctx: Context, offer: dict | None, offer_id: str, max_dph: float, min_cores: float,
+                 ram_gb: float = 0):
     if offer is None:
         raise EnvironmentProblem(f"offer {offer_id} is gone or above ${max_dph}/h; nothing rented")
     cores = offer.get("cpu_cores_effective") or 0
     if cores < min_cores:
         raise ParamError(f"offer {offer_id} has {cores} effective cores, under min_cores {min_cores} (a small host "
                          "can starve a build or a game of threads; give min_cores= to accept it); nothing rented")
+    ram = offer.get("cpu_ram")
+    if ram_gb and ram is not None and float(ram) < ram_gb * 1024:
+        raise ParamError(f"offer {offer_id} has {float(ram) / 1024:.0f} GB of memory, and the bundle's session needs "
+                         f"{ram_gb} GB (its server's and client's heaps and their overhead); nothing rented")
 
 
 # Vast states prices to a few decimals; a bill this close to the quote is the same price, not a rise. It is at most
@@ -279,7 +285,7 @@ def quote_rent(ctx: Context, offer: str, bundle: str, max_dph: float, cap: float
     min_cores = ctx.config.get("min_cores", 8) if min_cores is None else min_cores
     found = market.find(vast, offer, cards(ctx), max_dph,
                         storage_gb=disk or b.disk_gb)
-    _check_offer(ctx, found, offer, max_dph, min_cores)
+    _check_offer(ctx, found, offer, max_dph, min_cores, b.ram_gb)
     return _quote_for(ctx, found, cap, disk or b.disk_gb, b.upload_bytes(), f"run bundle {b.name} on a rented GPU")
 
 
