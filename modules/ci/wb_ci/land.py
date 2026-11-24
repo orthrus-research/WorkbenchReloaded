@@ -107,9 +107,24 @@ def _member(ctx: Context, name: str, wanted: dict, base: dict) -> tuple[dict, st
     if missing:
         raise ParamError(f"{name} {sha[:12]} has not passed {', '.join(missing)}: wb check in {name} at that commit "
                          f"(or wb run ci.run project={name} commit={sha[:12]}), then wb land")
-    kept = store.find(commands._store_root(ctx), name, tree) or {"artifacts": {}}
+    root = commands._store_root(ctx)
+    kept = store.find(root, name, tree) or {"artifacts": {}}
+    # A build whose bytes depend on the set (a manifest naming the platform's digest) gives one tree other files under
+    # another set: the files are those the producing check's pass record names under the set this lands onto, and
+    # the Store index's (the tree's first build) only when no such record names them.
+    _, keys = commands.pass_keys(ctx, config, tree, base)
     files = {}
     for artifact, spec in (config.data.get("artifacts") or {}).items():
+        recorded = (passes.find(root, name, tree, spec["check"], keys.get(spec["check"], "")) or {}).get("artifacts") \
+            or {}
+        by_pass = [f for f, item in recorded.items() if fnmatch.fnmatch(f, Path(spec["file"]).name)
+                   and (root / "files" / str(item.get("sha256")) / f).is_file()]
+        if len(by_pass) == 1:
+            files[artifact] = {"sha256": recorded[by_pass[0]]["sha256"], "file": by_pass[0], "glob": spec["file"],
+                               "check": spec["check"]}
+            if spec.get("mod_id"):
+                files[artifact]["mod_id"] = str(spec["mod_id"])
+            continue
         # Matched on the path the build left the file at, where the Store knows it; by name for older records.
         matched = [f for f, item in kept["artifacts"].items()
                    if item.get("job") == spec["check"] and (fnmatch.fnmatch(item["from"].replace("\\", "/"), spec["file"])
