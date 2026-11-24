@@ -14,11 +14,16 @@ its commit. A member the Store lacks is built first by submitting its producing 
 --no-rebuild the play refuses instead, naming the check, and the session is not evidence.
 
 The instance is built from the launch file (lab.build: one template per launch file, base and params, reused when it
-is already built), then the session runs (lab.run) under the GPU lease in a lane of its own, on this machine, as
+is already built; an instance of the name built from another launch file is replaced, its played world kept in the
+lab's kept worlds first). The session plays the instance's world when its world key (seed, layout scale, definitions) and
+writer build are the launch's, else the settled world kept for them, else a fresh one (wb_lab.worlds); a
+world written by another build is set aside, and the play prints the --keep-world command that plays on it.
+--fresh-world starts a fresh world. Then the session runs (lab.run) under the GPU lease in a lane of its own, on this machine, as
 wb-host would run them: the job id, launch file, instance and session folder are printed at once, the consoles are
 streamed, and a failure prints the decisive line, the crash report and the next command. With --desktop hidden
 (Windows) the client runs on a hidden desktop of its own that never takes the input, so a session, an open one
-included, never takes the person's focus; an open session's commands.txt then reaches the client's fixture by its
+included, never takes the person's focus (a driver starts its client there by the desktop's name and launcher, which
+it gets in WB_DESKTOP and WB_DESKTOP_LAUNCHER); an open session's commands.txt then reaches the client's fixture by its
 'client <action> [<JSON>]' lines.
 """
 
@@ -273,7 +278,8 @@ def main(args) -> int:
     kind = "measure" if args.measure else "tour" if args.tour else "driver" if args.driver else "open"
     run_params = {"instance": name, "kind": kind, "session": session, "jvm": list(args.jvm or []), "view": view,
                   "edits": list(args.edit or []), "window": args.window or "", "debug": args.debug or "",
-                  "fresh_world": bool(args.fresh_world), "no_rebuild": bool(args.no_rebuild),
+                  "fresh_world": bool(args.fresh_world), "keep_world": bool(getattr(args, "keep_world", False)),
+                  "no_rebuild": bool(args.no_rebuild),
                   "desktop": getattr(args, "desktop", None) or ""}
     if args.tour:
         run_params["tour"] = str(Path(args.tour).resolve())
@@ -294,7 +300,8 @@ def main(args) -> int:
               "for the client's fixture)", flush=True)
     try:
         built = instances.build(host.context(job, "lab.build", {}, folder / "build"), str(launch), name,
-                                params=params, configure=str(Path(args.configure).resolve()) if args.configure else None)
+                                params=params, configure=str(Path(args.configure).resolve()) if args.configure else None,
+                                replace=True)  # a changed launch replaces the instance; its world is kept first
     except (ParamError, EnvironmentProblem) as error:
         say(f"refused: {error}")
         return 2 if isinstance(error, ParamError) else 3
@@ -343,6 +350,16 @@ def main(args) -> int:
         print(f"timing    {began - t0 - lease_wait + jvm:.2f} s from wb play to the server's JVM start: resolve and "
               f"build {asked - t0:.2f} s, the session's receipt check {record['timings'].get('verified', 0):.2f} s "
               f"(the lease wait, {lease_wait:.2f} s, not counted)")
+    world = record.get("world")
+    if world:
+        print(f"world     {world['from']}" + (f" {world['label']}" if world.get("label") else "")
+              + (f"; kept as {world['kept']}" if world.get("kept") else ""))
+        if world.get("hint"):
+            print(f"  note    {world['hint']}")
+            if world.get("set_aside") or "keep_world" in world["hint"]:
+                again = "wb play" + "".join(f" {flag}{value}" for flag, value in (
+                    ("", args.target), ("--from ", args.from_file), ("--name ", args.name)) if value)
+                print(f"  next    {again} --keep-world")
     failure = record.get("failure")
     if failure:
         print(f"FAILED    {failure['summary']}")

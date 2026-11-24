@@ -42,11 +42,11 @@ from . import instance as instances
 from . import machine as machines
 from . import run as runs
 from .store import Layout, Store, StoreError
+from .worlds import WORLD_PARTS
 
 SCHEMA = "wb.lab.frozen/1"
 MANIFEST = "frozen.json"
 DESCRIPTION = "standalone.json"
-WORLD_PARTS = ["server/world", "server/world.cubature-cache", "client/Distant_Horizons_server_data"]
 IMPORTED = ("tours", "runs")
 KIND = "legacy"
 

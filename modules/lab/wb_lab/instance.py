@@ -20,8 +20,13 @@ resolves nothing again. It builds in stages:
    (launch.json ``configure``, exported by its blob id; an inherited one is its own project's, which must be
    trusted) or the hook the request names: a Python file whose ``configure(instance, launch, params, placed)`` makes a launched product's own changes. An
    overlay's text files are written with the platform's line ends and ``{port}``, ``{seed}``, ``{player}`` and
-   ``{player_uuid}`` filled in. A launch file that names no base, or a request naming one of ``wb_lab.bases``, takes
-   Workbench's interim copy, with a warning. Workbench names no product; the script is the product's.
+   ``{player_uuid}`` filled in (``wb_lab.bases`` lists them). A launch file that names no base is refused: Workbench
+   keeps no copy of any base, and names no product; the script is the product's.
+   Then, when the launch asks for it (launch.json ``prime``; the request's ``prime=yes`` or ``prime=no`` decides
+   instead), one priming start: the server is started once on a free port, waits for its ready line, gets the
+   launch's priming commands, runs their ``seconds`` and is stopped with ``stop``, so the spawn is generated and
+   settled in the template and every instance starts warm. It needs the EULA accepted; the receipt's ``world``
+   names that world's key and writer build (``wb_lab.worlds``).
 4. receipt: ``instance.json`` names every file by SHA-256 with its path relative to ``{instance}``, ``{cache}`` (the
    runtime cache) or ``{jdk:N}`` (the JDK of major N), the launch file's SHA-256, the builder's schema, and the
    server's and client's command lines and working folders with those placeholders.
@@ -34,7 +39,9 @@ which reads the base's view keys and ready line from the receipt). A configure s
 ``[lab] trusted``; ``[lab] eula`` records the machine owner's acceptance of the Minecraft EULA. Instances are made
 from it by ``wb_lab.store``: read-only files (libraries, mods, natives) are hard links to one kept copy, everything
 the game writes is the instance's own, and each instance carries its ``instance.json``. A folder without one is never
-touched.
+touched. An instance of the same name built from another template is replaced only on request (``replace``, as wb
+play asks, or ``fresh``), and its played world is kept among the lab's worlds first (``wb_lab.worlds``), so the new
+instance can start on it when its world key and writer build are the same.
 """
 
 from __future__ import annotations
@@ -46,9 +53,11 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tarfile
 import tempfile
+import time
 import traceback
 import urllib.parse
 import urllib.request
@@ -62,7 +71,7 @@ from . import assemble
 from . import machine as machines
 from . import process as processes
 from . import resolve as resolver
-from .bases import INTERIM_BASES
+from . import worlds
 from .store import MARKER, Layout, Store, StoreError, recipe_of, remove_tree
 
 SCHEMA = "wb.lab.instance/1"
@@ -73,8 +82,9 @@ RUNTIME_PARTS = ("installer", "universal", "prism")
 SIDES = ("server", "client")
 # Where the Cleanroom installer puts the universal JAR and its argument files, under the server folder.
 CLEANROOM_LIBRARY = "libraries/com/cleanroommc/cleanroom/{version}"
-# What the game only reads: shared by hard link between a template and its instances.
-LAYOUT = Layout(linkable_dirs=["server/libraries", "server/mods", "client/mods", "client/natives"],
+# What the game only reads: shared by hard link between a template and its instances; never a world's file.
+LAYOUT = Layout(world_parts=list(worlds.WORLD_PARTS),
+                linkable_dirs=["server/libraries", "server/mods", "client/mods", "client/natives"],
                 linkable_suffixes=[".jar"])
 PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 SPLICES = ("{jvm}", "{profile}", "{tweakers}")
@@ -83,6 +93,12 @@ INSTALL_TIMEOUT = 1800
 DEFAULT_PORT = 25565
 # What a session fills in a receipt's command lines, beside the roots.
 SESSION_PLACEHOLDERS = ("port",)
+# The priming start: lab.build's prime (empty: the launch's), the ready line a base names none for, the longest wait
+# for it and for the server's own exit after stop.
+PRIME_CHOICES = ("", "yes", "no")
+PRIME_READY = r"Done \("
+PRIME_TIMEOUT = 900.0
+PRIME_STOP = 180.0
 
 
 def offline_uuid(name: str) -> str:
@@ -454,17 +470,103 @@ def _tree(root: Path, skip: set[str]) -> dict[str, dict]:
 
 
 def template_inputs(launch_sha: str, base_name: str, base: dict, configure_sha: str | None, params: dict,
-                    eula: bool, system: str, arch: str, overlays: list[str] = ()) -> dict:
+                    eula: bool, system: str, arch: str, overlays: list[str] = (), prime: dict | None = None) -> dict:
     base_sha = hashlib.sha256(json.dumps(base, sort_keys=True).encode("utf-8")).hexdigest()
-    return {"builder": SCHEMA, "launch": launch_sha, "base": base_name, "base_sha256": base_sha,
-            "overlays": list(overlays), "configure": configure_sha, "params": params, "eula": bool(eula),
-            "system": system, "arch": arch}
+    inputs = {"builder": SCHEMA, "launch": launch_sha, "base": base_name, "base_sha256": base_sha,
+              "overlays": list(overlays), "configure": configure_sha, "params": params, "eula": bool(eula),
+              "system": system, "arch": arch}
+    if prime is not None:  # only then: a template without a priming start keeps the key it had
+        inputs["prime"] = prime
+    return inputs
+
+
+def prime_of(doc: dict, asked: str) -> dict | None:
+    """The priming start a template gets: the launch's (``prime`` in launch.json) unless the request says ``yes``
+    (the launch's, or one with the defaults) or ``no``."""
+    if asked not in PRIME_CHOICES:
+        raise ParamError(f"prime: {asked!r} is none of yes, no or empty (the launch's)")
+    if asked == "no":
+        return None
+    launched = doc.get("prime")
+    if asked == "yes":
+        return dict(launched or {"commands": [], "seconds": 0})
+    return dict(launched) if launched else None
+
+
+def _set_port(text: str, port: int) -> str:
+    line = f"server-port={port}"
+    pattern = re.compile(r"^server-port=.*$", re.MULTILINE)
+    return pattern.sub(line, text, count=1) if pattern.search(text) else text.rstrip("\n") + f"\n{line}\n"
+
+
+def prime_server(ctx: Context, staging: Path, server: dict, roots: dict[str, Path], home: Path, prime: dict,
+                 ready: str) -> dict:
+    """One start of the template's server, on a free port, so the game generates the spawn and settles: it is
+    started, waits for its ready line, gets the launch's priming commands, runs ``seconds`` more, and is stopped
+    with ``stop`` (it saves the world as it exits). What it writes stays in the template, the world first; the
+    server.properties it ran with is put back as it was. A start that fails, or a server that makes no world, stops
+    the build with its console's last lines (prime-server.log in the job's out folder)."""
+    from wb_core import process as owned_processes
+    properties = staging / "server" / "server.properties"
+    before = properties.read_bytes() if properties.is_file() else None
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    properties.write_text(_set_port(before.decode("utf-8") if before else "", port), encoding="utf-8", newline="")
+    argv = [token.replace("{port}", str(port)) for token in expand(server["command"],
+                                                                   {n: str(r) for n, r in roots.items()})]
+    cwd = Path(expand([server["cwd"]], {n: str(r) for n, r in roots.items()})[0])
+    (cwd / "java-tmp").mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "JAVA_HOME": str(home), "PATH": str(home / "bin") + os.pathsep + os.environ.get("PATH", "")}
+    timeout = float(prime.get("timeout") or PRIME_TIMEOUT)
+    ctx.progress("prime", msg=f"one server start to generate the spawn (port {port})")
+    began = time.monotonic()
+    try:
+        process = owned_processes.start(argv, cwd=str(cwd), env=env, stdin=True, owned=True, no_window=True)
+    except owned_processes.StartError as error:
+        raise EnvironmentProblem(f"the priming start could not start the server: {error}") from None
+    console = processes.Console(process, ctx.out / "prime-server.log")
+    record = {"port": port, "log": "prime-server.log"}
+    try:
+        found = console.first([re.compile(ready or PRIME_READY)], 0, time.monotonic() + timeout, ctx.cancelled)
+        if found is None:
+            raise EnvironmentProblem(f"the priming start's server gave no ready line within {processes.span(timeout)}"
+                                     f" ({'it exited ' + str(process.poll()) if process.poll() is not None else 'stopped'}"
+                                     f"): {console.tail()}")
+        record["ready_s"] = round(time.monotonic() - began, 3)
+        for line in prime.get("commands") or []:
+            if console.send(str(line)) is None:
+                raise EnvironmentProblem(f"the priming start's server exited before {line!r}: {console.tail()}")
+        settle = time.monotonic() + float(prime.get("seconds") or 0)
+        while time.monotonic() < settle and process.poll() is None:
+            ctx.check_cancel()
+            time.sleep(min(0.5, max(0.0, settle - time.monotonic())))
+        console.send("stop")
+        try:
+            code = process.wait(timeout=PRIME_STOP)
+        except subprocess.TimeoutExpired:
+            raise EnvironmentProblem(f"the priming start's server did not stop within {processes.span(PRIME_STOP)} "
+                                     "of stop") from None
+        if code != 0:
+            raise EnvironmentProblem(f"the priming start's server exited {code}: {console.tail()}")
+    finally:
+        processes.kill_tree(process)
+        console.close()
+        if before is None:
+            properties.unlink(missing_ok=True)
+        else:
+            properties.write_bytes(before)
+    if not worlds.present(staging):
+        raise EnvironmentProblem(f"the priming start's server stopped but made no {worlds.WORLD_PARTS[0]}")
+    record["seconds"] = round(time.monotonic() - began, 3)
+    ctx.log.info(f"prime: the server was ready in {record['ready_s']} s and stopped; its world stays in the template")
+    return record
 
 
 def build_template(ctx: Context, staging: Path, *, data: bytes, doc: dict, base_name: str, base: dict,
                    configure: Path | None, params: dict, eula: bool, key: str, machine: Machine,
-                   overlays: list[Path] = (), base_source: dict | None = None, configure_from: dict | None = None
-                   ) -> dict:
+                   overlays: list[Path] = (), base_source: dict | None = None, configure_from: dict | None = None,
+                   prime: dict | None = None) -> dict:
     """Builds the template for ``key`` in ``staging`` (which becomes ``{instance}``) and returns its receipt."""
     system, arch = assemble.host_system()
     runtime = doc["runtime"]
@@ -530,12 +632,6 @@ def build_template(ctx: Context, staging: Path, *, data: bytes, doc: dict, base_
     index = built.asset_index
     cache_files[_relative(index["path"], roots)] = {"sha256": sha256_file(index["path"]), "sha1": index["sha1"],
                                                     "bytes": index["path"].stat().st_size}
-    instance_files = _tree(staging, {RECEIPT, MARKER})
-    for member in members:
-        for side in member["sides"]:
-            entry = instance_files.get(f"{{instance}}/{side}/mods/{member['name']}")
-            if entry is None or entry["sha256"] != member["sha256"]:
-                raise EnvironmentProblem(f"launch member {member['member']} changed while it was placed")
     separator = ";" if system == "windows" else ":"
     classpath = separator.join([_relative(built.client, roots)] + [_relative(built.library(i), roots)
                                                                    for i in built.items])
@@ -554,6 +650,21 @@ def build_template(ctx: Context, staging: Path, *, data: bytes, doc: dict, base_
         # Where a session's own JVM options go: after the launch's (the {jvm} splice), before the profile's.
         before = base[side].index("{jvm}") if "{jvm}" in base[side] else 0
         commands[side] = {"cwd": game, "command": argv, "jvm_at": before + len(splices["{jvm}"])}
+
+    # 3b. the priming start, when the launch asks for one: the world it generates stays in the template
+    world = None
+    if prime is not None:
+        ident = worlds.identity({"params": params, "configure": configured,
+                                 "launch": {"members": {m["member"]: m["sha256"] for m in members}}}, doc)
+        primed = prime_server(ctx, staging, commands["server"], roots, home, prime, str(base.get("ready") or ""))
+        world = {**ident, "played": False, "from": "primed", "prime": {**prime, **primed}}
+
+    instance_files = _tree(staging, {RECEIPT, MARKER})
+    for member in members:
+        for side in member["sides"]:
+            entry = instance_files.get(f"{{instance}}/{side}/mods/{member['name']}")
+            if entry is None or entry["sha256"] != member["sha256"]:
+                raise EnvironmentProblem(f"launch member {member['member']} changed while it was placed")
     return {
         "schema": SCHEMA,
         "key": key,
@@ -588,38 +699,27 @@ def build_template(ctx: Context, staging: Path, *, data: bytes, doc: dict, base_
                      "placed": [f"{{instance}}/{side}/mods/{m['name']}" for side in m["sides"]]} for m in members],
         "server": commands["server"],
         "client": commands["client"],
+        # The template's world: a priming start's (wb_lab.worlds reads its key and writer), or None.
+        "world": world,
         "files": {**instance_files, **cache_files, **jdk_files},
     }
 
 
-INTERIM_DEFAULT = "cubature:standalone"  # the base of a launch file resolved before launches named one
-
-
-def base_of(ctx: Context, doc: dict, requested: str) -> tuple[str, dict, list[dict], dict]:
-    """(name, table, overlays, source) of the base an instance starts from: the launch file's, or the interim copy a
-    request names (``wb_lab.bases``); a launch file without one takes the interim copy, with a warning. ``overlays`` are
-    the base's folder and then the product's, each {project, tree, path}."""
+def base_of(ctx: Context, doc: dict) -> tuple[str, dict, list[dict], dict]:
+    """(name, table, overlays, source) of the base an instance starts from: the launch file's, refused when it names
+    none. ``overlays`` are the base's folder and then the product's, each {project, tree, path}."""
     launched = doc.get("base")
     own = doc.get("overlay")
     # A launch that inherits another names every launch's overlay in order (``overlays``), else only its own.
     overlays = list(doc.get("overlays") or ([own] if own else []))
-    if requested:
-        if requested not in INTERIM_BASES:
-            raise ParamError(f"base: {requested!r} is no interim base (known: {', '.join(sorted(INTERIM_BASES))}); "
-                             "leave it empty to build from the launch's base")
-        if launched:
-            ctx.log.warning(f"INTERIM BASE: base={requested} replaces the launch's base {launched['name']} with "
-                            "Workbench's interim copy")
-        return requested, INTERIM_BASES[requested], overlays, {"name": requested, "source": "interim"}
-    if not launched:
-        ctx.log.warning(f"INTERIM BASE: the launch file names no base (it was resolved before launches named one), so "
-                        f"the instance starts from Workbench's interim copy of {INTERIM_DEFAULT}; resolve it again")
-        return INTERIM_DEFAULT, INTERIM_BASES[INTERIM_DEFAULT], overlays, {"name": INTERIM_DEFAULT,
-                                                                             "source": "interim"}
-    if launched.get("source") == "interim":
-        ctx.log.warning(f"INTERIM BASE: {launched['project']} at {str(launched['commit'])[:12]} has no "
-                        f"[launch.{launched['name'].split(':', 1)[1]}], so base {launched['name']} is Workbench's "
-                        "interim copy (wb_lab/bases.py)")
+    if not launched or not isinstance(launched.get("definition"), dict):
+        raise ParamError("the launch file names no base (it was resolved before launches named one); resolve it "
+                         "again (wb run lab.resolve folder=<worktree>, or wb play) on a set whose base project "
+                         "carries its [launch.<name>]")
+    if launched.get("source") == "interim":  # resolved while Workbench kept a copy: the launch file carries it
+        ctx.log.warning(f"base {launched['name']} is the copy this launch file was resolved with, since "
+                        f"{launched['project']} at {str(launched['commit'])[:12]} had no "
+                        f"[launch.{launched['name'].split(':', 1)[1]}]; resolve the launch again")
     if launched.get("overlay"):
         overlays.insert(0, {"project": launched["project"], **launched["overlay"]})
     source = {k: launched.get(k) for k in ("name", "project", "commit", "source")}
@@ -655,9 +755,29 @@ def sourced(sources: Path, item: str, name: str | None = None) -> Path:
     return path
 
 
-def build(ctx: Context, launch: str, name: str, base: str = "", params: dict | None = None,
-          eula: bool = False, configure: str | None = None, fresh: bool = False, store: str = "",
-          sources: str = ""):
+def keep_world(ctx: Context, root: Path, instance: Path) -> str | None:
+    """Before an instance is replaced: its played world kept among the lab's worlds by the key and writer build its
+    marker records (wb_lab.worlds), so the instance that replaces it, or a fresh one, can be given it again."""
+    if not worlds.present(instance):
+        return None
+    world = worlds.marker(instance).get("world") or {}
+    if not world.get("played") or not world.get("key") or not (world.get("writer") or {}).get("sha256"):
+        ctx.log.warning(f"instance {instance.name}: its world names no world key or writer build, or was never "
+                        "played, so it goes with the instance")
+        return None
+    try:
+        kept = worlds.keep(worlds.store_of(root), instance, {"key": world["key"], "writer": world["writer"]},
+                           {"from": instance.name, "replaced": True, "session": world.get("session")})
+    except StoreError as error:
+        ctx.log.warning(f"instance {instance.name}: its world was not kept ({error})")
+        return None
+    ctx.log.info(f"instance {instance.name}: its world kept as {kept['label']} before it is replaced")
+    return kept["label"]
+
+
+def build(ctx: Context, launch: str, name: str, params: dict | None = None,
+          eula: bool = False, configure: str | None = None, fresh: bool = False, replace: bool = False,
+          store: str = "", sources: str = "", prime: str = ""):
     if not NAME.match(name):
         raise ParamError(f"name: {name!r} is not a lowercase instance name (letters, digits, . _ -)")
     machine = Machine()
@@ -666,7 +786,7 @@ def build(ctx: Context, launch: str, name: str, base: str = "", params: dict | N
         doc = {**doc, "store": str(Path(store))}
     carried = Path(sources) if sources else None
     runtime_files(doc)  # refused with the fix before anything is made
-    base, base_doc, overlays, base_source = base_of(ctx, doc, base)
+    base, base_doc, overlays, base_source = base_of(ctx, doc)
     project = str(doc.get("project") or "")
     exports = ctx.work / "exports"
     hook, configure_from = (Path(configure) if configure else None), None
@@ -685,11 +805,15 @@ def build(ctx: Context, launch: str, name: str, base: str = "", params: dict | N
             machine.repository(script["project"]), script["blob"], exports / script["blob"] / Path(script["path"]).name)
         configure_from = {k: script[k] for k in ("project", "commit", "path", "blob")}
     eula = bool(eula) or bool(machines.lab(ctx)["eula"])
+    priming = prime_of(doc, prime)
+    if priming is not None and not eula:
+        raise ParamError("the priming start runs the server, which starts only with the Minecraft EULA accepted: "
+                         "[lab] eula = true on this machine (the owner's act), or eula=true; or prime=no")
     merged = checked_params(doc, params)
     system, arch = assemble.host_system()
     launch_sha = hashlib.sha256(data).hexdigest()
     inputs = template_inputs(launch_sha, base, base_doc, sha256_file(hook) if hook else None, merged, eula,
-                             system, arch, [o["tree"] for o in overlays])
+                             system, arch, [o["tree"] for o in overlays], priming)
     key = recipe_of(inputs)
     root = _lab_root(ctx, machine)
     store = Store(root / ".store", LAYOUT)
@@ -704,9 +828,10 @@ def build(ctx: Context, launch: str, name: str, base: str = "", params: dict | N
             ctx.summary(f"instance {name} is already built from this launch (template {key}); fresh=true makes it "
                         "again")
             return {"instance": str(destination), "template": key, "reused": True, "built": False}
-        if not fresh:
+        if not (fresh or replace):
             raise ParamError(f"instance {name} was built from template {current}, not {key} (another launch or other "
-                             "parameters); fresh=true replaces it, or choose another name")
+                             "parameters); replace=true replaces it (its world kept), or choose another name")
+        keep_world(ctx, root, destination)
         store.remove(destination)
 
     built = False
@@ -720,7 +845,8 @@ def build(ctx: Context, launch: str, name: str, base: str = "", params: dict | N
                        export_tree(machine.repository(o["project"]), o["tree"], exports / o["tree"]) for o in overlays]
             receipt = build_template(ctx, staging, data=data, doc=doc, base_name=base, base=base_doc,
                                      configure=hook, params=merged, eula=eula, key=key, machine=machine,
-                                     overlays=folders, base_source=base_source, configure_from=configure_from)
+                                     overlays=folders, base_source=base_source, configure_from=configure_from,
+                                     prime=priming)
             (staging / RECEIPT).write_text(json.dumps(receipt, indent=1) + "\n", encoding="utf-8")
             try:
                 store.adopt_template(staging, key, inputs)

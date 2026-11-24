@@ -288,6 +288,17 @@ class Gc(unittest.TestCase):
         with self.assertRaises(gc.GcError):
             gc.listing(m.places())
 
+    def test_the_lab_home_is_lab_home_before_the_runners(self):
+        from wb.config import Config
+        base = self.machine.base
+        both = gc.places_from(Config(base / "config", {"lab": {"home": str(base / "Home")},
+                                                       "runner": {"lab_home": str(base / "Runner")}}))
+        self.assertEqual(both.lab_home, base / "Home")
+        self.assertEqual((both.lease_file, both.coordination),  # where wb play takes the lease (wb_host.lease.paths)
+                         (base / "Home" / "lease" / "gpu.lock", base / "Home" / "coordination"))
+        runner = gc.places_from(Config(base / "config", {"runner": {"lab_home": str(base / "Runner")}}))
+        self.assertEqual(runner.lab_home, base / "Runner")
+
     def test_the_old_verb_names_gc(self):
         self.assertEqual(cli.main(["prune", "--yes"]), 2)
 

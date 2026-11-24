@@ -2,8 +2,9 @@
 
 The instance profile's routines (a project launcher's prepare and play, its inputs, checkouts, store, scripts and
 lab move) are retired: a game is built from a launch file (lab.resolve, lab.build) and played in a session of it
-(lab.run, wb play). ``lab.prepare`` and ``lab.play`` stay declared only as a rental plan's game steps, which
-vast.bundle writes into a bundle; on this machine they refuse and name wb play."""
+(lab.run, wb play). ``lab.prepare`` and ``lab.play``, the template rental route's game steps, are retired too:
+a rental is a bundle made from a launch file (vast.bundle-launch), and the daemon answers either name with that and
+wb play for one release (``wb_core.service.RETIRED``)."""
 
 from __future__ import annotations
 
@@ -11,9 +12,6 @@ import shutil
 from pathlib import Path
 
 from wb_core.module import Context, EnvironmentProblem, ParamError
-
-RETIRED_HERE = ("{command} no longer runs on this machine: build and play a launch with wb play (lab.resolve, "
-                "lab.build, lab.run). It stays a rental plan's game step, which vast.bundle writes into the bundle.")
 
 
 def gpu(ctx: Context):
@@ -25,16 +23,6 @@ def gpu(ctx: Context):
     ctx.machine_info(gpu=name, driver=driver)
     ctx.summary(f"{name}, driver {driver}, {memory}, PCIe gen {gen} x{width}")
     return {"gpu": name, "driver": driver, "memory": memory, "pcie": f"gen{gen} x{width}"}
-
-
-def prepare(ctx: Context, **_params):
-    """A rental plan's prepare step; on this machine, retired."""
-    raise ParamError(RETIRED_HERE.format(command="lab.prepare"))
-
-
-def play(ctx: Context, **_params):
-    """A rental plan's play step; on this machine, retired."""
-    raise ParamError(RETIRED_HERE.format(command="lab.play"))
 
 
 def turn(ctx: Context, steps: list, continue_on_finding: bool):

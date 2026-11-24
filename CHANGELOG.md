@@ -73,7 +73,8 @@
   last pure, with inputs), all four gating a push; `tests/run_all.py --part` runs one.
 - `lab.resolve`: a project's `[launch.<name>]` resolved once into launch.json, every member by SHA-256 from the
   worktree's set revision and the project itself from the Store; two builds of one mod id are refused. The
-  platform's Cleanroom files go into its `runtime.files`.
+  platform's Cleanroom files go into its `runtime.files`. Workbench keeps no copy of any base: a base project whose
+  commit has no `[launch.<name>]`, and a launch file that names no base, are refused (`lab.build base=` is gone).
 - `lab.build`: an instance built from a launch file alone (runtime, content, base, configure hook, receipt), one
   template per launch file hard-linked into each instance, with `instance.json` naming every file by SHA-256 under
   `{instance}`, `{cache}` and `{jdk:N}` and the command lines that start it. The server's port is a session's
@@ -90,6 +91,23 @@
   JDWP on loopback and writes an attach configuration. A stop waits at least 180 s for the server; a failure names
   the decisive line, the crash report and the next command. `lab.keep` keeps a session as a retention root.
   `lab.resolve` carries a launch's `tour` rules and `drivers` into launch.json.
+- Kept worlds: a world is known by its world key (seed, layout scale, the definitions' SHA-256) and the build
+  that wrote it (the base project's member, Cubature's JAR). An open or tour session whose server stopped by itself
+  keeps its world under `<instances>/.store/worlds`, as `lab.build` does before it replaces an instance; a measure's
+  fresh copy and an instance without a world start on that world. A world another build wrote is set aside, and
+  `wb play --keep-world` (`lab.run keep_world`) plays on it; `--fresh-world` removes every world part link-first.
+  session.json's `world` names the world played and kept, and `wb play` replaces an instance built from another
+  launch file instead of refusing it.
+- A launch may ask for a priming start (`prime = true`, or `{ commands, seconds, timeout }`, inherited from a base
+  launch): `lab.build` starts the template's server once on a free port, sends the commands, stops it with `stop`
+  and keeps the world it generated in the template, so every instance starts warm; the receipt's `world` names its
+  key and writer, and a settled world in the store takes its place. `lab.build prime=yes|no` decides instead; it
+  needs the EULA accepted, and a template without one keeps the key it had.
+- A driver session gets the hidden desktop too (`lab.run kind=driver desktop=hidden`, `wb play --driver D --desktop
+  hidden`): the session makes it and gives the driver its name (`WB_DESKTOP`, `{desktop}`) and a launcher
+  (`WB_DESKTOP_LAUNCHER`, `{desktop_launcher}`: `python -I <launcher> --desktop <name> -- <command>`, or
+  `wb_lab.desktop.start_on`) that starts its client there with its console relayed, so scripts that started the game
+  on a background desktop of their own can become drivers. session.json records the desktop and every window on it.
 - `lab.freeze` keeps the old route's instances as read-only evidence (a manifest, the world by world key, tours/
   and runs/ as a kept session), never following a link; `lab.thaw` undoes it. lab.build finds its instances under
   `[lab] home` when `[modules.lab] instances` is not set, as lab.run does its sessions.
@@ -146,8 +164,8 @@
 - The instance profile and its commands are retired: `lab.inputs`, `lab.checkouts`, `lab.ensure`, `lab.script`,
   `lab.userdev`, `lab.session`, `lab.server-scenario`, `lab.queue`, `lab.snapshot`, `lab.reset`, `lab.remove`,
   `lab.instances`, `lab.prune-instances`, `lab.store-gc`, `lab.dedupe`, `lab.migrate` and `lab.migrate-plan`
-  answer with their replacement for one release; `lab.prepare` and `lab.play` stay only as a rental plan's game
-  steps. The profile, launcher, snapshots, scripts and environments keys of `[modules.lab]` are read by nothing and
+  answer with their replacement for one release, as do `lab.prepare` and `lab.play`, the template rental route's
+  game steps (a rental is a bundle from a launch file, `vast.bundle-launch`; here, `wb play`). The profile, launcher, snapshots, scripts and environments keys of `[modules.lab]` are read by nothing and
   are accepted until the machine's config drops them. `wb play --driver` runs a driver from the project's tree the
   launch was resolved from, and `[lab] env` can name the runtime cache (`cache`) for drivers.
 - The Windows host runner, sharing the GPU lease and lanes with gpu_queue.py; host routines that need no GPU run

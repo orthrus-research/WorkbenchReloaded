@@ -61,7 +61,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 | `drive` | Workload drivers: what a game session is made to do and see. Tours checked before a session plays them, camera paths made from keyframes and checked against the frames captured along them, and block galleries laid out for review. | `tour-lint`, `path`, `path-check`, `gallery`, `send` |
 | `frames` | Score captured frames: pass or fail against references, capture noise, wrong-view checks, and PSNR/SSIM quality (from Quadrature's frames.py). | `compare`, `measure`, `check`, `quality` |
 | `jar` | Static analysis of compiled mods: class files, references and what each JAR patches. | `audit`, `survey`, `index`, `references`, `hook-targets`, `diff` |
-| `lab` | Game sessions: native client sessions on the host through wb-host (instances, the GPU lease, the lab home), and headless dedicated-server sessions in the container. | `gpu`, `prepare`, `play`, `resolve`, `turn`, `install-server`, `pack`, `assemble`, `build`, `run`, `send`, `keep`, `freeze`, `thaw`, `server` |
+| `lab` | Game sessions: native client sessions on the host through wb-host (instances, the GPU lease, the lab home), and headless dedicated-server sessions in the container. | `gpu`, `resolve`, `turn`, `install-server`, `pack`, `assemble`, `build`, `run`, `send`, `keep`, `freeze`, `thaw`, `server` |
 | `ledger` | Formal results, costs and market prices in one queryable database. | `query`, `runs`, `findings`, `show`, `costs`, `calls`, `add-run`, `add-finding`, `supersede`, `link-run`, `add-machine`, `prune`, `import`, `import-ci`, `import-results`, `import-json`, `parse-log` |
 | `mixin` | Mixin and patches: verifying Mixin and patch application without the game. | `remap-proof`, `apply`, `doctor` |
 | `plan` | Declarative turns and campaigns: pinned inputs, a declared protocol, steps that are Workbench commands; checked first, then run on the host. | `check`, `run` |
@@ -203,8 +203,8 @@ An instance is built from a launch file, not by a project's own launcher: Workbe
 runs no launcher script. The profile-era commands (`lab.inputs`, `lab.checkouts`, `lab.ensure`, `lab.script`,
 `lab.userdev`, `lab.session`, `lab.server-scenario`, `lab.queue`, `lab.snapshot`, `lab.reset`, `lab.remove`,
 `lab.instances`, `lab.prune-instances`, `lab.store-gc`, `lab.dedupe`, `lab.migrate`, `lab.migrate-plan`) are
-retired and answer with what replaces them. `lab.prepare` and `lab.play` remain only as a rental plan's game steps,
-which `vast.bundle` writes into a bundle; on this machine they refuse and name `wb play`.
+retired and answer with what replaces them, as do `lab.prepare` and `lab.play`, the template rental route's game
+steps: a rental is a bundle made from a launch file (`vast.bundle-launch`), and here a launch is played by `wb play`.
 
 A project that is launched defines its launches in its own `project.toml` (`[launch.<name>]`: members as
 `project:artifact@side` or `third@side`, the runtime, typed params, JVM arguments, where a file's name matters the
@@ -215,9 +215,8 @@ the JVM profile, the view keys and an overlay folder under `launch/`). `lab.reso
 once into `launch.json`: every member by SHA-256 from the worktree's set revision (a line, a hold or a third entry),
 the project itself from the Store by the tree CI built, with the mod ids each declares; the base's table at the
 commit the set names for its project with its overlay folder's tree id, and the product's configure script and
-`launch/` tree at its own commit. A base project whose commit has no such table yet gets Workbench's interim copy
-(`wb_lab/bases.py`), with a warning. A member the set or the Store lacks, or two builds of one mod id, is
-refused before anything is written. Once the set's platform names the runtime's own files
+`launch/` tree at its own commit. A base project whose commit has no such table, a member the set or the Store
+lacks, or two builds of one mod id, is refused before anything is written. Once the set's platform names the runtime's own files
 (`platform.cleanroom.{installer,universal,prism}`), the launch file carries them too, in `runtime.files`.
 
 `lab.build launch=<launch.json> name=<name>` builds an instance from that file and nothing else: the server by the

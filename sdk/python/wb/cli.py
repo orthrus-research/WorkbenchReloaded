@@ -729,8 +729,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--driver", help="run the launch's declared driver of this name")
     p.add_argument("--debug", choices=["client", "server", "both"], help="JDWP on loopback; not evidence")
     world = p.add_mutually_exclusive_group()
-    world.add_argument("--fresh-world", action="store_true", help="remove the instance's world first")
-    world.add_argument("--keep-world", action="store_true", help="play on the world the instance has (the default)")
+    world.add_argument("--fresh-world", action="store_true", help="play on a fresh world (the instance's is removed)")
+    world.add_argument("--keep-world", action="store_true", help="play on the world set aside or written by another "
+                       "build (without either flag: the instance's or the kept world of this world key and build)")
     p.add_argument("--param", action="append", metavar="K=V", help="a launch param over the launch's (part of the "
                    "template's key)")
     p.add_argument("--configure", metavar="FILE", help="the product's configure hook, until its launch names it "

@@ -25,6 +25,7 @@ from wb_lab import channel as channels  # noqa: E402
 from wb_lab import desktop as desktops  # noqa: E402
 from wb_lab import instance as instances  # noqa: E402
 from wb_lab import run as runs  # noqa: E402
+from wb_lab import worlds  # noqa: E402
 from wb_lab.store import Store  # noqa: E402
 
 BUILD = "26.0.2.1+1"
@@ -37,6 +38,10 @@ here = Path.cwd()
 (here / "argv.json").write_text(json.dumps(sys.argv))
 if side == "server":
     values = dict(l.split("=", 1) for l in Path("server.properties").read_text().splitlines() if "=" in l)
+    if os.environ.get("FAKE_WORLD"):  # the level the server loads, or generates: how many starts it has seen
+        level = here / "world" / "level.dat"
+        level.parent.mkdir(exist_ok=True)
+        level.write_text(str(int(level.read_text()) + 1 if level.exists() else 1))
     listener = socket.socket()
     listener.bind(("127.0.0.1", int(values["server-port"])))
     listener.listen(1)
@@ -110,7 +115,7 @@ class Sessions(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         os.environ["WB_TURN_TOKEN"] = "a-token"
         self.addCleanup(os.environ.pop, "WB_TURN_TOKEN", None)
-        for name in ("FAKE_CRASH", "FAKE_IGNORE_STOP", "FAKE_OPEN_SECONDS", "FAKE_FIXTURE"):
+        for name in ("FAKE_CRASH", "FAKE_IGNORE_STOP", "FAKE_OPEN_SECONDS", "FAKE_FIXTURE", "FAKE_WORLD"):
             self.addCleanup(os.environ.pop, name, None)
         self.system = "windows" if os.name == "nt" else "linux"
         self.store = self.root / "store"
@@ -130,7 +135,8 @@ class Sessions(unittest.TestCase):
             "jvm": {"client": ["-Dgame.mode=own"], "server": []}, "collect": [], "failures": [r"Description: "],
             "params": {}, "tour": {"setup": ["time set 6000"], "client_jvm": ["-Dgame.tour=true"],
                                    "captured": "Game view captured", "leave_seconds": 0},
-            "drivers": {"probe": {"command": ["{python}", "{root}/driver.py", "{instance_json}", "{session_id}"]}}}
+            "drivers": {"probe": {"command": ["{python}", "{root}/driver.py", "{instance_json}", "{session_id}"]},
+                        "hidden": {"command": ["{python}", "{root}/hidden.py", "{desktop}", "{desktop_launcher}"]}}}
         self.config = {"instances": str(self.root / "instances"), "runtime_cache": str(self.cache),
                        "sessions": str(self.root / "sessions")}
         self.lab = {"trusted": ["game"], "env": {"OLD_TURN": "token"}}
@@ -162,6 +168,11 @@ class Sessions(unittest.TestCase):
                  "{cache}/libraries/lib.jar": self.cache / "libraries" / "lib.jar"}
         receipt = {
             "schema": instances.SCHEMA, "key": "k" + name, "base": "cubature:standalone", "system": self.system,
+            # what a session reads of the base: its view keys and the server's ready line
+            "session": {"placeholders": ["port"], "server_properties": "{instance}/server/server.properties",
+                        "default_port": 25565, "ready": "",
+                        "views": {"horizontal": ["server/server.properties:view-distance"],
+                                  "client_render": ["client/options.txt:renderDistance"]}},
             "launch": {"sha256": sha256(launch), "file": "launch.json", "project": "game", "launch": "default",
                        "commit": "a" * 40, "members": {"game:mod@both": sha256(self.mod)}},
             "jdk": {"26": {"build": BUILD}}, "player": {"name": "CubicLab", "uuid": "u"},
@@ -441,6 +452,52 @@ class Sessions(unittest.TestCase):
         with self.assertRaisesRegex(ParamError, "not evidence"):
             self.play(kind="measure", tour=str(self.tour), launch=str(launch), debug="client", label="debug")
 
+    def test_a_fresh_world_is_removed_link_first_and_never_what_a_link_in_it_points_at(self):
+        from wb.platform import make_link
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "kept.dat").write_bytes(b"not the world's")
+        world = self.instance() / "server" / "world"
+        (world / "region").mkdir(parents=True)
+        (world / "region" / "r.0.0.mca").write_bytes(b"region")
+        os.chmod(world / "region" / "r.0.0.mca", 0o444)  # a read-only file is removed too
+        make_link(world / "shared", outside)
+        ctx, _, record = self.play(kind="tour", tour=str(self.tour), fresh_world=True)
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        self.assertFalse(world.exists())
+        self.assertEqual((outside / "kept.dat").read_bytes(), b"not the world's")
+        self.assertEqual((record["world"]["choice"], record["world"]["from"]), ("fresh", "generated"))
+        self.assertTrue(record["inputs"]["fresh_world"])
+
+    def level(self, instance: Path) -> str | None:
+        path = instance / "server" / "world" / "level.dat"
+        return path.read_text() if path.is_file() else None
+
+    def test_a_tours_settled_world_is_kept_and_a_measures_fresh_copy_starts_on_it(self):
+        os.environ["FAKE_WORLD"] = "1"
+        ctx, _, record = self.play(kind="tour", tour=str(self.tour))
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        world = record["world"]
+        self.assertEqual((world["choice"], world["from"]), ("default", "generated"))
+        self.assertEqual(world["kept"], worlds.label_of({"key": world["key"], "writer": world["writer"]}))
+        self.assertEqual(self.level(self.instance()), "1")
+        launch = self.root / "launch.json"
+        launch.write_bytes((self.instance() / "launch.json").read_bytes())
+        ctx, result, record = self.play(kind="measure", tour=str(self.tour), launch=str(launch), label="measure")
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        self.assertEqual((record["world"]["from"], record["world"]["label"]), ("restored", world["kept"]))
+        self.assertEqual(self.level(Path(result["instance"])), "2")  # the copy's server loaded the kept world
+        self.assertIsNone(record["world"]["kept"])  # a measure never keeps its world
+        # the instance plays on its own world; the store keeps the latest settled one
+        _, _, record = self.play(kind="tour", tour=str(self.tour), label="again")
+        self.assertEqual((record["world"]["from"], self.level(self.instance())), ("instance", "2"))
+        self.assertEqual(self.level(Path(self.play(kind="measure", tour=str(self.tour), launch=str(launch),
+                                                   label="measure-2")[1]["instance"])), "3")
+        _, _, record = self.play(kind="tour", tour=str(self.tour), fresh_world=True, label="fresh")
+        self.assertEqual((record["world"]["from"], self.level(self.instance())), ("generated", "1"))
+        with self.assertRaisesRegex(ParamError, "two worlds"):
+            self.play(kind="tour", tour=str(self.tour), fresh_world=True, keep_world=True, label="both")
+
     def test_a_driver_gets_the_token_lease_and_instance_under_the_configured_names(self):
         root = self.root / "project"
         root.mkdir()
@@ -466,6 +523,47 @@ class Sessions(unittest.TestCase):
         self.lab["trusted"] = []
         with self.assertRaisesRegex(ParamError, "not in \\[lab\\] trusted"):
             self.play(kind="driver", driver="probe", driver_root=str(root), label="untrusted")
+
+    @unittest.skipUnless(desktops.available(), "a hidden desktop is a Windows feature")
+    def test_a_driver_starts_its_client_on_the_sessions_hidden_desktop(self):
+        root = self.root / "project"
+        root.mkdir()
+        # the "client": says which desktop its thread is on, then exits 3
+        (root / "client.py").write_text(
+            "import ctypes, sys\n"
+            "from ctypes import wintypes as W\n"
+            "user, kernel = ctypes.WinDLL('user32'), ctypes.WinDLL('kernel32')\n"
+            "user.GetThreadDesktop.restype = W.HANDLE\n"
+            "user.GetUserObjectInformationW.argtypes = [W.HANDLE, ctypes.c_int, ctypes.c_void_p, W.DWORD,"
+            " ctypes.POINTER(W.DWORD)]\n"
+            "handle = user.GetThreadDesktop(kernel.GetCurrentThreadId())\n"
+            "name, needed = ctypes.create_unicode_buffer(256), W.DWORD()\n"
+            "user.GetUserObjectInformationW(handle, 2, name, ctypes.sizeof(name), ctypes.byref(needed))\n"
+            "print('on', name.value, flush=True)\n"
+            "sys.exit(3)\n", encoding="utf-8")
+        # the driver: starts the client by the launcher the session names, as a MenuMod script would
+        (root / "hidden.py").write_text(
+            "import json, os, subprocess, sys\n"
+            "desktop, launcher = sys.argv[1], sys.argv[2]\n"
+            "done = subprocess.run([sys.executable, '-I', launcher, '--desktop', desktop, '--', sys.executable,"
+            " os.path.join(os.path.dirname(__file__), 'client.py')], capture_output=True, text=True)\n"
+            "json.dump({'desktop': desktop, 'env': os.environ.get('WB_DESKTOP'),"
+            " 'launcher': os.environ.get('WB_DESKTOP_LAUNCHER') == launcher, 'out': done.stdout,"
+            " 'code': done.returncode}, open(os.path.join(os.environ['WB_SESSION'], 'seen.json'), 'w'))\n",
+            encoding="utf-8")
+        ctx, result, record = self.play(kind="driver", driver="hidden", driver_root=str(root), desktop="hidden")
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        seen = json.loads((Path(result["folder"]) / "seen.json").read_text())
+        self.assertTrue(seen["desktop"].startswith("wb-session-"))
+        self.assertEqual((seen["env"], seen["launcher"]), (seen["desktop"], True))
+        self.assertEqual(seen["out"].strip(), f"on {seen['desktop']}")  # the client ran there, its console relayed
+        self.assertEqual(seen["code"], 3)  # and its status is the launcher's
+        self.assertEqual(record["desktop"]["name"], seen["desktop"])
+        self.assertTrue(record["desktop"]["never_input"])
+        self.assertEqual(record["inputs"]["desktop"], "hidden")
+        # without desktop=hidden a driver gets no desktop
+        ctx, result, record = self.play(kind="driver", driver="hidden", driver_root=str(root), label="plain")
+        self.assertIsNone(record["desktop"])
 
     # -- the debugger -------------------------------------------------------------------------------------------
     def test_debug_opens_jdwp_writes_the_attach_configuration_and_is_not_evidence(self):

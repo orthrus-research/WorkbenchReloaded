@@ -24,8 +24,8 @@ A launch also names:
   commit when the product is the base's project), with the ``launch/<overlay>`` folder at that commit. A base is a
   table without members (``BASE_KEYS``): the installer, the server's and client's command lines, the player, the JVM
   profile, the view keys a session sets, and an overlay folder whose ``both/``, ``server/`` and ``client/`` files are
-  laid into the instance's sides. A base project whose commit has no such table yet falls back to Workbench's interim
-  copy (``wb_lab.bases``), with a warning. A base project with no line in the set follows its branch in its home
+  laid into the instance's sides. A base project whose commit has no such table is refused: Workbench keeps no copy
+  of any base (``wb_lab.bases`` says what one is). A base project with no line in the set follows its branch in its home
   repository (origin's, else the local branch, else HEAD), as a check's tools do, and launch.json says so;
 - ``base = "<project>:<launch>"`` naming another product's launch (a table with members): the launch inherits that
   launch, resolved at the base project's commit as that product would resolve it (its own artifact from the Store by
@@ -45,6 +45,9 @@ A launch also names:
 - ``params``: each a default value, whose type it fixes, or a table ``{ type, default, min, max, choices }``; lab.build
   refuses a value of another type or one the launch does not declare;
 - ``tour`` (the rules lab.run drives a tour by) and ``drivers`` (``{ command = [...], cwd = "..." }`` per name);
+- ``prime``: ``true``, or ``{ commands = [...], seconds = N, timeout = N }``: lab.build starts the server once in the
+  template, so it generates the spawn and settles there and every instance starts on that world (inherited from a
+  base launch unless the launch names its own; ``false`` turns it off);
 - ``runtime``: ``"cleanroom"`` (the platform's Cleanroom), or a table naming another version of it for this launch:
   ``{ kind = "cleanroom", version = "0.7.7-alpha", installer = { url, file, sha256 }, universal = {...},
   prism = {...} }`` with that version's files by SHA-256 (lab.build fetches each from an allowed host), or
@@ -76,7 +79,9 @@ SCHEMA = 1
 SIDES = ("both", "client", "server")
 MEMBER = re.compile(r"^([a-z0-9][a-z0-9._-]*)(?::([a-z0-9][a-z0-9._-]*))?@(both|client|server)$")
 LAUNCH_KEYS = {"members", "runtime", "params", "jvm", "collect", "failures", "place", "tour", "drivers", "base",
-               "overlay", "configure"}
+               "overlay", "configure", "prime"}
+# A priming start (lab.build): the server started once in the template, to generate the spawn and settle.
+PRIME_KEYS = {"commands": list, "seconds": (int, float), "timeout": (int, float)}
 PLACE = re.compile(r'^[^/\\:*?"<>|]+\.jar$')  # a bare file name: no folder, nothing Windows refuses
 MEMBER_KEYS = {"jvm", "collect", "failures"}
 RUNTIMES = ("cleanroom",)
@@ -263,6 +268,26 @@ def _check_drivers(drivers, where: str):
             raise LaunchError(f"{where}.drivers.{name}.cwd is a folder")
 
 
+def prime_of(value, where: str) -> dict | None:
+    """A launch's ``prime``, checked: ``true`` (a priming start with the defaults), ``false`` (none), or a table of
+    ``commands`` (server console lines sent once it is ready), ``seconds`` (how long it then runs) and ``timeout``
+    (the longest wait for its ready line); as launch.json carries it, or None for none."""
+    if isinstance(value, bool):
+        return {"commands": [], "seconds": 0} if value else None
+    if not isinstance(value, dict):
+        raise LaunchError(f"{where}.prime is true, false or a table of {', '.join(sorted(PRIME_KEYS))}")
+    for key, item in value.items():
+        expected = PRIME_KEYS.get(key)
+        if expected is None:
+            raise LaunchError(f"{where}: unknown key prime.{key} (known: {', '.join(sorted(PRIME_KEYS))})")
+        if expected is list and not _strings(item) or expected is not list and (
+                not isinstance(item, expected) or isinstance(item, bool) or item < 0):
+            raise LaunchError(f"{where}: prime.{key} is " + ("a list of console lines" if expected is list else
+                                                             "a number of seconds, 0 or more"))
+    return {"commands": list(value.get("commands") or []), "seconds": value.get("seconds", 0),
+            **({"timeout": value["timeout"]} if "timeout" in value else {})}
+
+
 def _check_overlay(value, where: str):
     if not isinstance(value, str) or not FOLDER.match(value) or ".." in value.split("/"):
         raise LaunchError(f"{where}.overlay is a folder under {LAUNCH_FOLDER}/ (like 'standalone'), not {value!r}")
@@ -337,6 +362,8 @@ def definition(project_toml: dict, name: str, where: str = "project.toml") -> di
         _check_tour(table["tour"], f"{where}: launch.{name}")
     if "drivers" in table:
         _check_drivers(table["drivers"], f"{where}: launch.{name}")
+    if "prime" in table:
+        prime_of(table["prime"], f"{where}: launch.{name}")
     for key in ("collect", "failures"):
         if key in table and not isinstance(table[key], list):
             raise LaunchError(f"{where}: launch.{name}.{key} is a list")
@@ -509,9 +536,8 @@ def pick_commit(project: str, *, product: str, commit: str, set_doc: dict, follo
 def base_of(*, name: str, product: str, commit: str, product_toml: dict | None, set_doc: dict, extras, objects,
             warn=None, follow=None, picked: dict | None = None) -> dict:
     """The launch file's ``base``: the base project's [launch.<name>] at the commit the set names for it (or its
-    branch, for a project with no line), checked, and its overlay folder's tree id; Workbench's interim copy, with a
-    warning, when that commit has none yet."""
-    from .bases import INTERIM_BASES
+    branch, for a project with no line), checked, and its overlay folder's tree id; refused when that commit has
+    none."""
     project, launch = parse_base(name, "launch")
     picked = picked or pick_commit(project, product=product, commit=commit, set_doc=set_doc, follow=follow,
                                    where=f"base {name}")
@@ -527,13 +553,8 @@ def base_of(*, name: str, product: str, commit: str, product_toml: dict | None, 
     record = {"name": name, "project": project, "commit": at, **{k: picked[k] for k in ("chosen", "ref")
                                                                   if k in picked}}
     if table is None:
-        if name not in INTERIM_BASES:
-            raise LaunchError(f"{project} at {at[:12]} has no [launch.{launch}], so there is no base {name}")
-        if warn:
-            warn(f"INTERIM BASE: {project} at {at[:12]} has no [launch.{launch}] yet, so base {name} is Workbench's "
-                 f"interim copy (wb_lab/bases.py); it goes once {project}'s line carries [launch.{launch}]")
-        return {**record, "source": "interim", "definition": json.loads(json.dumps(INTERIM_BASES[name])),
-                "overlay": None}
+        raise LaunchError(f"{project} at {at[:12]} has no [launch.{launch}], so there is no base {name}: a set whose "
+                          f"{project} line carries it, or a hold of {project}, gives one")
     base_definition(table, where)
     overlay = None
     if "overlay" in table:
@@ -801,6 +822,10 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
         document["tour"] = json.loads(json.dumps(tour))
     if table.get("drivers"):
         document["drivers"] = json.loads(json.dumps(table["drivers"]))
+    # A priming start: the launch's own (``prime = false`` turns an inherited one off), else its base launch's.
+    prime = prime_of(table["prime"], f"launch.{launch}") if "prime" in table else (parent or {}).get("prime")
+    if prime:
+        document["prime"] = json.loads(json.dumps(prime))
     return document
 
 
@@ -919,8 +944,7 @@ def resolve_command(ctx, folder: str, launch: str = "default", out: str = ""):
     (ctx.out / "launch.json").write_text(text, encoding="utf-8")
     ctx.output("launch", ctx.out / "launch.json")
     base = document.get("base")
-    based = f", base {base['name']} at {base['commit'][:12]}" + (" (INTERIM COPY)" if base["source"] == "interim"
-                                                                 else "") if base else ""
+    based = f", base {base['name']} at {base['commit'][:12]}" if base else ""
     chain = document.get("inherits") or []
     inherited = "".join(f", inherits {step['name']} at {step['commit'][:12]} ({step['chosen']}"
                         + (f" {step['ref']}" if step.get("ref") else "") + ")" for step in chain)

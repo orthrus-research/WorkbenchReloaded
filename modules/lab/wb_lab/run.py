@@ -27,7 +27,10 @@ its ``client`` lines one at a time and records each answer in session.json; lab.
 
 ``desktop=hidden`` (Windows) starts the client on a hidden desktop of its own (``wb_lab.desktop``): the game runs and
 draws there but never takes the input, focus, keyboard or mouse; session.json records the desktop, the window classes
-the client opened on it and that it never had the input. A desktop that cannot be made refuses the session.
+the client opened on it and that it never had the input. A desktop that cannot be made refuses the session. A driver
+session makes the desktop for the client its driver starts: the driver gets its name in ``WB_DESKTOP`` (``{desktop}``
+in its command line) and the launcher that starts a command there in ``WB_DESKTOP_LAUNCHER``
+(``{desktop_launcher}``: ``python -I <launcher> --desktop <name> -- <command>``, or ``wb_lab.desktop.start_on``).
 
 Before anything starts the session checks the instance against its receipt: every file under ``{cache}`` and
 ``{jdk:N}`` and every placed member by SHA-256. The JDK is found by the build the receipt names (the Store's, or the
@@ -37,6 +40,12 @@ What a session chooses is its own and goes into ``session.json``, never into the
 JVM options (``jvm``), the window, view distances (``view``, the base's view keys), file edits (``edits``) and the
 tour. Edited files are put back when the session ends. ``debug`` opens JDWP on loopback for the client, the server
 or both, writes an attach configuration (``attach/launch.json``, for VS Code) and marks the session as not evidence.
+
+The world is chosen by ``wb_lab.worlds``: by default the instance's own when its world key (seed, layout scale,
+definitions) and writer build are the session's, else the settled world kept for that key and writer, else a
+fresh one; ``keep_world`` plays on a world set aside or written by another build, ``fresh_world`` on a fresh one
+(every world part removed link-first). An open or tour session whose server stopped by itself keeps its world as the
+kept world of its key and writer; session.json's ``world`` says which world was played and what was kept.
 
 A stop sends the server ``stop`` and waits at least 180 s for its own exit before the tree is killed. On a failure
 the session names the decisive line (the launch's ``failures`` patterns first, then Workbench's), the crash report
@@ -54,6 +63,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -67,7 +77,7 @@ from . import desktop as desktops
 from . import instance as instances
 from . import machine as machines
 from . import process as processes
-from .bases import INTERIM_BASES
+from . import worlds
 from .store import MARKER, Store
 
 SCHEMA = "wb.lab.session/1"
@@ -376,6 +386,8 @@ class Session:
             if not p.get("driver") or p["driver"] not in drivers:
                 raise ParamError(f"driver: name one the launch declares ({', '.join(sorted(drivers)) or 'none'})")
             machines.require_trusted(ctx, str(launch.get("project") or ""), f"driver {p['driver']}")
+        if p.get("fresh_world") and p.get("keep_world"):
+            raise ParamError("fresh_world and keep_world ask for two worlds: give one")
         if p.get("desktop") not in (None, *DESKTOPS):
             raise ParamError(f"desktop: {p['desktop']!r} is none of hidden or empty (the person's own desktop)")
         if p.get("desktop") == "hidden" and not desktops.available():
@@ -391,9 +403,9 @@ class Session:
             folder = self._fresh_copy(root, folder, receipt)
             receipt = json.loads((folder / instances.RECEIPT).read_text(encoding="utf-8"))
         self.instance, self.receipt, self.launch = folder, receipt, launch
-        # The base's view keys and ready line as the receipt carries them; a receipt from before it did, the interim's.
-        session_part = receipt.get("session") or {}
-        self.base = session_part if "views" in session_part else INTERIM_BASES.get(receipt.get("base") or "", {})
+        self.worlds, self.world_id, self.world = worlds.store_of(root), worlds.identity(receipt, launch), None
+        # The base's view keys and ready line as the receipt carries them (a receipt from before it did has none).
+        self.base = receipt.get("session") or {}
         ctx.progress("session", msg=f"session {self.id}: {kind} on {folder.name}")
         ctx.log.info(f"session {self.id}  kind {kind}")
         ctx.log.info(f"launch    {launch.get('project')}:{launch.get('launch')} at {str(launch.get('commit'))[:12]} "
@@ -498,10 +510,11 @@ class Session:
             "inputs": {"port": self.port, "jvm": self.jvm, "view": dict(self.p.get("view") or {}),
                        "edits": [f"{side}/{file}:{key}={value}" for side, file, key, value in self.edits],
                        "window": self.window or None, "debug": self.p.get("debug") or None,
-                       "fresh_world": bool(self.p.get("fresh_world")), "limit": self.p.get("limit"),
+                       "fresh_world": bool(self.p.get("fresh_world")), "keep_world": bool(self.p.get("keep_world")),
+                       "limit": self.p.get("limit"),
                        "tour": {k: self.tour[k] for k in ("file", "sha256")} if self.tour else None,
                        "driver": self.p.get("driver") or None, "desktop": self.p.get("desktop") or None},
-            "debug": self.debug or None, "desktop": None,
+            "debug": self.debug or None, "desktop": None, "world": None,
             "channel": {"folder": str(self.channel), "requests": []},
             "commands": {}, "timings": self.timings, "exit": {}, "failure": None, "tour": None, "kept": None,
         }
@@ -530,12 +543,41 @@ class Session:
         for side, file, key, value in self.edits:
             path = folder / side / file
             self._edit(path, lambda text, k=key, v=value, n=path.name: set_key(text, k, v, n))
-        if self.p.get("fresh_world"):
-            world = folder / "server" / "world"
-            if world.exists():
-                shutil.rmtree(world)
+        self.choose_world()
         for side in SIDES:
             (folder / side / "java-tmp").mkdir(parents=True, exist_ok=True)
+
+    # -- the world ----------------------------------------------------------------------------------------------------
+    def choose_world(self):
+        """The world this session plays, by its choice (wb_lab.worlds): the instance's own, the store's settled world
+        of its key and writer, or a fresh one (removed link-first)."""
+        choice = "fresh" if self.p.get("fresh_world") else "keep" if self.p.get("keep_world") else ""
+        self.world = worlds.choose(self.worlds, self.instance, self.world_id, choice, self.receipt.get("world"))
+        key = self.world["key"]
+        writer = self.world["writer"]
+        self.ctx.log.info(f"world     {self.world['from']}" + (f" {self.world['label']}" if self.world["label"] else "")
+                          + f" (seed {key['seed']}, scale {key['scale']}, definitions {key['definitions'][:12]}; "
+                          f"written by {writer['member'] or 'the members'} {writer['sha256'][:12]})")
+        if self.world["hint"]:
+            self.ctx.log.warning(f"world: {self.world['hint']}")
+        self.record["world"] = self.world
+        write_json(self.folder / SESSION, self.record)
+
+    def settle_world(self, outcome: str):
+        """After the stop: what the instance's world now is, kept in the store by an open or tour session whose server
+        stopped by itself."""
+        if self.world is None:
+            return
+        settled = outcome == "ended" and (self.record.get("stop") or {}).get("how") == "stop"
+        try:
+            self.world = worlds.after(self.worlds, self.instance, self.world_id, self.world, session=self.id,
+                                      settled=settled, keeps=self.p["kind"] in ("open", "tour"))
+        except OSError as error:
+            self.ctx.finding(f"the world of {self.instance.name} could not be kept: {error}")
+            return
+        if self.world.get("kept"):
+            self.ctx.log.info(f"world     kept as {self.world['kept']} for its key and writer")
+        self.record["world"] = self.world
 
     def put_back(self):
         for path, data in self.restore.items():
@@ -745,6 +787,8 @@ class Session:
                   "session_id": self.id,
                   "launch": str(self.folder / "launch.json"), "instance_json": str(self.instance / instances.RECEIPT),
                   "root": str(self.p.get("driver_root") or self.instance), "channel": str(self.channel)}
+        if self.p.get("desktop") == "hidden":
+            values.update(self.driver_desktop())
         argv = [instances._fill_known(str(item), values) for item in command]
         env = {**self.env(), **self.driver_env()}
         cwd = Path(instances._fill_known(str(driver.get("cwd") or "{root}"), values))
@@ -752,13 +796,43 @@ class Session:
         self.ctx.progress("driver", msg=" ".join(argv[:3]))
         limit = float(self.p.get("limit") or 4 * 3600)
         self.mark("driver_start")
-        done = processes.run(self.ctx, argv, cwd=cwd, timeout=limit, env=env)
+        watching = threading.Event()
+        watcher = threading.Thread(target=self._watch_desktop, args=(watching,), name="desktop", daemon=True)
+        if self.desktop is not None:  # which desktop has the input, while the driver runs its client on this one
+            watcher.start()
+        try:
+            done = processes.run(self.ctx, argv, cwd=cwd, timeout=limit, env=env)
+        finally:
+            watching.set()
+            if watcher.is_alive():
+                watcher.join(10)
         (self.folder / "driver.log").write_text(done.output, encoding="utf-8")
         self.record["exit"]["driver"] = done.code
         if done.code is None:
             raise Failed(f"the driver did not end within {processes.span(limit)}; stopped", "driver")
         if done.code != 0:
             raise Failed(f"the driver exited {done.code}", "driver")
+
+    def driver_desktop(self) -> dict[str, str]:
+        """The hidden desktop a driver starts its client on: made for the session, named to the driver (``{desktop}``,
+        ``WB_DESKTOP``) with the launcher that starts a command there (``{desktop_launcher}``,
+        ``WB_DESKTOP_LAUNCHER``: ``python -I <it> --desktop <name> -- <command>``, wb_lab.desktop)."""
+        try:
+            self.desktop = desktops.HiddenDesktop().__enter__()
+        except OSError as error:
+            raise EnvironmentProblem(f"the driver's hidden desktop could not be made: {error}; nothing falls back to "
+                                     "the person's desktop") from None
+        self.record["desktop"] = self.desktop.record()
+        write_json(self.folder / SESSION, self.record)
+        self.ctx.log.info(f"desktop   {self.desktop.name} (hidden): the driver starts its client there")
+        return {"desktop": self.desktop.name, "desktop_launcher": str(Path(desktops.__file__).resolve())}
+
+    def _watch_desktop(self, stop: threading.Event):
+        while not stop.wait(OBSERVE):
+            try:
+                self.desktop.observe()
+            except OSError:
+                pass
 
     def driver_env(self) -> dict[str, str]:
         values = {"token": os.environ.get("WB_TURN_TOKEN", ""), "lane": os.environ.get("WB_TURN_LANE", ""),
@@ -767,6 +841,8 @@ class Session:
                   "launch": str(self.folder / "launch.json"), "cache": str(self.roots["cache"]),
                   "channel": str(self.channel)}
         out = {name: values[key] for key, name in ENV.items()}
+        if self.desktop is not None:  # a driver session on a hidden desktop: where its client goes
+            out.update(WB_DESKTOP=self.desktop.name, WB_DESKTOP_LAUNCHER=str(Path(desktops.__file__).resolve()))
         for name, key in (machines.lab(self.ctx)["env"] or {}).items():
             out[name] = values[key]
         return out
@@ -837,6 +913,7 @@ class Session:
                         + f"; then wb play --from {self.folder / 'launch.json'} --name {target} --debug=client"}
 
     def close(self, outcome: str):
+        self.settle_world(outcome)
         self.record.update(state=outcome, ended=now(), timings=self.timings)
         if self.relay is not None:
             self.relay.pump(post_next=False)  # an answer the fixture wrote as the game ended (a quit's)
@@ -857,8 +934,8 @@ def _position(view: dict) -> str:
 def run(ctx: Context, instance: str, kind: str = "open", tour: str | None = None, launch: str | None = None,
         copy: bool = True, driver: str = "", driver_root: str | None = None, port: int = 0, jvm: list | None = None,
         view: dict | None = None, edits: list | None = None, window: str = "", debug: str = "",
-        fresh_world: bool = False, limit: float = 4 * 3600, jdk: str | None = None, session: str = "",
-        no_rebuild: bool = False, desktop: str = ""):
+        fresh_world: bool = False, keep_world: bool = False, limit: float = 4 * 3600, jdk: str | None = None,
+        session: str = "", no_rebuild: bool = False, desktop: str = ""):
     params = {k: v for k, v in locals().items() if k != "ctx"}
     session_ = Session(ctx, params)
     session_.open()
