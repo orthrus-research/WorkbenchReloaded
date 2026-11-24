@@ -27,7 +27,10 @@ its ``client`` lines one at a time and records each answer in session.json; lab.
 
 ``desktop=hidden`` (Windows) starts the client on a hidden desktop of its own (``wb_lab.desktop``): the game runs and
 draws there but never takes the input, focus, keyboard or mouse; session.json records the desktop, the window classes
-the client opened on it and that it never had the input. A desktop that cannot be made refuses the session.
+the client opened on it and that it never had the input. A desktop that cannot be made refuses the session. A driver
+session makes the desktop for the client its driver starts: the driver gets its name in ``WB_DESKTOP`` (``{desktop}``
+in its command line) and the launcher that starts a command there in ``WB_DESKTOP_LAUNCHER``
+(``{desktop_launcher}``: ``python -I <launcher> --desktop <name> -- <command>``, or ``wb_lab.desktop.start_on``).
 
 Before anything starts the session checks the instance against its receipt: every file under ``{cache}`` and
 ``{jdk:N}`` and every placed member by SHA-256. The JDK is found by the build the receipt names (the Store's, or the
@@ -60,6 +63,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -783,6 +787,8 @@ class Session:
                   "session_id": self.id,
                   "launch": str(self.folder / "launch.json"), "instance_json": str(self.instance / instances.RECEIPT),
                   "root": str(self.p.get("driver_root") or self.instance), "channel": str(self.channel)}
+        if self.p.get("desktop") == "hidden":
+            values.update(self.driver_desktop())
         argv = [instances._fill_known(str(item), values) for item in command]
         env = {**self.env(), **self.driver_env()}
         cwd = Path(instances._fill_known(str(driver.get("cwd") or "{root}"), values))
@@ -790,13 +796,43 @@ class Session:
         self.ctx.progress("driver", msg=" ".join(argv[:3]))
         limit = float(self.p.get("limit") or 4 * 3600)
         self.mark("driver_start")
-        done = processes.run(self.ctx, argv, cwd=cwd, timeout=limit, env=env)
+        watching = threading.Event()
+        watcher = threading.Thread(target=self._watch_desktop, args=(watching,), name="desktop", daemon=True)
+        if self.desktop is not None:  # which desktop has the input, while the driver runs its client on this one
+            watcher.start()
+        try:
+            done = processes.run(self.ctx, argv, cwd=cwd, timeout=limit, env=env)
+        finally:
+            watching.set()
+            if watcher.is_alive():
+                watcher.join(10)
         (self.folder / "driver.log").write_text(done.output, encoding="utf-8")
         self.record["exit"]["driver"] = done.code
         if done.code is None:
             raise Failed(f"the driver did not end within {processes.span(limit)}; stopped", "driver")
         if done.code != 0:
             raise Failed(f"the driver exited {done.code}", "driver")
+
+    def driver_desktop(self) -> dict[str, str]:
+        """The hidden desktop a driver starts its client on: made for the session, named to the driver (``{desktop}``,
+        ``WB_DESKTOP``) with the launcher that starts a command there (``{desktop_launcher}``,
+        ``WB_DESKTOP_LAUNCHER``: ``python -I <it> --desktop <name> -- <command>``, wb_lab.desktop)."""
+        try:
+            self.desktop = desktops.HiddenDesktop().__enter__()
+        except OSError as error:
+            raise EnvironmentProblem(f"the driver's hidden desktop could not be made: {error}; nothing falls back to "
+                                     "the person's desktop") from None
+        self.record["desktop"] = self.desktop.record()
+        write_json(self.folder / SESSION, self.record)
+        self.ctx.log.info(f"desktop   {self.desktop.name} (hidden): the driver starts its client there")
+        return {"desktop": self.desktop.name, "desktop_launcher": str(Path(desktops.__file__).resolve())}
+
+    def _watch_desktop(self, stop: threading.Event):
+        while not stop.wait(OBSERVE):
+            try:
+                self.desktop.observe()
+            except OSError:
+                pass
 
     def driver_env(self) -> dict[str, str]:
         values = {"token": os.environ.get("WB_TURN_TOKEN", ""), "lane": os.environ.get("WB_TURN_LANE", ""),
@@ -805,6 +841,8 @@ class Session:
                   "launch": str(self.folder / "launch.json"), "cache": str(self.roots["cache"]),
                   "channel": str(self.channel)}
         out = {name: values[key] for key, name in ENV.items()}
+        if self.desktop is not None:  # a driver session on a hidden desktop: where its client goes
+            out.update(WB_DESKTOP=self.desktop.name, WB_DESKTOP_LAUNCHER=str(Path(desktops.__file__).resolve()))
         for name, key in (machines.lab(self.ctx)["env"] or {}).items():
             out[name] = values[key]
         return out

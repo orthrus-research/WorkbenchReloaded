@@ -5,12 +5,24 @@ The desktop is made without the right to switch to it, and nothing here calls a 
 function; when it cannot be made, the session refuses rather than fall back to the person's desktop. A process
 started on it is placed in a job object before it runs, so killing it kills everything it started, and its console
 comes back on a pipe, as ``subprocess.Popen``'s would: a session reads it the same way. The desktop notes which
-desktop had the input each time it is asked (``observe``), and which windows each of its processes opened on it
+desktop had the input each time it is asked (``observe``), and which windows were opened on it, by which process
 (``windows``), so a session can record that the game was on it and that it never had the input.
+
+A driver session (lab.run ``kind=driver desktop=hidden``) makes the desktop and gives the driver its name in
+``WB_DESKTOP`` and this file's path in ``WB_DESKTOP_LAUNCHER``; the driver starts the client it runs there, either
+with this file as a program, which needs nothing but the standard library::
+
+    python -I $WB_DESKTOP_LAUNCHER --desktop $WB_DESKTOP [--cwd DIR] -- <client command line>
+
+(the client's console comes back on its standard output and its exit status is the launcher's; a killed launcher
+kills the client), or, from Python with this file's folder's parent on ``sys.path``,
+``wb_lab.desktop.start_on(name, args, cwd=..., env=...)``. Only a trusted project's driver runs, and the desktop
+lives as long as the session.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -177,20 +189,20 @@ class HiddenDesktop:
         return self
 
     def observe(self):
-        """Notes the desktop that has the input now and the windows this desktop's processes opened on it."""
+        """Notes the desktop that has the input now and the windows opened on this desktop, by process: its own
+        processes' and those a driver started on it by its name."""
         current = input_desktop()
         if current is None:
             self.input_unknown = True
         elif current not in self.input_seen:
             self.input_seen.append(current)
-        if self._handle and self.processes:
-            pids = {p.pid for p in self.processes}
+        if self._handle:
 
             @ENUM_WINDOWS
             def one(hwnd, _):
                 owner = W.DWORD()
                 _user.GetWindowThreadProcessId(hwnd, C.byref(owner))
-                if owner.value in pids:
+                if owner.value:
                     name = C.create_unicode_buffer(256)
                     if _user.GetClassNameW(hwnd, name, len(name)):
                         seen = self._windows.setdefault(owner.value, [])
@@ -214,51 +226,7 @@ class HiddenDesktop:
 
     def start(self, args: list, *, cwd, env: dict) -> DesktopProcess:
         """Starts ``args`` on this desktop, hidden, in a job of its own, with its console on a pipe."""
-        info = PROCESS_INFORMATION()
-        job = _checked(_kernel.CreateJobObjectW(None, None))
-        limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        _checked(_kernel.SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS, C.byref(limits),
-                                                 C.sizeof(limits)))
-        block = C.create_unicode_buffer(environment_block({str(k): str(v) for k, v in env.items()}))
-        read_end, write_end = os.pipe()
-        nothing = open(os.devnull, "rb")
-        try:
-            out_handle, in_handle = msvcrt.get_osfhandle(write_end), msvcrt.get_osfhandle(nothing.fileno())
-            os.set_handle_inheritable(out_handle, True)
-            os.set_handle_inheritable(in_handle, True)
-            try:
-                startup = STARTUPINFO()
-                startup.cb = C.sizeof(startup)
-                startup.lpDesktop = "WinSta0\\" + self.name
-                startup.dwFlags = STARTF_USESTDHANDLES | STARTF_FORCEOFFFEEDBACK | STARTF_USESHOWWINDOW
-                startup.wShowWindow = 0
-                startup.hStdInput, startup.hStdOutput, startup.hStdError = in_handle, out_handle, out_handle
-                line = C.create_unicode_buffer(subprocess.list2cmdline([str(a) for a in args]))
-                _checked(_kernel.CreateProcessW(None, line, None, None, True,
-                                                CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
-                                                block, str(cwd), C.byref(startup), C.byref(info)))
-            finally:
-                os.set_handle_inheritable(out_handle, False)
-                os.set_handle_inheritable(in_handle, False)
-        except BaseException:
-            os.close(read_end)
-            _kernel.CloseHandle(job)
-            raise
-        finally:
-            os.close(write_end)  # the child holds the only write end, so its exit ends the console
-            nothing.close()
-        try:  # in its job before it runs a single instruction, so nothing it starts escapes the job
-            _checked(_kernel.AssignProcessToJobObject(job, info.hProcess))
-            _kernel.ResumeThread(info.hThread)
-        except OSError:
-            _kernel.TerminateJobObject(job, 1)
-            os.close(read_end)
-            raise
-        finally:
-            _kernel.CloseHandle(info.hThread)
-        stdout = open(read_end, "r", encoding="utf-8", errors="replace")
-        process = DesktopProcess(info, job, stdout)
+        process = start_on(self.name, args, cwd=cwd, env=env)
         self.processes.append(process)
         self.observe()
         return process
@@ -276,3 +244,88 @@ class HiddenDesktop:
         if self._handle:
             _user.CloseDesktop(self._handle)
             self._handle = None
+
+
+def start_on(desktop: str, args: list, *, cwd, env: dict) -> DesktopProcess:
+    """Starts ``args`` on the desktop named ``desktop`` (one a session made, which this process may use), hidden, in a
+    job of its own that kills everything it starts when it is closed, with its console on a pipe."""
+    if not available():
+        raise OSError("a hidden desktop is a Windows feature")
+    info = PROCESS_INFORMATION()
+    job = _checked(_kernel.CreateJobObjectW(None, None))
+    limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    _checked(_kernel.SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS, C.byref(limits),
+                                             C.sizeof(limits)))
+    block = C.create_unicode_buffer(environment_block({str(k): str(v) for k, v in env.items()}))
+    read_end, write_end = os.pipe()
+    nothing = open(os.devnull, "rb")
+    try:
+        out_handle, in_handle = msvcrt.get_osfhandle(write_end), msvcrt.get_osfhandle(nothing.fileno())
+        os.set_handle_inheritable(out_handle, True)
+        os.set_handle_inheritable(in_handle, True)
+        try:
+            startup = STARTUPINFO()
+            startup.cb = C.sizeof(startup)
+            startup.lpDesktop = "WinSta0\\" + desktop
+            startup.dwFlags = STARTF_USESTDHANDLES | STARTF_FORCEOFFFEEDBACK | STARTF_USESHOWWINDOW
+            startup.wShowWindow = 0
+            startup.hStdInput, startup.hStdOutput, startup.hStdError = in_handle, out_handle, out_handle
+            line = C.create_unicode_buffer(subprocess.list2cmdline([str(a) for a in args]))
+            _checked(_kernel.CreateProcessW(None, line, None, None, True,
+                                            CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
+                                            block, str(cwd), C.byref(startup), C.byref(info)))
+        finally:
+            os.set_handle_inheritable(out_handle, False)
+            os.set_handle_inheritable(in_handle, False)
+    except BaseException:
+        os.close(read_end)
+        _kernel.CloseHandle(job)
+        raise
+    finally:
+        os.close(write_end)  # the child holds the only write end, so its exit ends the console
+        nothing.close()
+    try:  # in its job before it runs a single instruction, so nothing it starts escapes the job
+        _checked(_kernel.AssignProcessToJobObject(job, info.hProcess))
+        _kernel.ResumeThread(info.hThread)
+    except OSError:
+        _kernel.TerminateJobObject(job, 1)
+        os.close(read_end)
+        raise
+    finally:
+        _kernel.CloseHandle(info.hThread)
+    stdout = open(read_end, "r", encoding="utf-8", errors="replace")
+    return DesktopProcess(info, job, stdout)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """The launcher a driver runs: ``desktop.py --desktop NAME [--cwd DIR] -- COMMAND...`` starts the command on the
+    hidden desktop NAME, writes its console to standard output as it comes, and exits with its status."""
+    parser = argparse.ArgumentParser(prog="desktop.py", description=main.__doc__)
+    parser.add_argument("--desktop", default=os.environ.get("WB_DESKTOP", ""),
+                        help="the hidden desktop's name (default: WB_DESKTOP)")
+    parser.add_argument("--cwd", default=os.getcwd(), help="the command's working folder")
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args(argv)
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if not args.desktop or not command:
+        parser.error("give --desktop NAME (or WB_DESKTOP) and a command after --")
+    try:
+        process = start_on(args.desktop, command, cwd=args.cwd, env=dict(os.environ))
+    except OSError as error:
+        print(f"desktop.py: {command[0]} could not be started on desktop {args.desktop}: {error}", file=sys.stderr)
+        return 127
+    try:
+        for line in process.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        return process.wait()
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        process.kill()  # a launcher that ends, however it ends, takes the client with it
+        process.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -22,7 +22,8 @@ world written by another build is set aside, and the play prints the --keep-worl
 wb-host would run them: the job id, launch file, instance and session folder are printed at once, the consoles are
 streamed, and a failure prints the decisive line, the crash report and the next command. With --desktop hidden
 (Windows) the client runs on a hidden desktop of its own that never takes the input, so a session, an open one
-included, never takes the person's focus; an open session's commands.txt then reaches the client's fixture by its
+included, never takes the person's focus (a driver starts its client there by the desktop's name and launcher, which
+it gets in WB_DESKTOP and WB_DESKTOP_LAUNCHER); an open session's commands.txt then reaches the client's fixture by its
 'client <action> [<JSON>]' lines.
 """
 

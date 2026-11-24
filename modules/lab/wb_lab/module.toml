@@ -177,7 +177,7 @@ params.limit = { type = "duration", default = "4h", min = "10s", max = "12h", su
 params.jdk = { type = "path.in", optional = true, summary = "a JDK home to run on instead of the Store's; it must be the receipt's build" }
 params.session = { type = "string", default = "", summary = "the session's id; empty: a new one" }
 params.no_rebuild = { type = "bool", default = false, summary = "the play did not rebuild members compiled against other bytes: the session is not evidence" }
-params.desktop = { type = "enum", values = ["", "hidden"], default = "", summary = "hidden: start the client on a hidden Windows desktop of its own, where it runs and draws but never takes the input; session.json records the desktop and its windows" }
+params.desktop = { type = "enum", values = ["", "hidden"], default = "", summary = "hidden: start the client on a hidden Windows desktop of its own, where it runs and draws but never takes the input; a driver gets the desktop's name (WB_DESKTOP, {desktop}) and the launcher that starts its client there (WB_DESKTOP_LAUNCHER, {desktop_launcher}); session.json records the desktop and its windows" }
 result.session = { type = "string" }
 result.folder = { type = "string" }
 result.instance = { type = "string" }

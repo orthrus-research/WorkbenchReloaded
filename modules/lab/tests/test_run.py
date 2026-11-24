@@ -135,7 +135,8 @@ class Sessions(unittest.TestCase):
             "jvm": {"client": ["-Dgame.mode=own"], "server": []}, "collect": [], "failures": [r"Description: "],
             "params": {}, "tour": {"setup": ["time set 6000"], "client_jvm": ["-Dgame.tour=true"],
                                    "captured": "Game view captured", "leave_seconds": 0},
-            "drivers": {"probe": {"command": ["{python}", "{root}/driver.py", "{instance_json}", "{session_id}"]}}}
+            "drivers": {"probe": {"command": ["{python}", "{root}/driver.py", "{instance_json}", "{session_id}"]},
+                        "hidden": {"command": ["{python}", "{root}/hidden.py", "{desktop}", "{desktop_launcher}"]}}}
         self.config = {"instances": str(self.root / "instances"), "runtime_cache": str(self.cache),
                        "sessions": str(self.root / "sessions")}
         self.lab = {"trusted": ["game"], "env": {"OLD_TURN": "token"}}
@@ -522,6 +523,47 @@ class Sessions(unittest.TestCase):
         self.lab["trusted"] = []
         with self.assertRaisesRegex(ParamError, "not in \\[lab\\] trusted"):
             self.play(kind="driver", driver="probe", driver_root=str(root), label="untrusted")
+
+    @unittest.skipUnless(desktops.available(), "a hidden desktop is a Windows feature")
+    def test_a_driver_starts_its_client_on_the_sessions_hidden_desktop(self):
+        root = self.root / "project"
+        root.mkdir()
+        # the "client": says which desktop its thread is on, then exits 3
+        (root / "client.py").write_text(
+            "import ctypes, sys\n"
+            "from ctypes import wintypes as W\n"
+            "user, kernel = ctypes.WinDLL('user32'), ctypes.WinDLL('kernel32')\n"
+            "user.GetThreadDesktop.restype = W.HANDLE\n"
+            "user.GetUserObjectInformationW.argtypes = [W.HANDLE, ctypes.c_int, ctypes.c_void_p, W.DWORD,"
+            " ctypes.POINTER(W.DWORD)]\n"
+            "handle = user.GetThreadDesktop(kernel.GetCurrentThreadId())\n"
+            "name, needed = ctypes.create_unicode_buffer(256), W.DWORD()\n"
+            "user.GetUserObjectInformationW(handle, 2, name, ctypes.sizeof(name), ctypes.byref(needed))\n"
+            "print('on', name.value, flush=True)\n"
+            "sys.exit(3)\n", encoding="utf-8")
+        # the driver: starts the client by the launcher the session names, as a MenuMod script would
+        (root / "hidden.py").write_text(
+            "import json, os, subprocess, sys\n"
+            "desktop, launcher = sys.argv[1], sys.argv[2]\n"
+            "done = subprocess.run([sys.executable, '-I', launcher, '--desktop', desktop, '--', sys.executable,"
+            " os.path.join(os.path.dirname(__file__), 'client.py')], capture_output=True, text=True)\n"
+            "json.dump({'desktop': desktop, 'env': os.environ.get('WB_DESKTOP'),"
+            " 'launcher': os.environ.get('WB_DESKTOP_LAUNCHER') == launcher, 'out': done.stdout,"
+            " 'code': done.returncode}, open(os.path.join(os.environ['WB_SESSION'], 'seen.json'), 'w'))\n",
+            encoding="utf-8")
+        ctx, result, record = self.play(kind="driver", driver="hidden", driver_root=str(root), desktop="hidden")
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        seen = json.loads((Path(result["folder"]) / "seen.json").read_text())
+        self.assertTrue(seen["desktop"].startswith("wb-session-"))
+        self.assertEqual((seen["env"], seen["launcher"]), (seen["desktop"], True))
+        self.assertEqual(seen["out"].strip(), f"on {seen['desktop']}")  # the client ran there, its console relayed
+        self.assertEqual(seen["code"], 3)  # and its status is the launcher's
+        self.assertEqual(record["desktop"]["name"], seen["desktop"])
+        self.assertTrue(record["desktop"]["never_input"])
+        self.assertEqual(record["inputs"]["desktop"], "hidden")
+        # without desktop=hidden a driver gets no desktop
+        ctx, result, record = self.play(kind="driver", driver="hidden", driver_root=str(root), label="plain")
+        self.assertIsNone(record["desktop"])
 
     # -- the debugger -------------------------------------------------------------------------------------------
     def test_debug_opens_jdwp_writes_the_attach_configuration_and_is_not_evidence(self):

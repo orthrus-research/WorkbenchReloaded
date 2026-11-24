@@ -103,6 +103,11 @@
   and keeps the world it generated in the template, so every instance starts warm; the receipt's `world` names its
   key and writer, and a settled world in the store takes its place. `lab.build prime=yes|no` decides instead; it
   needs the EULA accepted, and a template without one keeps the key it had.
+- A driver session gets the hidden desktop too (`lab.run kind=driver desktop=hidden`, `wb play --driver D --desktop
+  hidden`): the session makes it and gives the driver its name (`WB_DESKTOP`, `{desktop}`) and a launcher
+  (`WB_DESKTOP_LAUNCHER`, `{desktop_launcher}`: `python -I <launcher> --desktop <name> -- <command>`, or
+  `wb_lab.desktop.start_on`) that starts its client there with its console relayed, so scripts that started the game
+  on a background desktop of their own can become drivers. session.json records the desktop and every window on it.
 - `lab.freeze` keeps the old route's instances as read-only evidence (a manifest, the world by world key, tours/
   and runs/ as a kept session), never following a link; `lab.thaw` undoes it. lab.build finds its instances under
   `[lab] home` when `[modules.lab] instances` is not set, as lab.run does its sessions.
