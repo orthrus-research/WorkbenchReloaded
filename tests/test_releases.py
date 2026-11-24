@@ -82,16 +82,25 @@ class Releases(unittest.TestCase):
         self.assertEqual((releases.current(self.config) / "bin" / "wb").read_text(encoding="utf-8"), "two\n")
         self.assertEqual((one / "bin" / "wb").read_text(encoding="utf-8"), "one\n")
 
-    def test_prune_keeps_the_newest_and_the_one_in_service(self):
+    def test_gc_lists_every_release_but_the_one_in_service_and_the_one_before_it(self):
+        from wb import gc
         one = releases.make(self.config, self.repo, self.first, {})
         time.sleep(0.05)
         two = releases.make(self.config, self.repo, self.second, {})
         releases.point(self.config, one)
-        self.assertEqual(releases.prune(self.config, keep=1), [])  # the newest, and the one in service
+        places = gc.Places(releases=releases.root(self.config))
+        self.assertEqual(gc.release_folders(places, gc.roots(places)), [])  # the one in service, and the newest
         releases.point(self.config, two)
-        self.assertEqual(releases.prune(self.config, keep=1), [one.name])
+        listed = gc.release_folders(gc.Places(releases=releases.root(self.config), previous_release=one.name),
+                                    gc.roots(places))
+        self.assertEqual(listed, [])  # two in service, one before it
+        three = releases.root(self.config) / ("3" * 12)  # a third commit's release
+        three.mkdir()
+        (three / "RELEASE.json").write_text(json.dumps({"made_at": time.time()}), encoding="utf-8")
+        releases.point(self.config, three)
+        places = gc.Places(releases=releases.root(self.config), previous_release=two.name)
+        self.assertEqual([i.path for i in gc.release_folders(places, gc.roots(places))], [str(one)])
         self.assertTrue(two.is_dir())
-
 
 if __name__ == "__main__":
     unittest.main()

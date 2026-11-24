@@ -40,6 +40,12 @@
 - Third entries: `wb land --third` fetches a file by Maven coordinate from an allowed host, or, for a file with no
   Maven publication, takes the one JAR dropped in `<out>/third/<name>/`, seeds it into the Store with its source,
   and lands it by SHA-256 with its licence.
+- `wb gc` replaces `wb prune`: each kind of thing Workbench creates has a retention rule (`wb gc --rules`); the
+  list names every item, its class, size and reason, with a digest, and `wb gc --yes <digest>` removes exactly
+  that list or nothing. Pass records, set exports and every byte a set names, seeded and indexed Store files and
+  kept sessions are never listed. Lab-home items go only under the GPU lease; `wb gc --nightly` removes the
+  unattended classes only. Folders are removed with every link in them unlinked first. Old releases are gc's
+  (all but the one in service and the one before it), no longer removed by `wb deploy`.
 - `lab.resolve`: a project's `[launch.<name>]` resolved once into launch.json, every member by SHA-256 from the
   worktree's set revision and the project itself from the Store; two builds of one mod id are refused.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,

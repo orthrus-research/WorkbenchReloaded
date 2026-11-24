@@ -351,10 +351,19 @@ def config_reload(h: Handler, query):
     h._send(200, h.server.workbench.reload_config())
 
 
-@route("POST", r"/v1/prune")
-def prune(h: Handler, query):
+@route("GET", r"/v1/gc")
+def gc_list(h: Handler, query):
+    h._send(200, h.server.workbench.gc_list())
+
+
+@route("POST", r"/v1/gc")
+def gc_remove(h: Handler, query):
     body = h._body()
-    h._send(200, h.server.workbench.prune(dry_run=body.get("dry_run", True) is not False))
+    wanted = body.get("remove")
+    if not isinstance(wanted, list) or not all(isinstance(w, dict) for w in wanted):
+        h._send(400, {"error": "remove must be a list of the items GET /v1/gc listed"})
+        return
+    h._send(200, h.server.workbench.gc_remove(wanted))
 
 
 def serve(workbench: Workbench, listen: str, port: int, token: str | None, *, host_check: bool = True,

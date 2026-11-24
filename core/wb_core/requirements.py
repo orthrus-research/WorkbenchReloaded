@@ -135,7 +135,7 @@ class Checker:
         free = shutil.disk_usage(folder).free / 1e9
         if free < float(gigabytes):
             return [Reason("disk", f"{gigabytes} GB", f"{free:.1f} GB free in the state volume",
-                           "run `wb prune` or free space")]
+                           "run `wb gc` (it lists first) or free space")]
         return []
 
     def _host(self, value, module):

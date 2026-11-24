@@ -1244,30 +1244,18 @@ class Workbench:
         return path
 
     # ------------------------------------------------------------------------------------------
-    # retention (D26)
-    def prune(self, dry_run: bool = True) -> dict:
-        from .logs import prune as prune_logs
-        days = self.settings.core["retention"]["days"]
-        cutoff = time.time() - days * 86400
-        work_dirs = []
-        pinned = {r["job"] for r in self.db.query("SELECT job FROM artifact WHERE pinned = 1")}
-        for row in self.db.query("SELECT id FROM job WHERE state IN ('settled', 'cancelled', 'interrupted') "
-                                 "AND settled < ?", (cutoff,)):
-            folder = self.state / "jobs" / row["id"]
-            if folder.exists() and row["id"] not in pinned:
-                work_dirs.append(str(folder))
-                if not dry_run:
-                    shutil.rmtree(folder, ignore_errors=True)
-        store = []
-        referenced = {r["sha256"] for r in self.db.query("SELECT sha256 FROM artifact a JOIN job j ON j.id = a.job "
-                                                          "WHERE j.settled >= ? OR a.pinned = 1", (cutoff,))}
-        for path in (self.state / "store").rglob("*") if (self.state / "store").exists() else []:
-            if path.is_file() and path.name not in referenced and path.stat().st_mtime < cutoff:
-                store.append(str(path))
-                if not dry_run:
-                    path.unlink()
-        logs = prune_logs(self.state, days, dry_run)
-        return {"dry_run": dry_run, "days": days, "job_dirs": work_dirs, "store": store, "logs": logs}
+    # retention: the daemon's classes of wb gc (wb_core.retention)
+    def gc_list(self) -> dict:
+        from . import retention
+        items = retention.daemon_items(self.state, self.db, self.settings.core["retention"]["days"])
+        return {"rules": [vars(r) for r in retention.DAEMON_RULES], "items": [i.as_dict() for i in items],
+                "digest": retention.digest(items)}
+
+    def gc_remove(self, wanted: list) -> dict:
+        """Removes exactly ``wanted`` (items as gc_list gave them), or nothing when any of them changed."""
+        from . import retention
+        current = retention.daemon_items(self.state, self.db, self.settings.core["retention"]["days"])
+        return retention.remove_listed(current, [retention.item_from(w) for w in wanted])
 
 
 def default_prompt(command: Command, quote: dict) -> dict:

@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -263,25 +262,7 @@ def remove(snapshot: Path, repo: Path | None = None) -> None:
     then the rest (read-only files too, and paths past Windows' 260 characters), and the repository's record of the
     worktree."""
     from wb import platform
-    if not snapshot.exists():
-        if repo is not None:
-            _git(["-C", str(repo), "worktree", "prune"], check=False)
-        return
-    folders = [snapshot]
-    while folders:
-        for entry in os.scandir(folders.pop()):
-            path = Path(entry.path)
-            if platform.is_link(path):
-                platform.remove_link(path)
-            elif entry.is_dir(follow_symlinks=False):
-                folders.append(path)
-
-    def writable(function, path, _):
-        os.chmod(path, 0o700)
-        function(path)
-
-    long = "\\\\?\\" + str(snapshot.resolve()) if os.name == "nt" else str(snapshot)
-    shutil.rmtree(long, onexc=writable)
+    platform.remove_tree(snapshot)
     if repo is not None:
         _git(["-C", str(repo), "worktree", "prune"], check=False)
 

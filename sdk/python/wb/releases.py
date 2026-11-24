@@ -4,6 +4,8 @@ that a merge cannot change under them.
     <releases>/<commit12>/      what ``git archive <commit>`` holds, plus RELEASE.json (commit, tree, tests, override)
     <releases>/current          a link to the release in service; wb deploy moves it last
 
+Old releases are wb gc's class ``releases``: every release but the one in service and the one deployed before it.
+
 <releases> is WB_RELEASES, else ~/.local/share/wb/releases (never the config folder, whose folders are all read as
 config, and not AppData, which a packaged app redirects). git config
 wb.cli names <releases>/current/bin/wb, so a hook always runs the deployed release, never a working tree; a working
@@ -22,7 +24,6 @@ from pathlib import Path
 
 from . import config as wbconfig
 
-KEEP = 10
 
 
 def root(config) -> Path:
@@ -86,25 +87,3 @@ def point(config, release: Path) -> Path | None:
     else:
         os.symlink(release, link, target_is_directory=True)
     return before
-
-
-def prune(config, keep: int = KEEP) -> list[str]:
-    """Removes releases past the newest ``keep``, never the one in service or the one before it."""
-    folder = root(config)
-    link = current(config)
-    serving = Path(os.path.realpath(link)) if link.exists() else None
-    def made_at(path: Path) -> float:
-        try:
-            return float(json.loads((path / "RELEASE.json").read_text(encoding="utf-8")).get("made_at") or 0)
-        except (OSError, ValueError):
-            return 0.0
-
-    made = sorted((p for p in folder.iterdir() if p.is_dir() and not _is_link(p) and (p / "RELEASE.json").is_file()),
-                  key=made_at, reverse=True)
-    removed = []
-    for old in made[keep:]:
-        if serving and serving.exists() and os.path.samefile(old, serving):
-            continue
-        shutil.rmtree(old, ignore_errors=True)
-        removed.append(old.name)
-    return removed

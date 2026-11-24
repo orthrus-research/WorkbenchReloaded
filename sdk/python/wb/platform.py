@@ -79,7 +79,7 @@ def make_link(link: Path, target: Path) -> str:
 
 def is_link(path: Path) -> bool:
     path = Path(path)
-    if path.is_symlink():
+    if path.is_symlink() or os.path.isjunction(path):  # a broken junction too
         return True
     if os_name() == "windows" and path.exists():
         return bool(getattr(os.lstat(path), "st_reparse_tag", 0))
@@ -95,6 +95,33 @@ def remove_link(path: Path):
         os.rmdir(path)  # a junction is removed like an empty directory; its target is untouched
     else:
         path.unlink()
+
+
+def remove_tree(path: Path):
+    """Removes a folder without following a link anywhere in it: every link (a symlink or a junction) is removed
+    first, as a link, so nothing it points at is touched; then the rest, read-only files too, and paths past
+    Windows' 260 characters. Given a link, it removes only the link."""
+    path = Path(path)
+    if is_link(path):
+        remove_link(path)
+        return
+    if not path.exists():
+        return
+    folders = [path]
+    while folders:
+        for entry in os.scandir(folders.pop()):
+            child = Path(entry.path)
+            if is_link(child):
+                remove_link(child)
+            elif entry.is_dir(follow_symlinks=False):
+                folders.append(child)
+
+    def writable(function, target, _):
+        os.chmod(target, 0o700)
+        function(target)
+
+    long = "\\\\?\\" + str(path.resolve()) if os_name() == "windows" else str(path)
+    shutil.rmtree(long, onexc=writable)
 
 
 def same_volume(a: Path, b: Path) -> bool:

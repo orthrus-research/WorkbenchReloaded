@@ -16,7 +16,9 @@ port = 7377            # published on 127.0.0.1 only; `wb up` refuses anything w
 # mem_gb = 12
 
 [core.retention]
-days = 30              # rolled logs, job folders and unreferenced artifacts; results and the ledger are kept
+days = 30              # the age wb gc's rules use (wb gc --rules); pass records, set exports, seeded and kept
+                       # things are never removed. Nightly: the line `wb gc --schedule` prints, which runs
+                       # `wb gc --nightly` (the unattended classes only, never the lab home)
 
 [runner]
 # The Windows host runner (`wb host serve`): local GPU game sessions on this PC's card.

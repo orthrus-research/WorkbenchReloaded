@@ -209,10 +209,7 @@ def main(args) -> int:
                                 "override": override, "previous": previous,
                                 "tests": records["tested"].get(tree), "problems": problems})
     records["releases"] = records["releases"][-100:]
-    _save(config, records)
-    removed = releases.prune(config)
-    if removed:
-        _say(f"removed old releases: {', '.join(removed)}")
+    _save(config, records)  # releases past this one and the one before it are wb gc's (class releases)
     if problems:
         _say("deployed with problems: " + "; ".join(problems))
         return 3

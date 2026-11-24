@@ -208,15 +208,3 @@ class LogHub:
         self.root.close()
         for pair in self.modules.values():
             pair.close()
-
-
-def prune(state_dir: Path, days: int, dry_run: bool = True) -> list[str]:
-    """Rolled log archives older than ``days``; deleted unless ``dry_run``."""
-    cutoff = time.time() - days * 86400
-    found = []
-    for path in (Path(state_dir) / "logs").rglob("*.gz"):
-        if path.stat().st_mtime < cutoff:
-            found.append(str(path))
-            if not dry_run:
-                os.unlink(path)
-    return found

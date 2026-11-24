@@ -6,7 +6,8 @@
     wb run frames.compare ref=a/ cand=b/ profile=near [--out DIR] [--json] [--detach] [--fresh]
     wb wait JOB [--timeout 10m] | wb show JOB | wb jobs [--state S] | wb logs [MODULE|JOB] [-n N]
     wb approve JOB --quote Q [--via relayed] | wb cancel JOB
-    wb config show [--origin] | wb prune [--yes] | wb schema
+    wb config show [--origin] | wb schema
+    wb gc [--only CLASS] | wb gc --yes DIGEST | wb gc --rules | wb gc --nightly
     wb host serve | install | status
 
 Exit codes: 0 ok, 1 finding, 2 usage, 3 environment, 4 cancelled or interrupted, 5 still pending,
@@ -380,12 +381,15 @@ def cmd_config(args) -> int:
     return 0
 
 
+def cmd_gc(args) -> int:
+    from . import gc
+    return gc.main(args)
+
+
 def cmd_prune(args) -> int:
-    result = _client().request("POST", "/v1/prune", {"dry_run": not args.yes})
-    print(json.dumps(result, indent=1) if args.json else
-          f"{'would remove' if result['dry_run'] else 'removed'}: {len(result['job_dirs'])} job folders, "
-          f"{len(result['store'])} stored artifacts, {len(result['logs'])} log archives (older than {result['days']} days)")
-    return 0
+    print("wb: prune is now gc: `wb gc` lists what would go and prints its digest, `wb gc --yes <digest>` removes "
+          "exactly that list (this alias goes in the next release)", file=sys.stderr)
+    return 2
 
 
 def cmd_schema(args) -> int:
@@ -507,8 +511,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("action", choices=["show", "reload"])
     p.add_argument("--origin", action="store_true")
     p.add_argument("--local", action="store_true", help="read the config folder here, not the daemon's")
-    p = add("prune", cmd_prune, "prune old logs, job folders and artifacts (dry run unless --yes)")
+    p = add("gc", cmd_gc, "list what the retention rules would remove, with a digest; --yes <digest> removes it")
+    p.add_argument("--yes", metavar="DIGEST", help="remove exactly the list with this digest")
+    p.add_argument("--only", action="append", metavar="CLASS", help="only this class (repeatable)")
+    p.add_argument("--rules", action="store_true", help="every class, its rule and whether it runs unattended")
+    p.add_argument("--nightly", action="store_true", help="remove the unattended classes (for the scheduler)")
+    p.add_argument("--schedule", action="store_true", help="print the line that runs --nightly each night")
+    p = sub.add_parser("prune", help=argparse.SUPPRESS)  # the old verb, for one release: names wb gc
+    p.set_defaults(function=cmd_prune)
     p.add_argument("--yes", action="store_true")
+    p.add_argument("--json", action="store_true")
     add("schema", cmd_schema, "print the API schema")
     add("up", cmd_up, "start the container")
     add("down", cmd_down, "stop the container")
