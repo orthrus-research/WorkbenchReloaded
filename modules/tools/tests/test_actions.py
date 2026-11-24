@@ -522,7 +522,9 @@ class ProjectManifestTest(Project):
         from unittest import mock
         self.write_manifest(MANIFEST.replace('[checks.docs]', '[checks.docs]\ntools = ["lib:assets/**"]'))
         commit_all(self.root)
-        laid = self.root.parent / "Lib"
+        scratch = Path(tempfile.mkdtemp(prefix="wb-tools-key-"))
+        self.addCleanup(shutil.rmtree, scratch, True)
+        laid = scratch / "Lib"
         (laid / "assets").mkdir(parents=True)
         (laid / "assets" / "a.json").write_text("1", encoding="utf-8")
         (laid / "README").write_text("r", encoding="utf-8")
