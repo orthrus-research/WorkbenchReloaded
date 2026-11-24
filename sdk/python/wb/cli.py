@@ -337,6 +337,11 @@ def cmd_check(args) -> int:
     except WorkspaceError as error:
         print(f"wb: {error}", file=sys.stderr)
         return 2
+    answer = check.predates(workspace, project, tree["commit"])
+    if answer:
+        print(f"wb: {answer['message']}", file=sys.stderr)
+        if not answer["runs"]:
+            return 2
     common = {"project": project.name, "commit": tree["commit"], **({"set": revision} if revision else {})}
     if args.stand_in:
         try:
@@ -459,6 +464,8 @@ def cmd_restart(args) -> int:
 
 
 def cmd_status(args) -> int:
+    if getattr(args, "doctor", False):
+        return _doctor(args)
     try:
         health = _client().health()
     except WbError as error:
@@ -485,6 +492,19 @@ def cmd_status(args) -> int:
             lines.append(f"  config: {warning}")
         print("\n".join(lines))
     return 0
+
+
+def _doctor(args) -> int:
+    """``wb status --doctor``: the daemon's health when it answers, then the machine and every project's branch
+    read from git and config (no daemon needed). Exit 1 when anything is found."""
+    from . import doctor
+    try:
+        health = _client().health()
+        if not args.json:
+            print(f"up {health['uptime_s']}s, version {health['version']}")
+    except WbError as error:
+        print(f"wb: the daemon did not answer ({error}); the doctor reads git and config without it", file=sys.stderr)
+    return doctor.main(args)
 
 
 def cmd_build(args) -> int:
@@ -565,7 +585,9 @@ def build_parser() -> argparse.ArgumentParser:
     add("up", cmd_up, "start the container")
     add("down", cmd_down, "stop the container")
     add("restart", cmd_restart, "restart the container (new token)")
-    add("status", cmd_status, "health of the daemon")
+    p = add("status", cmd_status, "health of the daemon")
+    p.add_argument("--doctor", action="store_true",
+                   help="also report what still ties a project to the old routes: pins, refresh tasks, the lease")
     p = add("build", cmd_build, "build the image from this checkout")
     p.add_argument("--tag", default="wb-core:dev")
     p = add("check", cmd_check, "run CI's checks on the worktree you stand in (its changes included); named host "

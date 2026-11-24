@@ -194,6 +194,48 @@ class Workspace:
         except ValueError:
             return None
 
+    def set_file(self) -> dict:
+        """set.json at the head of this machine's Set; empty when there is no Set or it cannot be read."""
+        home = self.set_home()
+        if home is None:
+            return {}
+        shown = subprocess.run(["git", "show", "refs/heads/main:set.json"], cwd=home, capture_output=True,
+                               text=True, encoding="utf-8", env={**os.environ, **GIT_ENV})
+        try:
+            return json.loads(shown.stdout) if shown.returncode == 0 else {}
+        except ValueError:
+            return {}
+
+    def set_branch(self, project: Project, line: dict | None = None) -> tuple[str, str | None, str | None]:
+        """The project's set-named branch and its tip as ``(branch, ref, commit)``: the branch its line names, else
+        the ``[project] branch`` its main carries (default main). The tip is the published branch
+        (``refs/remotes/origin/<branch>``) where the checkout has one, else its local branch; ref and commit are
+        None when it has neither. Nothing is fetched."""
+        line = line if line is not None else self.set_line(project.name)
+        branch = str((line or {}).get("branch") or "main")
+        if not project.repo.is_dir():
+            return branch, None, None
+
+        def tip(name: str):
+            for ref in (f"refs/remotes/origin/{name}", f"refs/heads/{name}"):
+                found = git(project.repo, "rev-parse", "-q", "--verify", f"{ref}^{{commit}}", check=False)
+                if found:
+                    return ref, found
+            return None, None
+
+        ref, commit = tip(branch)
+        if not line and commit:
+            import tomllib
+            shown = git(project.repo, "show", f"{commit}:project.toml", check=False)
+            try:
+                named = str((tomllib.loads(shown).get("project") or {}).get("branch") or "") if shown else ""
+            except tomllib.TOMLDecodeError:
+                named = ""
+            if named and named != branch:
+                branch = named
+                ref, commit = tip(branch)
+        return branch, ref, commit
+
     def store_root(self) -> Path | None:
         return self.folder("store")
 

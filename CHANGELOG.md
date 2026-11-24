@@ -16,6 +16,10 @@
   `wb check`, `wb job`, `wb work` (start, add, adopt, finish), `wb backup`. `wb deploy` tests, builds, drains and
   restarts the daemon and host runner together onto an immutable release; every part reports its commit and a
   CLI or host runner on other code is named with the fix.
+- `wb check` on a commit from before its project's conversion answers that it predates the set and names the
+  setup command its own tree carries, then still runs its `actions.toml` checks; `wb status --doctor` names every
+  `WB_PIN_CACHE` read, `sourceCommit`, pin file, refresh task, refresh schedule and sibling commit on the
+  registered projects' set-named branches with file and line, and confirms that the old lock path is the lease file.
 - The Store: a producing job's artifacts are kept by SHA-256 and by project and tree, and in the pin cache;
   `wb store` finds them, gives a kept file's path, or seeds bytes no container builds. A pinned repository with
   `passed` must have passed its own checks, so a consumer need not build and test it again.

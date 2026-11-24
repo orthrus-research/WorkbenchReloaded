@@ -21,6 +21,7 @@ SUITES = [
     ["tests/test_process.py"],
     ["tests/test_cli.py"],
     ["tests/test_workspace.py"],
+    ["tests/test_doctor.py"],
     ["tests/test_work.py"],
     ["tests/test_releases.py"],
     ["tests/test_gc.py"],

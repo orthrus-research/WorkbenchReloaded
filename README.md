@@ -97,6 +97,20 @@ the GPU ones under a turn of the GPU lease that their steps join, and records th
 container checks among the names still go to `ci.run`; `wb check` prints which ran where
 (see [modules/tools/docs/actions.md](modules/tools/docs/actions.md#host-checks)).
 
+A commit from before its project's conversion (it carries `actions.toml` and no `project.toml`, while the project's
+set-named branch carries `project.toml`) is answered first: `wb check` says that the commit predates the set and
+names the setup command its own tree carries (its README's build section, else its `tools/setup.py` or a root
+script's `setup` action), with the pin cache folder it builds with outside Workbench. Its checks still run from its
+`actions.toml` for the grace period; a commit with no checks file at all is answered and not run.
+
+`wb status --doctor` reads git and config on the host, with or without the daemon, and names with project, branch,
+file and line what still ties a converted project to the old routes, at its landed commit and at its set-named
+branch's published tip: a `WB_PIN_CACHE` read, a `sourceCommit`, a pin file (`cc.lock.json`, a `pins/` folder), a
+refresh or sync task in its build or checks files, and a sibling commit (a commit the Set lists for another project,
+or one in another registered repository); paths in set.json `doctor.exempt` are skipped. It also names any schedule
+that refreshes pins, and confirms that the old lock path (`[runner] lease_file`) is the lease file and that each
+checkout's old in-tree route to it, and to the lanes folder, resolves there. It exits 1 when it finds anything.
+
 `ci.matrix` is a portability lane: on a host (Windows, macOS or Linux, no GPU needed, so it runs beside a game) it
 clones a checkout's commit clean and runs one command per Python, `{python}` standing for each interpreter:
 
