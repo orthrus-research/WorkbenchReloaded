@@ -83,6 +83,11 @@ class Workspace:
         values["modules"] = {**(values.get("modules") or {}), "ci": self.ci}
         return wbconfig.Config(getattr(config, "folder", None), values, getattr(config, "origins", {}))
 
+    def projects_root(self) -> str:
+        """The folder project homes are under, as the host names it: [workspace] root, else the older
+        [modules.ci] projects_root; "" when neither is set."""
+        return str((self.values.get("workspace") or {}).get("root") or self.ci.get("projects_root") or "")
+
     def records(self, project: str) -> Path:
         folder = self.folder("records")
         if folder is None:
@@ -93,7 +98,7 @@ class Workspace:
     def projects(self) -> dict[str, Project]:
         if self._projects is None:
             found = {}
-            root = str(self.ci.get("projects_root") or "")
+            root = self.projects_root()
             for name, entry in (self.ci.get("projects") or {}).items():
                 repo = str(entry.get("repo") or "")
                 if not repo:

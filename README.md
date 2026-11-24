@@ -211,7 +211,10 @@ the layer behind every value.
 
 A machine's paths are named once, as the host names them, in `[paths]`: `out` (the read-write root, mounted at
 `/mnt/out`, holding the Store, the run records and the pin cache), `releases`, `backup`, and `[paths.roots.<name>]`
-for the other folders the container may read or write (mounted at `/mnt/<name>`). The old spellings
+for the other folders the container may read or write (mounted at `/mnt/<name>`). Where project homes are is
+`[workspace] root` (a relative `[modules.ci.projects]` repo is read from it, and `wb work` makes Works in
+`<root>/work` unless `[workspace] work` says otherwise); it is its own key because `[paths.roots]` names only what
+the container may read, which can be wider. The old spellings
 (`[paths.roots.out]`, a root's `container`, `[modules.ci] store`, `records` and `pin_cache`, `[modules.toolchain]
 pin_cache`) are still read for one release, each with a warning in `wb status`, `wb config show --local` and the
 daemon's log.

@@ -32,9 +32,9 @@ def work_root(workspace: Workspace) -> Path:
     configured = ((workspace.values.get("workspace") or {}).get("work"))
     if configured:
         return Path(str(configured))
-    root = str(workspace.ci.get("projects_root") or "")
+    root = workspace.projects_root()
     if not root:
-        raise WorkspaceError("no work root: set [workspace] work in machine config (or [modules.ci] projects_root)")
+        raise WorkspaceError("no work root: set [workspace] work or [workspace] root in machine config")
     return Path(ntpath.join(root, "work") if len(root) > 1 and root[1] == ":" else posixpath.join(root, "work"))
 
 

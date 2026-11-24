@@ -121,6 +121,26 @@ class ConfigMerge(unittest.TestCase):
         self.write("workbench.toml", "")
         self.assertEqual(resolve(wbconfig.load(self.folder)).lab["trusted"], [])
 
+    def test_workspace_root_is_a_typed_key_that_relative_repos_resolve_from(self):
+        from wb.workspace import Workspace
+        schemas = {"ci": {"projects_root": {"type": "string", "default": ""}}}
+        self.write("workbench.toml", "[workspace]\nroot = 'homes'\nwork = 'homes/work'\n")
+        config = wbconfig.load(self.folder)
+        settings = resolve(config, schemas)
+        self.assertEqual(settings.workspace["root"], "homes")
+        self.assertEqual(settings.modules["ci"]["projects_root"], "homes")  # the daemon's ci reads it there
+        self.assertEqual(Workspace(config).projects_root(), "homes")  # and the host reads the same
+        self.write("modules/ci.toml", "projects_root = 'older-homes'\n")
+        config = wbconfig.load(self.folder)
+        self.assertEqual(resolve(config, schemas).modules["ci"]["projects_root"], "older-homes")  # set explicitly: kept
+        self.assertEqual(Workspace(config).projects_root(), "homes")
+        self.write("workbench.toml", "[workspace]\n")
+        self.assertEqual(Workspace(wbconfig.load(self.folder)).projects_root(), "older-homes")  # the older key alone
+        self.write("workbench.toml", "[workspace]\nroot = 3\n")
+        with self.assertRaises(SettingsError) as raised:
+            resolve(wbconfig.load(self.folder), schemas)
+        self.assertIn("workspace.root", str(raised.exception))
+
     # [paths]: each folder named once, in host form; the container's spelling derived.
     FOLDER_SCHEMAS = {"ci": {key: {"type": "string", "default": ""} for key in ("store", "records", "pin_cache")},
                       "toolchain": {"pin_cache": {"type": "string", "default": ""}},
