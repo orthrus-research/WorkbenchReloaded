@@ -1,2 +1,0 @@
-pluginManagement { includeBuild('..') }
-rootProject.name = 'wb-gradle-sample'

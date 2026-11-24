@@ -147,8 +147,8 @@
   launch was resolved from, and `[lab] env` can name the runtime cache (`cache`) for drivers.
 - The Windows host runner, sharing the GPU lease and lanes with gpu_queue.py; host routines that need no GPU run
   beside the lease holder.
-- SDKs: Python with the `wb` CLI, Node/TypeScript, Java with a Gradle plugin (the same JAR bytes on every machine,
-  and `WbRun` tasks that keep a receipt), PowerShell.
+- SDKs: Python with the `wb` CLI, Node/TypeScript, Java, PowerShell. The Gradle plugin (`sdk/gradle`,
+  `cc.orthrus.wb`) is removed: no project applies it.
 - The image: Ubuntu 26.04 by digest, apt from a pinned snapshot, Temurin 8, 17, 25, 26, 27 and 28 EA by SHA-256;
   optional toolchains (Node, Zig), each pinned by SHA-256 and built in only for a machine that names them.
   The entrypoint gives Workbench's user the pin caches and records folder configured inside an rw root

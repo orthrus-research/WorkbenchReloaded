@@ -1,7 +1,6 @@
-"""Every SDK against one live daemon (D24): Python, Node, Java, PowerShell and the Gradle plugin all run the same
-conformance checks, and the generated envelope types are up to date with the schema."""
+"""Every SDK against one live daemon (D24): Python, Node, Java and PowerShell all run the same conformance checks,
+and the generated envelope types are up to date with the schema."""
 
-import json
 import os
 import shutil
 import subprocess
@@ -14,10 +13,6 @@ from harness import REPO, Daemon  # noqa: E402
 
 from wb import ApprovalRequired, WbError  # noqa: E402
 from wb.client import Client  # noqa: E402
-
-JDK25 = next(iter(sorted((Path(os.environ.get("ProgramFiles", "/")) / "Eclipse Adoptium").glob("jdk-25*"))),
-             Path(os.environ.get("JAVA_HOME_25", "-")))
-
 
 class SDKs(unittest.TestCase):
     @classmethod
@@ -77,46 +72,6 @@ class SDKs(unittest.TestCase):
         code, out = self.run_tool(["pwsh", "-NoProfile", "-File", "sdk/powershell/Conformance.ps1"])
         self.assertEqual(code, 0, out)
         self.assertIn("powershell conformance: ok", out)
-
-    @unittest.skipUnless(shutil.which("gradle") and JDK25.exists(), "Gradle or JDK 25 is not installed")
-    def test_gradle_plugin(self):
-        env = dict(self.env, JAVA_HOME=str(JDK25))
-        gradle = shutil.which("gradle")
-        code, out = self.run_tool([gradle, "--offline", "--no-daemon", "-q", "-p", "sdk/gradle/sample", "wbEcho",
-                                   "wbFindingAllowed"], env=env, timeout=900)
-        self.assertEqual(code, 0, out)
-        envelope = REPO / "sdk" / "gradle" / "sample" / "build" / "wb" / "wbEcho.json"
-        self.assertIn('"outcome":"ok"', envelope.read_text(encoding="utf-8"))
-        code, out = self.run_tool([gradle, "--offline", "--no-daemon", "-q", "-p", "sdk/gradle/sample", "wbFindingFails"],
-                                  env=env, timeout=900)
-        self.assertNotEqual(code, 0)
-        self.assertIn("ended finding", out)
-
-    @unittest.skipUnless(shutil.which("gradle") and JDK25.exists(), "Gradle or JDK 25 is not installed")
-    def test_gradle_run_keeps_a_receipt(self):
-        env = dict(self.env, JAVA_HOME=str(JDK25))
-        gradle = [shutil.which("gradle"), "--offline", "--no-daemon", "-q", "-p", "sdk/gradle/sample"]
-        receipts = REPO / "sdk" / "gradle" / "sample" / "build" / "wb"
-        shutil.rmtree(receipts, ignore_errors=True)
-        code, out = self.run_tool([*gradle, "wbRunHello"], env=env, timeout=900)
-        self.assertEqual(code, 0, out)
-        self.assertIn("hello gradle", out)
-        receipt = json.loads((receipts / "wbRunHello.run.json").read_text(encoding="utf-8"))
-        self.assertEqual((receipt["schema"], receipt["main_class"], receipt["args"], receipt["exit"]),
-                         ("wb.gradle-run.v1", "sample.Hello", ["gradle"], 0))
-        self.assertEqual(len(receipt["single_provider"]["sample.Hello"]), 1)  # one class path entry provides it
-        folders = [e for e in receipt["classpath"] if e["kind"] == "folder"]
-        self.assertTrue(folders and all(len(e["sha256"]) == 64 for e in folders), receipt["classpath"])
-        code, out = self.run_tool([*gradle, "wbRunPinned"], env=env, timeout=900)
-        self.assertNotEqual(code, 0)
-        self.assertIn("wbRunPinned does not start", out)
-        self.assertIn("not its pin 000000000000", out)
-        self.assertFalse((receipts / "wbRunPinned.run.json").exists())  # it never ran
-        code, out = self.run_tool([*gradle, "wbRunFails"], env=env, timeout=900)
-        self.assertNotEqual(code, 0)
-        self.assertIn("sample.Hello exited 3", out)
-        failed = json.loads((receipts / "wbRunFails.run.json").read_text(encoding="utf-8"))
-        self.assertEqual(failed["exit"], 3)  # the receipt is written before the task fails
 
 
 if __name__ == "__main__":

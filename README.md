@@ -44,7 +44,7 @@ In development: version 0.1.0 is unreleased, and there are no releases yet;
   [--note T] [--limit D] [--detach] [--quiet] -- <command>` gives any command a turn in a lane of its own (one that
   was waiting keeps its place when started again, and a detached one outlives its shell); `wb gpu leave <lane>`
   withdraws one.
-- **SDKs** (`sdk/`) for Python (with the `wb` CLI), Node/TypeScript, Java with a Gradle plugin, and PowerShell,
+- **SDKs** (`sdk/`) for Python (with the `wb` CLI), Node/TypeScript, Java and PowerShell,
   their envelope types generated from `schema/envelope.schema.json`.
 
 Modules follow a taxonomy of what a command does in Minecraft modding, one module per kind of operation, so a
@@ -179,28 +179,6 @@ a launch file (below): `wb play`, `lab.build` and `lab.run`.
 
 The drive agent (`mods/drive-agent`) is a small client mod a session adds: it captures views once they settle and
 answers requests on the game's own thread (status, screenshot, chat, keys, clicks), which `drive.send` writes.
-
-## The Gradle plugin
-
-`sdk/gradle` is a Gradle plugin, `cc.orthrus.wb`, with two task types. `WbTask` runs a Workbench command and fails
-the build on the outcomes in `failOn`, keeping the settled envelope. `WbRun` runs an entry point on a class path the
-build prepares, a mod build's remapped configurations included, with no game client or server: it refuses to start
-when a `pin(file, sha256)` no longer matches or a class in `singleProvider` comes from none or several class path
-entries, and keeps a receipt (`build/wb/<task>.run.json`) of the main class, arguments, JVM, every class path entry
-with its SHA-256, and the exit code. `sdk/gradle/sample` uses both.
-
-A build applies it from an included build, `pluginManagement { includeBuild('<checkout>/sdk/gradle') }`, or by id
-and version from the rescue repository. Its JAR is the same bytes from the same sources and JDK on every machine, so
-it goes in like any other file:
-
-```
-gradle -p sdk/gradle jar
-wb run toolchain.repo-add coordinates=cc.orthrus:wb-gradle-plugin:0.1.0 plugins=cc.orthrus.wb \
-  file=sdk/gradle/build/libs/wb-gradle-plugin-0.1.0.jar sha256=<its SHA-256> reason="the Workbench Gradle plugin, built from this checkout"
-```
-
-Then `plugins { id 'cc.orthrus.wb' version '0.1.0' }` works in every build that reads the repository: those
-`ci.run` runs, and builds on the host once `toolchain.repo-init gradle_home=...` has written its init script.
 
 ## Config layers
 

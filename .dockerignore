@@ -7,6 +7,5 @@
 !modules/build
 **/.gradle
 sdk/java
-sdk/gradle
 sdk/node
 tests
