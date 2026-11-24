@@ -123,7 +123,8 @@ class ConfigMerge(unittest.TestCase):
 
     # [paths]: each folder named once, in host form; the container's spelling derived.
     FOLDER_SCHEMAS = {"ci": {key: {"type": "string", "default": ""} for key in ("store", "records", "pin_cache")},
-                      "toolchain": {"pin_cache": {"type": "string", "default": ""}}}
+                      "toolchain": {"pin_cache": {"type": "string", "default": ""}},
+                      "release": {"store": {"type": "string", "default": ""}}}
 
     def test_paths_out_names_the_out_root_and_the_folders_in_it_once(self):
         import os
@@ -142,10 +143,12 @@ class ConfigMerge(unittest.TestCase):
         self.assertEqual(Path(ci["records"]), out / "ci" / "records")
         self.assertEqual(Path(ci["pin_cache"]), out / "cache" / "pins")
         self.assertEqual(settings.modules["toolchain"]["pin_cache"], ci["pin_cache"])  # one pin cache
+        self.assertEqual(settings.modules["release"]["store"], ci["store"])  # one Store, read by release too
         with mock.patch.dict(os.environ, {"WB_IN_CONTAINER": "1"}):
             inside = resolve(config, self.FOLDER_SCHEMAS)
         self.assertEqual(inside.modules["ci"]["store"], "/mnt/out/store")
         self.assertEqual(inside.modules["ci"]["pin_cache"], "/mnt/out/cache/pins")
+        self.assertEqual(inside.modules["release"]["store"], "/mnt/out/store")
         self.assertEqual({r.name: r.container for r in inside.roots}, {"out": "/mnt/out", "projects": "/mnt/projects"})
         workspace = Workspace(config)  # the host reads the same folders, in its own spelling
         self.assertEqual(workspace.store_root(), Path(out.as_posix()) / "store")

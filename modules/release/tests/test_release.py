@@ -116,7 +116,7 @@ def listed(path: Path) -> tuple:
 # ---------------------------------------------------------------------------------------------
 # one Workbench and the four fake services for the whole suite
 
-def config(secrets: Path) -> str:
+def config(secrets: Path, store: Path) -> str:
     return f"""
         [secrets.release_gh]
         host = '{secrets / "gh"}'
@@ -132,6 +132,7 @@ def config(secrets: Path) -> str:
         [modules.release]
         user_agent = "wb-release-tests"
         timeout = "30s"
+        store = '{store}'
 
         [modules.release.rules.mod]
         java = 8
@@ -205,7 +206,7 @@ def setUpModule():
     (root / "secrets").mkdir()
     for name, value in TOKENS.items():
         (root / "secrets" / name).write_text(value, encoding="ascii")
-    D = Daemon(config(root / "secrets"), root=root).start()
+    D = Daemon(config(root / "secrets", root / "data" / "set-out" / "store"), root=root).start()
     C = D.client
     NOTES = D.data / "notes.md"
     NOTES.write_bytes("# 1.x\n\n- Fixed the recipe loop.\n- Lighter on memory.\n".encode("utf-8"))
@@ -668,6 +669,87 @@ class Publish(unittest.TestCase):
                 self.assertEqual((result.state, result.outcome), ("settled", outcome), result.summary)
                 self.assertIn(text, result.summary)
         self.assertEqual([len(s.requests) for s in (GH, MR, CF, MV)], before)
+
+
+
+class FromSet(unittest.TestCase):
+    """release.publish set=<project>@<revision>: the Store's bytes the set names, under the line's names."""
+
+    COMMIT = "c0ffee" + "0" * 34
+
+    @classmethod
+    def setUpClass(cls):
+        cls.store = D.data / "set-out" / "store"
+        sets = cls.store.parent / "sets"
+        built = D.data / "set-built"
+        cls.jar, cls.sources = mod_jar(built, "7.0.0"), sources_jar(built, "7.0.0")
+        artifacts = {}
+        for key, path in (("sources", cls.sources), ("mod", cls.jar)):  # the line lists sources first
+            sha = digest(path)
+            kept = cls.store / "files" / sha / path.name
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, kept)
+            artifacts[key] = {"sha256": sha, "file": path.name}
+        cls.revision = "ab" * 20
+        (sets / cls.revision).mkdir(parents=True, exist_ok=True)
+        (sets / cls.revision / "set.json").write_text(json.dumps(
+            {"schema": 1, "projects": {"examplemod": {"branch": "main", "commit": cls.COMMIT,
+                                                      "artifacts": artifacts}}}), encoding="utf-8")
+        (sets / "HEAD").write_text(cls.revision, encoding="ascii")
+
+    def submit(self, version: str, **params):
+        return C.submit("release.publish", {"channel": "gh", "version": version, **params})
+
+    def test_the_set_names_the_bytes_and_the_commit(self):
+        job = self.submit("7.0.0", set=f"examplemod@{self.revision[:10]}")
+        approval = quoted(self, job)
+        plan = approval.quote["plan"]
+        self.assertEqual([(f["name"], f["sha256"], f["primary"]) for f in plan["files"]],
+                         [(self.jar.name, digest(self.jar), True), (self.sources.name, digest(self.sources), False)])
+        self.assertEqual(plan["set"], {"revision": self.revision, "project": "examplemod", "commit": self.COMMIT,
+                                       "artifacts": ["mod", "sources"]})
+        self.assertEqual(plan["commit"], self.COMMIT, "the tag is made at the commit the line names")
+        self.assertIn(f"the bytes set {self.revision[:12]} names for examplemod", approval.prompt["question"])
+        job.approve(approval.quote["id"])
+        result = job.result(timeout=120)
+        self.assertEqual(result.outcome, "ok", result.summary)
+        uploads = GH.sent("POST", "/uploads/")
+        self.assertEqual([(u.query["name"], u.body) for u in uploads[-2:]],
+                         [(self.jar.name, self.jar.read_bytes()), (self.sources.name, self.sources.read_bytes())])
+        created = json.loads([r for r in GH.sent("POST") if r.path == "/repos/example/examplemod/releases"][-1].body)
+        self.assertEqual(created["target_commitish"], self.COMMIT)
+
+    def test_head_a_chosen_artifact_and_a_given_commit(self):
+        job = self.submit("7.0.0", set="examplemod@head", artifacts=["mod"], commit="feedbeef")
+        plan = quoted(self, job).quote["plan"]
+        job.cancel()
+        self.assertEqual([f["name"] for f in plan["files"]], [self.jar.name])
+        self.assertEqual((plan["set"]["revision"], plan["commit"]), (self.revision, "feedbeef"))
+
+    def test_refusals(self):
+        cases = [({"set": f"examplemod@{self.revision}", "files": [str(self.jar)]}, "not both"),
+                 ({"artifacts": ["mod"], "files": [str(self.jar)]}, "give set="),
+                 ({"set": "other@head"}, "has no line for other"),
+                 ({"set": "examplemod@head", "artifacts": ["lab"]}, "has no artifact lab"),
+                 ({"set": "examplemod@1234567"}, "no export")]
+        for params, text in cases:
+            with self.subTest(params=params):
+                result = self.submit("7.0.2", **params).result(timeout=60)
+                self.assertEqual(result.outcome, "usage", result.summary)
+                self.assertIn(text, result.summary)
+
+    def test_a_store_copy_that_changed_is_refused(self):
+        sha = digest(self.jar)
+        kept = self.store / "files" / sha / self.jar.name
+        original = kept.read_bytes()
+        try:
+            os.chmod(kept, 0o644)
+            kept.write_bytes(original + b"tampered")
+            result = self.submit("7.0.3", set="examplemod@head").result(timeout=60)
+            self.assertEqual(result.outcome, "environment", result.summary)
+            self.assertIn("no longer hashes", result.summary)
+        finally:
+            kept.write_bytes(original)
 
 
 if __name__ == "__main__":
