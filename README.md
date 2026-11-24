@@ -220,6 +220,21 @@ file and command line by command line. A configure hook runs only for a project 
 and `eula.txt` is written only where `[lab] eula = true` (or the request) accepts the Minecraft EULA. The server's
 port is not part of a template: `{port}` stays in the client's command line for the session to fill.
 
+`lab.run instance=<name> kind=open|tour|measure|driver` plays a session of such an instance from its receipt alone,
+under the GPU lease. It first hashes every cache, JDK and member file against `instance.json`: a JDK of another build
+is refused, the same build at another path (`jdk=`) is accepted. A tour is driven by the launch's tour rules
+(`[launch.<name>.tour]`: the server's set-up commands, the client's capture switches and the line that says a view
+was captured), view by view, and filed as `tour/NN-<label>.png`; `measure` is such a tour that is evidence: quiet, on
+a fresh copy of the template, and only for the launch file it names. `driver` runs a trusted project's declared
+driver (`[launch.<name>.drivers]`) with the turn token, the lease and the instance.json path in `WB_TURN_TOKEN`,
+`WB_LEASE_FILE`, `WB_INSTANCE` and the names `[lab] env` adds. What a session chooses (`port`, `jvm`, `window`,
+`view`, `edits`, `debug`) goes into its `session.json`, beside the member hashes, the JDK build and the GPU and its
+driver, and never into the template: edited files are put back when it ends. `debug=client|server|both` opens JDWP
+on loopback, writes `attach/launch.json` (VS Code) and `attach/jdb.txt`, and marks the session as not evidence. A
+stop waits at least 180 s for the server's own exit before the tree is killed; a failure names the decisive line
+(the launch's `failures` first), the crash report and the next command. `lab.keep session=<id> reason=<text>` keeps
+a session; what it names is a retention root (`kept.json`).
+
 ## Money
 
 A command that spends money (`vast.rent`, `vast.probe`) stops in `awaiting_approval` with one exact quote (card,

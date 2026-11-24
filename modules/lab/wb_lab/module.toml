@@ -19,6 +19,7 @@ asset_base = { type = "string", default = "https://resources.download.minecraft.
 runtime_cache = { type = "string", default = "", summary = "where lab.assemble keeps libraries, client JARs and assets, shared by every runtime; empty: <state>/cache/runtime (put it under a configured root for the host to use what it holds)" }
 library_candidates = { type = "list", items = "string", default = [], summary = "folders lab.assemble searches by file name for a library with the SHA-1 its metadata names before downloading it (a Gradle cache, a launcher's libraries)" }
 asset_candidates = { type = "list", items = "string", default = [], summary = "asset folders (holding objects/ and indexes/) lab.assemble searches before downloading" }
+sessions = { type = "string", default = "", summary = "where lab.run keeps its sessions, one folder each with session.json; empty: <lab home>/sessions" }
 instances = { type = "string", default = "", summary = "where lab.build keeps its templates (.store) and the instances made from them, one folder each; empty: <lab home>/instances" }
 runtime_hosts = { type = "list", items = "string", default = [], summary = "the hosts lab.build downloads a runtime file (runtime.files of a launch) from, every redirect included; empty: [modules.ci] store_hosts" }
 runtime_candidates = { type = "list", items = "string", default = [], summary = "folders lab.build searches by file name for a runtime file with the SHA-256 the launch names before downloading it" }
@@ -353,6 +354,46 @@ result.instance = { type = "string" }
 result.template = { type = "string" }
 result.reused = { type = "bool" }
 result.built = { type = "bool" }
+
+[[command]]
+name = "run"
+summary = "One session of an instance lab.build made, from its receipt (instance.json) alone, under the GPU lease: open (a person plays; console lines appended to the session's commands.txt go to the server), tour (the launch's tour rules drive the game through a tour's views, each captured and filed by label), measure (a tour that is evidence: quiet, on a fresh copy of the template, only for the launch file named) or driver (the launch's declared driver, a trusted project's program, gets the turn token, the lease and the instance.json path). Every cache, JDK and member file is hashed against the receipt first, and a JDK of another build is refused. The port, JVM options, window, views, edits and debugger are the session's: they go into session.json with the member hashes, JDK build, GPU and driver, and never into the template. A stop waits at least 180 s for the server's own exit; a failure names the decisive line, the crash report and the next command."
+handler = "wb_lab.run:run"
+runs_on = ["host"]
+resources = { gpu = true, quiet_if = ["kind=measure", "kind=driver"] }
+timeout = "13h"
+cancel_grace = "4m"
+params.instance = { type = "string", pattern = "^[a-z0-9][a-z0-9._-]*$", summary = "the instance: its folder under [modules.lab] instances, made by lab.build" }
+params.kind = { type = "enum", values = ["open", "tour", "measure", "driver"], default = "open", summary = "open, tour, measure or driver" }
+params.tour = { type = "path.in", optional = true, summary = "tour and measure: the tour file, a list of {label, x, y, z, yaw, pitch[, commands]} or {viewDistance, views}" }
+params.launch = { type = "path.in", optional = true, summary = "measure: the launch file the instance must have been built from" }
+params.copy = { type = "bool", default = true, summary = "measure: play a fresh copy of the instance's template (false: the named instance itself)" }
+params.driver = { type = "string", default = "", summary = "driver: the name of a driver the launch declares (drivers.<name>.command)" }
+params.driver_root = { type = "path.in", optional = true, summary = "driver: the folder its {root} and its working folder are, the project's export or checkout" }
+params.port = { type = "int", default = 0, min = 0, max = 65535, summary = "the server's port; 0: a free one" }
+params.jvm = { type = "list", items = "string", default = [], summary = "JVM options for this session: -X for both sides, client:-X or server:-X for one" }
+params.view = { type = "object", default = {}, summary = "view distances by the base's view keys (horizontal, vertical, client_render)" }
+params.edits = { type = "list", items = "string", default = [], summary = "the instance's own files changed for this session only: <server|client>/<file>:<key>=<value>" }
+params.window = { type = "string", default = "", summary = "the client's window, WIDTHxHEIGHT; empty: the base's" }
+params.debug = { type = "enum", values = ["", "client", "server", "both"], default = "", summary = "open JDWP on loopback for these sides, write attach/launch.json, and mark the session as not evidence" }
+params.fresh_world = { type = "bool", default = false, summary = "remove the instance's world before the server starts" }
+params.limit = { type = "duration", default = "4h", min = "10s", max = "12h", summary = "an open session or a driver is stopped after this" }
+params.jdk = { type = "path.in", optional = true, summary = "a JDK home to run on instead of the Store's; it must be the receipt's build" }
+params.session = { type = "string", default = "", summary = "the session's id; empty: a new one" }
+params.no_rebuild = { type = "bool", default = false, summary = "the play did not rebuild members compiled against other bytes: the session is not evidence" }
+result.session = { type = "string" }
+result.folder = { type = "string" }
+result.instance = { type = "string" }
+result.evidence = { type = "bool" }
+result.state = { type = "string" }
+
+[[command]]
+name = "keep"
+summary = "Keep a session: retention never removes the session, its instance, its template or its launch file."
+handler = "wb_lab.run:keep"
+runs_on = ["host"]
+params.session = { type = "string", pattern = "^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$", summary = "the session's id" }
+params.reason = { type = "string", summary = "why it is kept" }
 
 [[command]]
 name = "server"

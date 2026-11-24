@@ -36,7 +36,7 @@ from pathlib import Path
 SCHEMA = 1
 SIDES = ("both", "client", "server")
 MEMBER = re.compile(r"^([a-z0-9][a-z0-9._-]*)(?::([a-z0-9][a-z0-9._-]*))?@(both|client|server)$")
-LAUNCH_KEYS = {"members", "runtime", "params", "jvm", "collect", "failures", "place"}
+LAUNCH_KEYS = {"members", "runtime", "params", "jvm", "collect", "failures", "place", "tour", "drivers"}
 PLACE = re.compile(r'^[^/\\:*?"<>|]+\.jar$')  # a bare file name: no folder, nothing Windows refuses
 MEMBER_KEYS = {"jvm", "collect", "failures"}
 RUNTIMES = ("cleanroom",)
@@ -239,9 +239,14 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
              for part in RUNTIME_FILES if isinstance(cleanroom.get(part), dict)}
     if files:
         runtime["files"] = files
-    return {"schema": SCHEMA, "project": product, "launch": launch, "commit": commit, "tree": tree,
-            "set": revision, "store": str(store), "runtime": runtime, "members": members, "jvm": jvm,
-            "collect": collect, "failures": failures, "params": dict(table.get("params") or {})}
+    document = {"schema": SCHEMA, "project": product, "launch": launch, "commit": commit, "tree": tree,
+                "set": revision, "store": str(store), "runtime": runtime, "members": members, "jvm": jvm,
+                "collect": collect, "failures": failures, "params": dict(table.get("params") or {})}
+    # How a session drives the game (lab.run): the tour rules and the drivers, as the launch names them.
+    for key in ("tour", "drivers"):
+        if table.get(key):
+            document[key] = json.loads(json.dumps(table[key]))
+    return document
 
 
 # --- the job ------------------------------------------------------------------------------------------------------

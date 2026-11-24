@@ -228,6 +228,7 @@ class Build(unittest.TestCase):
                       + ("win_args.txt" if self.system == "windows" else "unix_args.txt"), server["command"])
         command = client["command"]
         self.assertEqual(command[:2], [java, "-Ddraw.mode=own"])  # the launch's JVM arguments come first
+        self.assertEqual((client["jvm_at"], server["jvm_at"]), (2, 1))  # where a session's own go
         classpath = command[command.index("-cp") + 1].split(";" if self.system == "windows" else ":")
         self.assertEqual(classpath, ["{cache}/libraries/" + assemble.maven_path("com.mojang:minecraft:1.12.2:client"),
                                      "{cache}/libraries/" + assemble.maven_path(f"org.lwjgl:lwjgl:3.0:natives-{self.system}"),

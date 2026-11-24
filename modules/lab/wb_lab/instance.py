@@ -476,8 +476,10 @@ def build_template(ctx: Context, staging: Path, *, data: bytes, doc: dict, base_
         game = "{instance}/" + side
         splices = {"{jvm}": list(jvm.get(side) or []), "{profile}": profile,
                    "{tweakers}": [t for name in built.tweakers for t in ("--tweakClass", name)]}
-        commands[side] = {"cwd": game, "command": command(base[side], {**shared, "game": game}, splices,
-                                                          f"the base's {side} command")}
+        argv = command(base[side], {**shared, "game": game}, splices, f"the base's {side} command")
+        # Where a session's own JVM options go: after the launch's (the {jvm} splice), before the profile's.
+        before = base[side].index("{jvm}") if "{jvm}" in base[side] else 0
+        commands[side] = {"cwd": game, "command": argv, "jvm_at": before + len(splices["{jvm}"])}
     return {
         "schema": SCHEMA,
         "key": key,

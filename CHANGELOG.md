@@ -50,6 +50,15 @@
 - `[lab]` in machine config: `home`, `trusted` (the projects whose configure hooks and drivers may run here),
   `eula` and `env` (more variable names a driver gets the turn token, lease or instance in); `wb setup` names each
   key not yet set. A configure hook of a project not trusted is refused before anything is built.
+- `lab.run`: a session of a built instance from its receipt alone, under the GPU lease: open, tour (the launch's
+  tour rules drive the game through the views, each filed by label), measure (quiet, a fresh copy, only for the
+  launch file named) and driver (a trusted project's declared driver, given the turn token, the lease and the
+  instance.json path). Every cache, JDK and member file is hashed against the receipt first; a JDK of another
+  build is refused, the same build elsewhere accepted. The port, JVM options, window, views, edits and debugger
+  are the session's and go into `session.json` with the member hashes, JDK build, GPU and driver; `debug` opens
+  JDWP on loopback and writes an attach configuration. A stop waits at least 180 s for the server; a failure names
+  the decisive line, the crash report and the next command. `lab.keep` keeps a session as a retention root.
+  `lab.resolve` carries a launch's `tour` rules and `drivers` into launch.json.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,
   ledger, vast, ci, release, plan, frames, tools (the former standalone tools, 0.6.0), selftest.
 - The lab reads a profile's checkouts at a ref, each from a snapshot fixed at its commit for the whole job

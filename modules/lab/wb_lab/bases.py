@@ -91,6 +91,11 @@ INTERIM_BASES: dict[str, dict] = {
             "server": {"server.properties": _SERVER_PROPERTIES, "ops.json": _OPS},
             "client": {"options.txt": _OPTIONS},
         },
+        # A session's view distances (lab.run view=...): each key sets these <side>/<file>:<key> lines.
+        "views": {"horizontal": ["server/server.properties:view-distance"],
+                  "vertical": ["server/config/cubicchunks.cfg:I:verticalCubeLoadDistance",
+                               "client/config/cubicchunks.cfg:I:verticalCubeLoadDistance"],
+                  "client_render": ["client/options.txt:renderDistance"]},
         # Written only when the request accepts the Minecraft EULA for the instance (lab.build eula=true).
         "eula": "eula=true\n",
         "server": ["{java}", "{jvm}", "{profile}", "-Djava.io.tmpdir={game}/java-tmp", "-Dfile.encoding=UTF-8",
