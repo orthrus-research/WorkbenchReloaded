@@ -448,6 +448,32 @@ class Land(unittest.TestCase):
                                  [f"refs/heads/feat/x {line['commit']} refs/heads/feat/x {'0' * 40}"])
         self.assertEqual((verdict["refused"], verdict["notes"]), ([], []))
 
+    def test_9h2_a_tree_built_again_under_another_set_lands_the_bytes_its_pass_names(self):
+        # A build whose bytes depend on the set (a manifest naming the platform's digest) gives one tree other files
+        # under another set. The Store index keeps the tree's first build; the pass record under the set the landing
+        # lands onto names this set's bytes, and those are what the line must carry.
+        import hashlib
+        commit = advance(self.lib, "v-set-dependent")
+        ran = self.c.submit("ci.run", {"project": "lib", "commit": commit}).result(timeout=120)
+        self.assertEqual(ran.outcome, "ok", ran.summary)
+        tree = git(self.lib, "rev-parse", f"{commit}^{{tree}}")
+        record_path, = (self.store / "passes" / "lib" / tree).glob("build.*.json")
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        first = record["artifacts"]["lib-1.jar"]["sha256"]
+        rebuilt = b"lib built under another platform digest"
+        digest = hashlib.sha256(rebuilt).hexdigest()
+        kept = self.store / "files" / digest / "lib-1.jar"
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        kept.write_bytes(rebuilt)
+        record["artifacts"]["lib-1.jar"]["sha256"] = digest
+        record_path.chmod(0o644)
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        result = self.lander().land({"lib": commit})
+        self.assertEqual(result["state"], "landed", self.said)
+        line = self.set_json()["projects"]["lib"]
+        self.assertNotEqual(first, digest)
+        self.assertEqual(line["artifacts"]["mod"]["sha256"], digest)
+
     def test_9i_a_killed_publisher_holds_lock_set_until_its_deadline_then_the_next_lands(self):
         advance(self.lib, "v9")
         deadline = 12
