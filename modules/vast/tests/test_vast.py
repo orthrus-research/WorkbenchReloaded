@@ -1064,6 +1064,43 @@ class LaunchBundles(unittest.TestCase):
         self.assertEqual(seen["config"]["asset_base"], "https://resources.download.minecraft.net/")  # lab's defaults
         self.assertTrue((out / "files" / "results" / "instance.json").is_file())
 
+    def test_the_runners_session_takes_the_bundles_jdk(self):
+        # the launch file names this machine's Store; the session must run on the JDK the bundle carries
+        _, _, out = self.make()
+        files = out / "files"
+        from unittest import mock
+        modules = mock.patch.dict(sys.modules)  # another test's bundle code may be loaded: use this bundle's own
+        modules.start()
+        self.addCleanup(modules.stop)
+        for name in [n for n in sys.modules if n.split(".")[0] in ("wb_lab", "wb_core", "wb")]:
+            del sys.modules[name]
+        sys.path.insert(0, str(files / "runner"))
+        self.addCleanup(sys.path.remove, str(files / "runner"))
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("bundle_runner_tour", files / "runner" / "launch_run.py")
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        info = json.loads((files / runner.BUNDLE_INFO).read_text(encoding="utf-8"))
+        (files / "store" / "jdks" / "26.0.2+7" / "linux" / "jdk-26.0.2+7" / "bin").mkdir(parents=True)  # run.sh unpacks it
+        (files / "results").mkdir(exist_ok=True)
+        (files / "results" / "instance.json").write_text(json.dumps(
+            {"jdk": {"26": {"build": "26.0.2+7"}}, "system": "linux"}), encoding="utf-8")
+        seen = {}
+
+        def run(ctx, instance, **params):
+            seen.update(params)
+            folder = self.root / "session"
+            folder.mkdir(exist_ok=True)
+            (folder / "session.json").write_text(json.dumps({"tour": {"views": 1, "captured": 1}}),
+                                                 encoding="utf-8")
+            return {"folder": str(folder), "session": "s", "state": "ended"}
+
+        from wb_lab import run as sessions
+        with mock.patch.object(sessions, "run", run):
+            code = runner.main(["tour", str(files), str(self.root / "lab")])
+        self.assertEqual(code, 0)
+        self.assertEqual(Path(seen["jdk"]), files / info["store"] / "jdks" / "26.0.2+7" / "linux" / "jdk-26.0.2+7")
+
 
 if __name__ == "__main__":
     unittest.main()
