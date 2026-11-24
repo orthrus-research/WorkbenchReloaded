@@ -35,6 +35,9 @@
 - `ci.run` reserves the memory the jobs file of its commit asks for, read at submit: `[project] reserve`, else the
   largest single check's claim, at most the machine's budget (8 GB only when the file cannot be read). A command
   sizes its reservation with `resources.mem_from`; the job's `reservation` event says what it took and why.
+- A `ci.run` of a clean commit (not a working tree, not cold, no stand-in) builds with a local Gradle build cache in
+  the machine's Gradle home (`caches/workbench-build-cache`, through `org.gradle.caching` and an init script), so a
+  commit that changes no input of a task, a docs-only one, takes `compileJava` from the cache.
 - Each job calls the API with a token of its own, revoked when it ends, that can never approve a quote: approval
   takes the person's token.
 - The Set: set.json (schema 1) names each project's line (branch, commit and the SHA-256 of its files), holds

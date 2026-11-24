@@ -36,7 +36,10 @@ artifacts = ["build/out.jar"]
 steps = [{ name = "build", run = ["{python}", "-c", "import pathlib; p = pathlib.Path('build'); p.mkdir(exist_ok=True); (p / 'out.jar').write_bytes(b'built bytes')"] }]
 
 [jobs.clean-env]
-steps = [{ name = "env", run = ["{python}", "-c", "import os, sys; sys.exit(3 if [k for k in os.environ if k.startswith('WB_') and k not in ('WB_PIN_CACHE', 'WB_COLD', 'WB_GRADLE')] else 0)"] }]
+steps = [{ name = "env", run = ["{python}", "-c", "import os, sys; sys.exit(3 if [k for k in os.environ if k.startswith('WB_') and k not in ('WB_PIN_CACHE', 'WB_COLD', 'WB_GRADLE', 'WB_BUILD_CACHE')] else 0)"] }]
+
+[jobs.cache-env]
+steps = [{ name = "env", run = ["{python}", "-c", "import os; print('cache', os.environ.get('WB_BUILD_CACHE', '')); print('opts', os.environ.get('GRADLE_OPTS', ''))"] }]
 
 [jobs.slow-built]
 artifacts = ["build/slow.jar"]
@@ -272,6 +275,35 @@ class Ci(unittest.TestCase):
             self.assertNotIn("disagreements", index)
         finally:
             git(self.demo, "reset", "-q", "--hard", self.head)
+
+    def cache_env(self, params: dict) -> dict:
+        result = self.c.submit("ci.run", {"project": "demo", "workflow": "cache-env", "if_needed": False,
+                                          **params}).result(timeout=600)
+        self.assertEqual(result.outcome, "ok", result.summary)
+        log = next(p for root in (self.d.out, self.d.state) for p in root.rglob(f"{result.job}/cache-env/*.log"))
+        return dict(line.split(" ", 1) if " " in line else (line, "")
+                    for line in log.read_text(encoding="utf-8").splitlines() if line.startswith(("cache", "opts")))
+
+    def test_a_clean_commits_run_gets_the_gradle_homes_build_cache(self):
+        sys.path.insert(0, str(REPO / "modules" / "ci"))
+        from wb_ci import commands
+        home = self.d.state / "cache" / "gradle"
+        clean = self.cache_env({"commit": self.head})
+        self.assertEqual(clean["cache"].strip(), str(home / "caches" / "workbench-build-cache"))
+        self.assertIn("-Dorg.gradle.caching=true", clean["opts"])  # the Gradle property that turns the cache on
+        script = (home / "init.d" / "workbench-build-cache.gradle").read_bytes()
+        self.assertEqual(script, commands.CACHE_INIT)
+        text = script.decode("utf-8")
+        self.assertIn('System.getenv("WB_BUILD_CACHE")', text)       # only a run that names the folder
+        self.assertIn('!System.getenv("WB_COLD")', text)             # never a cold rebuild
+        self.assertIn("settings.buildCache.local.directory = new File(cacheFolder)", text)
+        self.assertNotIn("startParameter", text)                      # deprecated in Gradle 9: the property does it
+        # A working tree's run, and a cold rebuild, get no cache.
+        for params in ({"commit": "worktree"}, {"commit": self.head, "cold": True}):
+            with self.subTest(params=params):
+                other = self.cache_env(params)
+                self.assertEqual(other["cache"].strip(), "")
+                self.assertNotIn("org.gradle.caching", other["opts"])
 
     def test_two_runs_of_one_commit_wait_for_each_other(self):
         entry = self.d.workbench.registry.get("ci.run")
