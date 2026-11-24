@@ -15,6 +15,8 @@ Rules are named under ``[modules.release.rules.<name>]``. A channel names its ow
     manifest = { Implementation-Title = "examplemod" }   # attributes a production JAR's manifest must carry
                                                 # ({version} and {java} are filled in)
     versions = ["name", "manifest", "mod", "pom", "module"]  # where the version is read and must agree
+    licence = { name = "Apache-2.0", url = "<licence URL>" }   # the licence a POM Workbench writes declares (a
+                                                # central channel needs it; distribution = "repo" may be added)
 
 A file matching ``extras`` is an extra; otherwise one matching ``production`` must be a production JAR; any other
 file is a violation, and so is a publication without a production JAR. A production JAR holds classes (not only
@@ -52,6 +54,9 @@ FIELDS = {
     "dependencies": {"type": "list", "items": "string", "default": []},
     "manifest": {"type": "object", "default": {}},
     "versions": {"type": "list", "items": {"type": "enum", "values": list(SOURCES)}, "default": list(SOURCES)},
+    "licence": {"type": "object", "optional": True,
+                "fields": {"name": {"type": "string"}, "url": {"type": "string"},
+                           "distribution": {"type": "string", "optional": True}}},
 }
 MAGIC = b"\xca\xfe\xba\xbe"
 MAX_NESTED = 64 * 2**20   # a nested JAR is read into memory to be opened; a larger one is reported, not read
@@ -75,6 +80,7 @@ class Rules:
     dependencies: list[str]
     manifest: dict
     versions: list[str]
+    licence: dict | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)
