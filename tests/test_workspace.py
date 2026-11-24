@@ -83,6 +83,30 @@ class Trees(unittest.TestCase):
         git(self.linked, "add", "-A")
         self.assertEqual(git(self.linked, "write-tree"), found["tree"])
 
+    def test_the_would_be_tree_takes_crlf_as_the_hosts_git_does(self):
+        # Git for Windows converts CRLF to LF on commit (core.autocrlf): a file whose only change is its line endings
+        # is no change, a new CRLF text file goes in as LF, and a file marked binary keeps its bytes.
+        git(self.linked, "config", "core.autocrlf", "true")
+        (self.linked / ".gitattributes").write_text("*.bin -text\n", encoding="utf-8")
+        git(self.linked, "add", ".gitattributes")
+        git(self.linked, "commit", "-q", "-m", "attributes")
+        (self.linked / "kept.txt").write_bytes(b"one\r\n")  # as a Windows checkout has it on disk
+        self.assertFalse(self.workspace.would_be(self.linked)["dirty"])
+        (self.linked / "new.txt").write_bytes(b"a\r\nb\r\n")
+        (self.linked / "raw.bin").write_bytes(b"x\r\ny\r\n")
+        found = self.workspace.would_be(self.linked)
+        self.assertTrue(found["dirty"])
+        blob = subprocess.run(["git", "cat-file", "blob", f"{found['tree']}:new.txt"], cwd=self.linked, check=True,
+                              capture_output=True).stdout
+        self.assertEqual(blob, b"a\nb\n")
+        raw = subprocess.run(["git", "cat-file", "blob", f"{found['tree']}:raw.bin"], cwd=self.linked, check=True,
+                             capture_output=True).stdout
+        self.assertEqual(raw, b"x\r\ny\r\n")
+        self.assertEqual(git(self.linked, "rev-parse", f"{found['tree']}:kept.txt"),
+                         git(self.linked, "rev-parse", "HEAD:kept.txt"))  # line endings alone changed nothing
+        git(self.linked, "add", "-A")
+        self.assertEqual(git(self.linked, "write-tree"), found["tree"])
+
 
 class Gate(unittest.TestCase):
     def setUp(self):
@@ -155,6 +179,66 @@ class Stubs(unittest.TestCase):
 
     def test_the_cli_command_names_this_checkout(self):
         self.assertIn("bin", setup.cli_command())
+
+
+class Rules(unittest.TestCase):
+    """The hooks with no machine rules file: they say they scrubbed on the built-in rules only, and still scrub."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.repo = Path(self.folder.name) / "Demo"
+        self.repo.mkdir()
+        git(self.repo, "init", "-q", "-b", "main")
+        self.scrub = hooks._scrub()
+        saved = (self.scrub.RULES_FILE, os.environ.pop("ORTHRUS_SCRUB_RULES_FILE", None), Path.cwd(), hooks._log)
+        self.logged = []
+        hooks._log = lambda workspace, root, name, verdict: self.logged.append((name, verdict))  # not the machine's log
+        self.scrub.RULES_FILE = Path(self.folder.name) / "no-such-folder" / "scrub-rules.toml"
+        os.chdir(self.repo)
+
+        def restore():
+            self.scrub.RULES_FILE, named, cwd, hooks._log = saved
+            if named is not None:
+                os.environ["ORTHRUS_SCRUB_RULES_FILE"] = named
+            os.chdir(cwd)
+        self.addCleanup(self.folder.cleanup)
+        self.addCleanup(restore)
+
+    def commit_msg(self, text: str) -> tuple[int, str]:
+        import contextlib
+        import io
+        message = self.repo / ".git" / "COMMIT_EDITMSG"
+        message.write_text(text, encoding="utf-8")
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            code = hooks.run("commit-msg", [str(message)])
+        return code, said.getvalue()
+
+    def test_with_the_rules_file_missing_the_hooks_say_built_in_rules_only(self):
+        code, said = self.commit_msg("Fix the reader\n")
+        self.assertEqual(code, 0, said)
+        self.assertIn(f"no scrub rules file at {self.scrub.RULES_FILE}", said)
+        self.assertIn("the scrub ran on its built-in rules only", said)
+        self.assertEqual(self.logged, [("commit-msg", "ok findings=0 refused=0")])
+        code, said = self.commit_msg("Fix the reader\n\n" + "Generated" + "-by: a tool\n")
+        self.assertEqual(code, 1, said)  # the built-in rules still refuse an attribution trailer
+        self.assertIn("built-in rules only", said)
+
+    def test_a_rules_file_that_is_named_but_missing_refuses(self):
+        os.environ["ORTHRUS_SCRUB_RULES_FILE"] = str(Path(self.folder.name) / "named.toml")
+        try:
+            code, said = self.commit_msg("Fix the reader\n")
+        finally:
+            os.environ.pop("ORTHRUS_SCRUB_RULES_FILE", None)
+        self.assertEqual(code, 1)
+        self.assertIn("the scrub cannot load its rules", said)
+
+    def test_with_the_rules_file_present_there_is_no_note(self):
+        self.scrub.RULES_FILE.parent.mkdir(parents=True)
+        self.scrub.RULES_FILE.write_text("", encoding="utf-8")
+        code, said = self.commit_msg("Fix the reader\n")
+        self.assertEqual(code, 0, said)
+        self.assertNotIn("built-in rules only", said)
 
 
 if __name__ == "__main__":

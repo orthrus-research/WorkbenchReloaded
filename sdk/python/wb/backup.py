@@ -35,6 +35,13 @@ def _target(config, given: str | None) -> Path:
     return Path(os.path.expanduser(str(configured))) if configured else Path.home() / "wb-backup"
 
 
+def snapshot_script(source: str, target: str) -> str:
+    """The program the container's Python runs for the copy: SQLite's online backup of ``source`` (read-only, while
+    the daemon writes it) into ``target``, a database that opens on its own, every job in the state it had."""
+    return (f"import sqlite3; s = sqlite3.connect('file:{source}?mode=ro', uri=True); "
+            f"d = sqlite3.connect('{target}'); s.backup(d); d.close(); s.close()")
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -93,8 +100,7 @@ def main(args) -> int:
     config = wbconfig.load()
     folder = _target(config, args.to) / time.strftime("%Y%m%d-%H%M%S")
     folder.mkdir(parents=True, exist_ok=True)
-    script = (f"import sqlite3; s = sqlite3.connect('file:{STATE_DB}?mode=ro', uri=True); "
-              f"d = sqlite3.connect('{SNAPSHOT}'); s.backup(d); d.close(); s.close()")
+    script = snapshot_script(STATE_DB, SNAPSHOT)
     try:
         subprocess.run(["docker", "exec", CONTAINER, "python3", "-c", script], check=True, capture_output=True,
                        text=True)
