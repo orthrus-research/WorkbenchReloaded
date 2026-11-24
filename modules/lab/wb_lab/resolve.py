@@ -19,6 +19,8 @@ so a member's switch needs no landing in the product.
 
 launch.json names every member by SHA-256 with its Store path and the mod ids its mcmod.info declares; a launch that
 would load two builds of one mod id is refused before anything is written, as is a member the set or the Store lacks.
+Its ``runtime`` names the kind, version and exact JDK build, and, once the platform names them
+(``platform.cleanroom.{installer,universal,prism}``), the runtime's own files by URL and SHA-256 in ``runtime.files``.
 The code names no project."""
 
 from __future__ import annotations
@@ -34,14 +36,23 @@ from pathlib import Path
 SCHEMA = 1
 SIDES = ("both", "client", "server")
 MEMBER = re.compile(r"^([a-z0-9][a-z0-9._-]*)(?::([a-z0-9][a-z0-9._-]*))?@(both|client|server)$")
-LAUNCH_KEYS = {"members", "runtime", "params", "jvm", "collect", "failures", "place"}
+LAUNCH_KEYS = {"members", "runtime", "params", "jvm", "collect", "failures", "place", "tour", "drivers"}
 PLACE = re.compile(r'^[^/\\:*?"<>|]+\.jar$')  # a bare file name: no folder, nothing Windows refuses
 MEMBER_KEYS = {"jvm", "collect", "failures"}
 RUNTIMES = ("cleanroom",)
+RUNTIME_FILES = ("installer", "universal", "prism")  # platform.cleanroom's files, copied into runtime.files
 
 
 class LaunchError(Exception):
     """A launch that cannot be resolved; the message names what is missing and, where there is one, the fix."""
+
+
+class MissingBuild(LaunchError):
+    """A member the Store lacks, which ``missing`` (project, commit) builds: wb play submits that check first."""
+
+    def __init__(self, message: str, project: str, commit: str):
+        super().__init__(message)
+        self.missing = (project, commit)
 
 
 def parse_member(text: str) -> tuple[str, str | None, str]:
@@ -157,8 +168,9 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
             if not glob:
                 raise LaunchError(f"member {spec}: {product} has no [artifacts.{part}]")
             if product_index is None:
-                raise LaunchError(f"CI has not built {product} tree {tree[:12]} (commit {commit[:12]}), so the Store "
-                                  f"has no {product}:{part}: run wb check in the worktree, then resolve again")
+                raise MissingBuild(f"CI has not built {product} tree {tree[:12]} (commit {commit[:12]}), so the Store "
+                                   f"has no {product}:{part}: run wb check in the worktree, then resolve again",
+                                   product, commit)
             found = [(file, item) for file, item in (product_index.get("artifacts") or {}).items()
                      if fnmatch.fnmatch(str(item.get("from") or file), glob) or fnmatch.fnmatch(file, Path(glob).name)]
             if len(found) != 1:
@@ -205,6 +217,8 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
         except artifacts.StoreError as error:
             fix = (f"wb check in {source_project} at {str(source_commit)[:12]}" if source_project and
                    entry["kind"] != "hold" else "the landing that recorded it puts it there")
+            if source_project and entry["kind"] != "hold" and source_commit:
+                raise MissingBuild(f"member {spec}: {error}; {fix}", source_project, source_commit) from None
             raise LaunchError(f"member {spec}: {error}; {fix}") from None
         ids = mod_ids(path)
         if entry["kind"] == "third" and thirds[name].get("mod_id") and thirds[name]["mod_id"] not in ids:
@@ -227,12 +241,23 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
     _add_jvm(jvm, _jvm(table.get("jvm"), f"launch.{launch}"))
     platform = set_doc.get("platform") or {}
     java = platform.get("java")
-    runtime = {"kind": table.get("runtime", "cleanroom"),
-               "version": (platform.get("cleanroom") or {}).get("version", ""),
+    cleanroom = platform.get("cleanroom") or {}
+    runtime = {"kind": table.get("runtime", "cleanroom"), "version": cleanroom.get("version", ""),
                "java": java, "jdk": ((platform.get("jdk") or {}).get(str(java)) or {}).get("build", "")}
-    return {"schema": SCHEMA, "project": product, "launch": launch, "commit": commit, "tree": tree,
-            "set": revision, "store": str(store), "runtime": runtime, "members": members, "jvm": jvm,
-            "collect": collect, "failures": failures, "params": dict(table.get("params") or {})}
+    # The runtime's own files as the platform names them (a landing of platform.cleanroom keeps each in the Store):
+    # lab.build makes an instance from these, so the launch file carries them.
+    files = {part: {key: cleanroom[part][key] for key in ("url", "file", "sha256") if key in cleanroom[part]}
+             for part in RUNTIME_FILES if isinstance(cleanroom.get(part), dict)}
+    if files:
+        runtime["files"] = files
+    document = {"schema": SCHEMA, "project": product, "launch": launch, "commit": commit, "tree": tree,
+                "set": revision, "store": str(store), "runtime": runtime, "members": members, "jvm": jvm,
+                "collect": collect, "failures": failures, "params": dict(table.get("params") or {})}
+    # How a session drives the game (lab.run): the tour rules and the drivers, as the launch names them.
+    for key in ("tour", "drivers"):
+        if table.get(key):
+            document[key] = json.loads(json.dumps(table[key]))
+    return document
 
 
 # --- the job ------------------------------------------------------------------------------------------------------
@@ -301,6 +326,8 @@ def resolve_command(ctx, folder: str, launch: str = "default", out: str = ""):
         document = resolve(product=product, commit=commit, tree=tree, launch=launch, table=table, set_doc=set_doc,
                            revision=revision, store=store, product_artifacts=own.get("artifacts") or {},
                            product_index=artifacts.find(store, product, tree), extras=extras)
+    except MissingBuild as error:
+        raise ParamError(str(error)) from error  # wb play reads what builds it from the cause
     except LaunchError as error:
         raise ParamError(str(error)) from None
     target = Path(out) if out else top / ".local" / "launch" / f"{launch}.json"

@@ -124,6 +124,9 @@ class Rules(unittest.TestCase):
         service = self.service()
         self.assertFalse(service._resources(command, "host", {})[3])                # an open session
         self.assertTrue(service._resources(command, "host", {"tour": "/t.json"})[3])  # a tour is a measurement
+        command.resources["quiet_if"] = ["kind=measure", "kind=driver"]
+        self.assertFalse(service._resources(command, "host", {"kind": "open"})[3])
+        self.assertTrue(service._resources(command, "host", {"kind": "measure"})[3])
 
     def test_a_named_lock_is_held_by_one_job_at_a_time(self):
         command = Command(module="ci", name="run", summary="", handler="x:y", version="1",

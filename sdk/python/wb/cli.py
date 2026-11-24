@@ -9,6 +9,8 @@
     wb config show [--origin] | wb schema
     wb gc [--only CLASS] | wb gc --yes DIGEST | wb gc --rules | wb gc --nightly
     wb host serve | install | status
+    wb gpu [run [--note T] [--limit D] [--detach] [--quiet] -- CMD | leave LANE | stuck]
+    wb play [PROJECT][@REF|@set][:LAUNCH] [--from F] [--name N] [--tour F] [--measure] [--debug S] ...
 
 Exit codes: 0 ok, 1 finding, 2 usage, 3 environment, 4 cancelled or interrupted, 5 still pending,
 6 awaiting approval (the quote and a ready-made prompt are printed; with --json, as JSON).
@@ -286,6 +288,16 @@ def cmd_store(args) -> int:
 def cmd_land(args) -> int:
     from . import land
     return land.main(args)
+
+
+def cmd_gpu(args) -> int:
+    from . import gpu
+    return gpu.main(args)
+
+
+def cmd_play(args) -> int:
+    from . import play
+    return play.main(args)
 
 def _stand_ins(workspace, given: list, args) -> dict:
     """Each --with name=<ref|folder>: that project's checks run first on the commit (a folder: its would-be tree, as
@@ -579,6 +591,36 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--report", action="store_true", help="scrub unpushed commits and ref names; change nothing")
     p.add_argument("--undo", action="store_true", help="remove Workbench's hooks, restoring those kept at install")
     p.add_argument("--repo", action="append", default=[], help="another repository to cover")
+    p = add("gpu", cmd_gpu, "the GPU lease: who holds it and who waits; a turn for any command (wb gpu run -- ...)")
+    p.add_argument("action", nargs="?", choices=["status", "run", "leave", "stuck"])
+    p.add_argument("--lane", help="run: the lane's name (default: one named after this folder and the command)")
+    p.add_argument("--note", help="run: what the turn is for")
+    p.add_argument("--limit", help="run: the longest turn (1h by default); past it the command is stopped")
+    p.add_argument("--detach", action="store_true", help="run: as a process of its own that outlives the shell")
+    p.add_argument("--quiet", action="store_true", help="run: a measurement; recorded in the lane and the lease")
+    p.add_argument("rest", nargs=argparse.REMAINDER, metavar="-- COMMAND | LANE")
+    p = add("play", cmd_play, "resolve a launch, build its instance, and play a session of it on this GPU")
+    p.add_argument("target", nargs="?", metavar="[PROJECT][@REF|@set|@head][:LAUNCH]")
+    p.add_argument("--from", dest="from_file", metavar="LAUNCH.JSON", help="replay a launch file; resolve nothing")
+    p.add_argument("--name", help="the instance's name (default <project>-<launch>)")
+    p.add_argument("--tour", help="a tour file: play it and file its captures")
+    p.add_argument("--measure", action="store_true", help="the tour is evidence: quiet, on a fresh copy")
+    p.add_argument("--driver", help="run the launch's declared driver of this name")
+    p.add_argument("--debug", choices=["client", "server", "both"], help="JDWP on loopback; not evidence")
+    world = p.add_mutually_exclusive_group()
+    world.add_argument("--fresh-world", action="store_true", help="remove the instance's world first")
+    world.add_argument("--keep-world", action="store_true", help="play on the world the instance has (the default)")
+    p.add_argument("--param", action="append", metavar="K=V", help="a launch param over the launch's (part of the "
+                   "template's key)")
+    p.add_argument("--configure", metavar="FILE", help="the product's configure hook, until its launch names it "
+                   "(runs only for a project in [lab] trusted)")
+    p.add_argument("--jvm", action="append", metavar="OPT", help="a session JVM option (-X, client:-X, server:-X)")
+    p.add_argument("--view", action="append", metavar="K=V", help="a view distance (horizontal, vertical, "
+                   "client_render)")
+    p.add_argument("--window", metavar="WxH", help="the client's window")
+    p.add_argument("--edit", action="append", metavar="SIDE/FILE:KEY=VALUE", help="an instance file changed for this "
+                   "session only")
+    p.add_argument("--no-rebuild", action="store_true", help="build no missing member: refuse, naming the check")
     p = add("host", cmd_host, "the Windows host runner")
     p.add_argument("action", choices=["serve", "install", "uninstall", "status"])
     p.add_argument("rest", nargs=argparse.REMAINDER)

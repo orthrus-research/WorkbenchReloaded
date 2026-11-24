@@ -40,7 +40,10 @@ In development: version 0.1.0 is unreleased, and there are no releases yet;
 - **The host runner** (`host/wb_host`, `wb host serve`) runs declared routines natively on the host (game
   sessions on the local GPU) under a GPU lease that every GPU user on the machine follows: one lock file and a folder
   of lanes. Launchers join a held lease through `WB_TURN_TOKEN` (or variable names of their own, `[runner]
-  token_env`).
+  token_env`). `wb gpu` shows the holder, the waiters in the order they are served and stuck lanes; `wb gpu run
+  [--note T] [--limit D] [--detach] [--quiet] -- <command>` gives any command a turn in a lane of its own (one that
+  was waiting keeps its place when started again, and a detached one outlives its shell); `wb gpu leave <lane>`
+  withdraws one.
 - **SDKs** (`sdk/`) for Python (with the `wb` CLI), Node/TypeScript, Java with a Gradle plugin, and PowerShell,
   their envelope types generated from `schema/envelope.schema.json`.
 
@@ -208,7 +211,45 @@ name a member is placed under), and a member may add its own
 switches (`[launch.member]`). `lab.resolve folder=<worktree>` resolves one once into `launch.json`: every member by
 SHA-256 from the worktree's set revision (a line, a hold or a third entry), the project itself from the Store by the
 tree CI built, with the mod ids each declares. A member the set or the Store lacks, or two builds of one mod id, is
-refused before anything is written.
+refused before anything is written. Once the set's platform names the runtime's own files
+(`platform.cleanroom.{installer,universal,prism}`), the launch file carries them too, in `runtime.files`.
+
+`lab.build launch=<launch.json> name=<name>` builds an instance from that file and nothing else: the server by the
+runtime's installer on the launch's exact JDK from the Store, the client from the runtime's launcher instance (as
+`lab.assemble` does), each runtime file by SHA-256 from the Store, a candidate folder or an allowed host; every member's
+Store file hashed again and placed by side; the base's files and JVM profile (`base`, for now the interim
+`cubature:standalone` in `wb_lab/bases.py`), then the configure hook the request names for the product's own changes
+(`examples/launch/configure_riven.py` shows one). Its `instance.json` names every file by SHA-256 relative to
+`{instance}`, `{cache}` and `{jdk:N}`, with the launch file's SHA-256 and the server's and client's command lines. One
+template is built per launch file, base and parameters, and each further instance is hard-linked from it in under a
+second. `modules/lab/tools/compare_instances.py` compares such an instance with one the old route prepared, file by
+file and command line by command line. A configure hook runs only for a project the machine's `[lab] trusted` names,
+and `eula.txt` is written only where `[lab] eula = true` (or the request) accepts the Minecraft EULA. The server's
+port is not part of a template: `{port}` stays in the client's command line for the session to fill.
+
+`lab.run instance=<name> kind=open|tour|measure|driver` plays a session of such an instance from its receipt alone,
+under the GPU lease. It first hashes every cache, JDK and member file against `instance.json`: a JDK of another build
+is refused, the same build at another path (`jdk=`) is accepted. A tour is driven by the launch's tour rules
+(`[launch.<name>.tour]`: the server's set-up commands, the client's capture switches and the line that says a view
+was captured), view by view, and filed as `tour/NN-<label>.png`; `measure` is such a tour that is evidence: quiet, on
+a fresh copy of the template, and only for the launch file it names. `driver` runs a trusted project's declared
+driver (`[launch.<name>.drivers]`) with the turn token, the lease and the instance.json path in `WB_TURN_TOKEN`,
+`WB_LEASE_FILE`, `WB_INSTANCE` and the names `[lab] env` adds. What a session chooses (`port`, `jvm`, `window`,
+`view`, `edits`, `debug`) goes into its `session.json`, beside the member hashes, the JDK build and the GPU and its
+driver, and never into the template: edited files are put back when it ends. `debug=client|server|both` opens JDWP
+on loopback, writes `attach/launch.json` (VS Code) and `attach/jdb.txt`, and marks the session as not evidence. A
+stop waits at least 180 s for the server's own exit before the tree is killed; a failure names the decisive line
+(the launch's `failures` first), the crash report and the next command. `lab.keep session=<id> reason=<text>` keeps
+a session; what it names is a retention root (`kept.json`).
+
+`wb play [project][@set|@head][:launch]` does all of it from the folder you stand in: it resolves the launch at the
+folder's `.set` (or the head where there is none) and says which (`set <rev> (this folder, N behind)` or `set <rev>
+(head)`), submits the producing check of any member the Store lacks first (`--no-rebuild` refuses instead, naming
+it), builds or reuses the instance, and plays the session on this machine under the GPU lease in a lane of its own.
+It prints the job id, launch file, instance and session folder at once, streams both consoles, and on a failure
+prints the decisive line, the crash report and the next command. `--from <launch.json>` replays a launch file's
+exact bytes; `--tour`, `--measure`, `--driver`, `--debug`, `--fresh-world`, `--param`, `--jvm`, `--view`,
+`--window` and `--edit` pass through to the build and the session.
 
 ## Money
 

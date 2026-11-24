@@ -112,6 +112,19 @@ class Members(Base):
                                           "jdk": "26.0.2.1+1"})
         self.assertEqual((doc["set"], doc["params"], doc["schema"]), ("9" * 40, {"seed": 8675309}, 1))
 
+    def test_the_platforms_runtime_files_go_into_the_launch(self):
+        base = "https://example.org/cleanroom/0.7.14-alpha/cleanroom-0.7.14-alpha"
+        files = {"installer": {"url": base + "-installer.jar", "file": "cleanroom-0.7.14-alpha-installer.jar",
+                               "sha256": "1" * 64},
+                 "universal": {"url": base + "-universal.jar", "file": "cleanroom-0.7.14-alpha-universal.jar",
+                               "sha256": "2" * 64},
+                 "prism": {"url": base + ".zip", "file": "cleanroom-0.7.14-alpha.zip", "sha256": "3" * 64}}
+        set_doc = {**self.set_doc, "platform": {**self.set_doc["platform"],
+                                                "cleanroom": {"version": "0.7.14-alpha", **files}}}
+        doc = self.run_resolve(set_doc=set_doc)
+        self.assertEqual(doc["runtime"]["files"], files)
+        self.assertNotIn("files", self.run_resolve()["runtime"])  # a platform without them: none in the launch
+
     def test_place_names_the_file_a_member_is_placed_under(self):
         table = {**self.table, "place": {"helper@server": "+Helper-0.2.jar"}}
         by = {m["member"]: m for m in self.run_resolve(table=table)["members"]}
@@ -144,15 +157,24 @@ class Members(Base):
             self.run_resolve(table=table, set_doc=doc)
 
     def test_a_product_tree_ci_has_not_built_is_refused_with_the_fix(self):
-        with self.assertRaisesRegex(launch.LaunchError, r"CI has not built game tree bbbbbbbbbbbb.*run wb check"):
+        with self.assertRaisesRegex(launch.LaunchError, r"CI has not built game tree bbbbbbbbbbbb.*run wb check") as raised:
             self.run_resolve(index=None)
+        self.assertEqual(raised.exception.missing[0], "game")  # what wb play builds first
+
+    def test_the_tour_rules_and_drivers_are_carried_into_the_launch_file(self):
+        table = {"members": ["game:mod@both"], "tour": {"captured": "view captured", "client_jvm": ["-Dgame.tour=1"]},
+                 "drivers": {"pipeline": {"command": ["{python}", "{root}/tools/pipeline.py"]}}}
+        doc = self.run_resolve(table=table)
+        self.assertEqual(doc["tour"]["captured"], "view captured")
+        self.assertEqual(doc["drivers"]["pipeline"]["command"][0], "{python}")
 
     def test_a_file_the_store_lacks_names_the_check_that_makes_it(self):
         doc = json.loads(json.dumps(self.set_doc))
         doc["projects"]["cube"]["artifacts"]["mod"]["sha256"] = "0" * 64
         with self.assertRaisesRegex(launch.LaunchError, r"cube:mod@both: the Store has no cube-1.jar.*wb check in "
-                                                        r"cube at cccccccccccc"):
+                                                        r"cube at cccccccccccc") as raised:
             self.run_resolve(set_doc=doc)
+        self.assertEqual(raised.exception.missing, ("cube", "c" * 40))
 
     def test_an_unknown_member_or_artifact_is_refused(self):
         with self.assertRaisesRegex(launch.LaunchError, r"names no project or third entry nope"):

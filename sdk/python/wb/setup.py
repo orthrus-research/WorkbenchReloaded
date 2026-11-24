@@ -106,6 +106,18 @@ def plan(workspace: Workspace, extra: list[str]) -> list[dict]:
     return steps
 
 
+def lab_questions(values: dict | None) -> list[str]:
+    """What wb setup asks about the game lab before any configure hook or driver runs: each [lab] key not yet set,
+    with what it decides."""
+    values = values or {}
+    asks = {"home": "where instances, sessions and the lease live (empty: [runner] lab_home)",
+            "trusted": "which projects' configure hooks and drivers may run here, e.g. ['riven', 'cubature']",
+            "eula": "true if you accept the Minecraft EULA for the instances built here",
+            "env": "more variable names a driver gets the turn token or lease in, e.g. "
+                   "{ CUBIC_LAB_TURN_LEASE = 'token' }"}
+    return [f"[lab] {key}: not set; {what}" for key, what in asks.items() if key not in values]
+
+
 def apply(workspace: Workspace, extra: list[str]) -> int:
     git(Path.cwd(), "config", "--global", "wb.cli", cli_command())
     print(f"git config --global wb.cli = {cli_command()}")
@@ -152,6 +164,9 @@ def main(args) -> int:
                 return 2
             return undo(workspace, args.repo)
         steps = plan(workspace, args.repo)
+        from . import config as wbconfig
+        for line in lab_questions(wbconfig.load().values.get("lab")):
+            print(line)  # answered in the machine's workbench.toml; nothing here writes it
         if not args.yes:
             for step in steps:
                 print(f"{step['what']}: {step.get('action') or step.get('value')}")

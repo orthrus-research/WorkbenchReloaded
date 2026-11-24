@@ -156,7 +156,8 @@ def parse(path: Path, package: str) -> Module:
             names = resources.get(key, [])
             if not isinstance(names, list) or not all(isinstance(v, str) and v for v in names):
                 raise ManifestError(f"{where}: resources.{key} is a list of names")
-        for param in resources.get("quiet_if", []):
+        for entry in resources.get("quiet_if", []):
+            param = entry.partition("=")[0]  # a param, or param=value: quiet only for that value
             if param not in (raw.get("params") or {}):
                 raise ManifestError(f"{where}: resources.quiet_if names {param!r}, which is not a param")
         if raw.get("inline") and (raw.get("spends") or runs_on != ["container"] or raw.get("turn")):

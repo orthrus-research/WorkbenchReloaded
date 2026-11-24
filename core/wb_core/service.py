@@ -586,14 +586,17 @@ class Workbench:
     def _resources(self, command: Command, machine: str, params: dict | None = None
                    ) -> tuple[float, float, set[str], bool, set[str]]:
         """What a job claims: CPU and memory on the container, exclusive keys (the GPU), quiet, and named locks.
-        ``quiet_if`` names params that make a run a measurement when set; a lock may name a param as ``{name}``."""
+        ``quiet_if`` names params that make a run a measurement when set, or ``param=value`` when they have that
+        value; a lock may name a param as ``{name}``."""
         res = command.resources
         params = params or {}
         cpu = float(res.get("cpu", 1)) if machine == "container" else 0.0
         mem = float(res.get("mem_gb", 0.5)) if machine == "container" else 0.0
         exclusive = {f"gpu@{machine}"} if res.get("gpu") else set()
-        quiet = bool(res.get("quiet")) or any(params.get(name) not in (None, "", False) for name in
-                                               res.get("quiet_if", []))
+        def when(entry: str) -> bool:
+            name, sep, value = entry.partition("=")
+            return str(params.get(name)) == value if sep else params.get(name) not in (None, "", False)
+        quiet = bool(res.get("quiet")) or any(when(entry) for entry in res.get("quiet_if", []))
         locks = {str(lock).format_map(_Params(params)) for lock in res.get("locks", [])}
         return cpu, mem, exclusive, quiet, locks
 

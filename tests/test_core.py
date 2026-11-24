@@ -108,6 +108,19 @@ class ConfigMerge(unittest.TestCase):
         with self.assertRaises(wbconfig.ConfigError):
             wbconfig.load(self.folder)
 
+    def test_lab_table_names_its_keys_and_env_values(self):
+        self.write("workbench.toml", "[lab]\nhome = 'L'\ntrusted = ['riven']\neula = true\n"
+                                     "[lab.env]\nCUBIC_LAB_TURN_LEASE = 'token'\n")
+        lab = resolve(wbconfig.load(self.folder)).lab
+        self.assertEqual((lab["home"], lab["trusted"], lab["eula"]), ("L", ["riven"], True))
+        self.assertEqual(lab["env"], {"CUBIC_LAB_TURN_LEASE": "token"})
+        self.write("workbench.toml", "[lab.env]\nX = 'password'\n")
+        with self.assertRaises(SettingsError) as raised:
+            resolve(wbconfig.load(self.folder))
+        self.assertIn("lab.env.X", str(raised.exception))
+        self.write("workbench.toml", "")
+        self.assertEqual(resolve(wbconfig.load(self.folder)).lab["trusted"], [])
+
     def test_wrong_type(self):
         self.write("core/api.toml", "port = 'seven'\n")
         with self.assertRaises(SettingsError) as raised:
