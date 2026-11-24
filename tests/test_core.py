@@ -245,6 +245,62 @@ class Types(unittest.TestCase):
             with self.assertRaises(ManifestError):  # a cached command is cached by its inputs' content
                 parse(path, "m")
 
+
+    def test_an_object_says_what_it_holds(self):
+        table = types.normalise_spec("t", {"type": "object", "fields": {"a": "int", "b": {"type": "bool",
+                                                                                          "optional": True}}})
+        self.assertEqual(types.coerce("t", table, {"a": 1}), {"a": 1})  # an optional key left out stays out
+        with self.assertRaises(types.ValueError_) as raised:
+            types.coerce("t", table, {"a": 1, "c": 2})
+        self.assertEqual(raised.exception.field, "t.c")
+        by_name = types.normalise_spec("m", {"type": "object", "entries": {"type": "object", "fields": {"x": "string"}}})
+        with self.assertRaises(types.ValueError_) as raised:
+            types.coerce("m", by_name, {"one": {"x": "s"}, "two": {"x": 3}})
+        self.assertEqual(raised.exception.field, "m.two.x")
+        self.assertEqual(types.json_schema(by_name)["additionalProperties"]["properties"]["x"], {"type": "string"})
+        for bad in ({"type": "string", "entries": "int"}, {"type": "object", "fields": {}, "entries": "int"},
+                    {"type": "object", "fields": {"a": "nope"}}):
+            with self.assertRaises(types.ValueError_):
+                types.normalise_spec("p", bad)
+
+    def test_the_module_tables_read_as_maps_are_typed_at_load(self):
+        """[modules.ci.projects], [modules.ci] tool_env, [modules.toolchain] substitutions and [modules.ledger]
+        parsers are checked with the rest of the config: a wrong key or type stops the daemon with its file and line,
+        not the first command that reads it."""
+        from wb_core.manifest import discover
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from harness import REPO
+        schemas = {m.name: m.config for m in discover([REPO / "modules"]) if m.name in ("ci", "toolchain", "ledger")}
+        folder = Path(tempfile.mkdtemp(prefix="wb-typed-"))
+        (folder / "modules").mkdir()
+
+        def check(name, text):
+            (folder / "modules" / name).write_text(text, encoding="utf-8")
+            try:
+                return resolve(wbconfig.load(folder), schemas)
+            finally:
+                (folder / "modules" / name).unlink()
+
+        good = check("ci.toml", "[projects.demo]\nrepo = 'Demo'\npython = ['r.txt']\ngate = false\n"
+                                "[projects.demo.env]\nGRADLE_OPTS = '-Xmx1g'\n")
+        self.assertEqual(good.modules["ci"]["projects"],
+                         {"demo": {"repo": "Demo", "python": ["r.txt"], "gate": False, "env": {"GRADLE_OPTS": "-Xmx1g"}}})
+        for name, text, where, key in (
+                ("ci.toml", "[projects.demo]\nrepo = 'Demo'\nbranch = 'main'\n", "modules/ci.toml:3",
+                 "modules.ci.projects.demo.branch"),
+                ("ci.toml", "[projects.demo]\ngate = 3\n", "modules/ci.toml:2", "modules.ci.projects.demo.gate"),
+                ("ci.toml", "[projects.demo.env]\nN = 3\n", "modules/ci.toml:2", "modules.ci.projects.demo.env.N"),
+                ("ci.toml", "[tool_env]\nORTHRUS_SCRUB_RULES_FILE = 1\n", "modules/ci.toml:2",
+                 "modules.ci.tool_env.ORTHRUS_SCRUB_RULES_FILE"),
+                ("toolchain.toml", "[substitutions]\n'a:b:1' = 2\n", "modules/toolchain.toml:",
+                 "modules.toolchain.substitutions.a:b:1"),
+                ("ledger.toml", "[parsers.client]\nfps = 1\n", "modules/ledger.toml:2", "modules.ledger.parsers.client.fps")):
+            with self.subTest(key=key):
+                with self.assertRaises(SettingsError) as raised:
+                    check(name, text)
+                self.assertIn(where, str(raised.exception))
+                self.assertIn(f": {key}: ", str(raised.exception))
+
 class TreeDigests(unittest.TestCase):
     def test_unchanged_files_are_not_read_again(self):
         import os

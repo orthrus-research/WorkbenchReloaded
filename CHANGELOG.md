@@ -91,6 +91,11 @@
   and `[paths.roots]` for the rest, each mounted at `/mnt/<name>`. The old spellings, `[paths.roots.out]`, a root's
   `container`, `[modules.ci] store`, `records` and `pin_cache` and `[modules.toolchain] pin_cache`, are read for one
   more release with a warning in the daemon's log, `wb status` and `wb config show --local`.
+- Typed module tables: a config object may name its `fields` (a table of fixed keys) or its `entries` (one spec for
+  every value of a table by name). `[modules.ci.projects]` (repo, config, jdk, env, python, workflow, gate),
+  `[modules.ci] tool_env`, `[modules.toolchain] substitutions` and `[modules.ledger] parsers` are checked at load
+  like every other key, so a wrong key or type stops the daemon with its file and line instead of failing the first
+  command that reads it.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,
   ledger, vast, ci, release, plan, frames, tools (the former standalone tools, 0.6.0), selftest.
 - The lab reads a profile's checkouts at a ref, each from a snapshot fixed at its commit for the whole job

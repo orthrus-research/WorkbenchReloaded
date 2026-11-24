@@ -4,6 +4,10 @@ A field spec is a small table: ``{ type = "money", unit = "USD/h", default = 0.3
 type, default, optional, min, max, pattern, values (enum), items (list), unit, summary, and digest (path.in only):
 how a job records the input, ``content`` (the default: a SHA-256 over every file) or ``git`` (a checkout the
 command reads through git, recorded by its HEAD commit; the command reports the commit or tree it read).
+
+An object may say what it holds: ``fields``, a table of field specs for a table with fixed keys (unknown keys are
+refused, defaults filled in), or ``entries``, one field spec every value of a table keyed by name must match (a map,
+such as projects by name or variables by name). A value deeper in is named by its dotted path in an error.
 """
 
 from __future__ import annotations
@@ -12,7 +16,8 @@ import re
 
 TYPES = {"string", "int", "float", "bool", "enum", "list", "object", "money", "duration", "sha256",
          "path.in", "path.out", "any"}
-SPEC_KEYS = {"type", "default", "optional", "min", "max", "pattern", "values", "items", "unit", "summary", "digest"}
+SPEC_KEYS = {"type", "default", "optional", "min", "max", "pattern", "values", "items", "unit", "summary", "digest",
+             "fields", "entries"}
 DIGESTS = {"content", "git"}
 _DURATION = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?\s*$")
 _UNITS = {"ms": 0.001, "s": 1, "m": 60, "h": 3600, "d": 86400, None: 1}
@@ -43,7 +48,18 @@ def normalise_spec(name: str, spec) -> dict:
         raise ValueError_(name, "an enum needs values")
     if "digest" in spec and (kind != "path.in" or spec["digest"] not in DIGESTS):
         raise ValueError_(name, f"digest is for a path.in, one of {sorted(DIGESTS)}")
-    return dict(spec, type=kind)
+    spec = dict(spec, type=kind)
+    if ("fields" in spec or "entries" in spec) and kind != "object":
+        raise ValueError_(name, "fields and entries are for an object")
+    if "fields" in spec and "entries" in spec:
+        raise ValueError_(name, "an object has fixed fields or entries by name, not both")
+    if "fields" in spec:
+        if not isinstance(spec["fields"], dict):
+            raise ValueError_(name, "fields must be a table of field specs")
+        spec["fields"] = {key: normalise_spec(f"{name}.{key}", value) for key, value in spec["fields"].items()}
+    if "entries" in spec:
+        spec["entries"] = normalise_spec(f"{name}.*", spec["entries"])
+    return spec
 
 
 def parse_duration(value) -> float:
@@ -108,7 +124,7 @@ def coerce(name: str, spec: dict, value):
         elif kind == "object":
             if not isinstance(value, dict):
                 raise ValueError("expected an object")
-            out = value
+            out = _object(name, spec, value)
         else:  # pragma: no cover - TYPES is closed
             raise ValueError(f"unsupported type {kind}")
     except (TypeError, ValueError) as error:
@@ -125,6 +141,20 @@ def coerce(name: str, spec: dict, value):
     if kind in ("string",) and spec.get("pattern") and not re.search(spec["pattern"], out):
         raise ValueError_(name, f"{out!r} does not match {spec['pattern']}")
     return out
+
+
+def _object(name: str, spec: dict, value: dict) -> dict:
+    """An object's ``fields`` or ``entries`` checked; an error names the value by its dotted path."""
+    if spec.get("fields") is not None:
+        fields = {key: normalise_spec(key, field) for key, field in spec["fields"].items()}
+        try:
+            return validate(fields, value, where="keys")
+        except ValueError_ as error:
+            raise ValueError_(f"{name}.{error.field}", error.detail) from None
+    if spec.get("entries") is not None:
+        entry = normalise_spec(name, spec["entries"])
+        return {key: coerce(f"{name}.{key}", entry, item) for key, item in value.items()}
+    return value
 
 
 def validate(fields: dict[str, dict], values: dict, *, where: str = "params") -> dict:
@@ -177,7 +207,12 @@ def json_schema(spec: dict) -> dict:
         if item and item != "any":
             base["items"] = json_schema(normalise_spec("item", item if isinstance(item, dict) else {"type": item}))
     elif kind == "object":
-        base = {"type": "object"}
+        if spec.get("fields") is not None:
+            base = object_schema({k: normalise_spec(k, f) for k, f in spec["fields"].items()})
+        elif spec.get("entries") is not None:
+            base = {"type": "object", "additionalProperties": json_schema(normalise_spec("entry", spec["entries"]))}
+        else:
+            base = {"type": "object"}
     else:
         base = {}
     for key in ("min", "max"):
