@@ -23,11 +23,20 @@ def default_cache() -> Path:
     return (Path(base) if base else Path.home() / ".cache") / "wb" / "python"
 
 
+def console_python() -> str:
+    """Workbench's own interpreter as a step should run it: on Windows the host runner runs under pythonw.exe, which
+    has no console, so a program a step starts gets no output handles; python.exe beside it is the same Python."""
+    exe = Path(sys.executable)
+    if os.name == "nt" and exe.name.lower() == "pythonw.exe" and exe.with_name("python.exe").is_file():
+        return str(exe.with_name("python.exe"))
+    return sys.executable
+
+
 def python_from(ctx: Context, files: list[Path], cache: Path, what: str) -> str:
     """The interpreter of the environment made from ``files`` (pip requirements files), built under ``cache`` the
     first time; Workbench's own interpreter when there are none. ``what`` names who asked, for messages."""
     if not files:
-        return sys.executable
+        return console_python()
     missing = [str(f) for f in files if not f.is_file()]
     if missing:
         raise EnvironmentProblem(f"no {', '.join(missing)} (named by {what})")
@@ -58,7 +67,7 @@ def _build(ctx: Context, folder: Path, python: Path, files: list[Path]):
     wanted = any(line.strip() and not line.lstrip().startswith("#")
                  for f in files for line in f.read_text(encoding="utf-8").splitlines())
     # Files that list nothing need no pip, which may have no network to reach.
-    done = ctx.run([sys.executable, "-m", "venv", *([] if wanted else ["--without-pip"]), str(folder)],
+    done = ctx.run([console_python(), "-m", "venv", *([] if wanted else ["--without-pip"]), str(folder)],
                    timeout=VENV_SECONDS)
     if done.returncode != 0:
         raise EnvironmentProblem(f"python -m venv failed: {done.stdout.strip()[-400:]}")

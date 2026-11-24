@@ -384,11 +384,19 @@ def resolve(config: Config, targets: Iterable[str]) -> list[str]:
     return ordered
 
 
+def _console_python() -> str:
+    """This interpreter as a step runs it: python.exe rather than a console-less pythonw.exe beside it on Windows."""
+    exe = Path(sys.executable)
+    if os.name == "nt" and exe.name.lower() == "pythonw.exe" and exe.with_name("python.exe").is_file():
+        return str(exe.with_name("python.exe"))
+    return sys.executable
+
+
 def placeholders(config: Config, run_id: str) -> dict[str, Any]:
     """Values for ``{name}`` in steps: python, run_id, run_dir, root, each repository by name,
     each interpreter, ``env.NAME`` and the ``[placeholders]`` table, in that order."""
     values: dict[str, Any] = {
-        "python": config.python or sys.executable,
+        "python": config.python or _console_python(),
         "run_id": run_id,
         "run_dir": str(config.runs / run_id),
         "root": str(config.root),
