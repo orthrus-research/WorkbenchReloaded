@@ -412,9 +412,16 @@ def _failing_tails(ctx: Context, jobs: dict):
 # commands
 
 GRADLE_LAUNCHER = """import os, subprocess, sys
-# Written by Workbench's ci for one run: the set's Gradle with the set's arguments.
+# Written by Workbench's ci for one run: the set's Gradle with the set's arguments. Its own streams are handed to
+# Gradle by name: a child of a process with no console (pythonw on Windows) is given no handles otherwise.
 args = {args!r}
-sys.exit(subprocess.call([*args, *sys.argv[1:]]))
+streams = dict(stdin=sys.stdin if sys.stdin is not None else subprocess.DEVNULL,
+               stdout=sys.stdout if sys.stdout is not None else subprocess.DEVNULL,
+               stderr=sys.stderr if sys.stderr is not None else subprocess.STDOUT)
+for stream in (sys.stdout, sys.stderr):
+    if stream is not None:
+        stream.flush()
+sys.exit(subprocess.call([*args, *sys.argv[1:]], **streams))
 """
 
 

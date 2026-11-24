@@ -254,6 +254,19 @@ class Types(unittest.TestCase):
         with self.assertRaises(types.ValueError_):
             types.validate({"a": {"type": "int"}}, {"b": 1})
 
+    def test_a_step_runs_the_console_python_beside_pythonw(self):
+        import sys as system
+        from unittest import mock
+        from wb_core import environments
+        folder = Path(tempfile.mkdtemp(prefix="wb-pythonw-"))
+        for name in ("pythonw.exe", "python.exe"):
+            (folder / name).write_bytes(b"")
+        with (mock.patch.object(environments.os, "name", "nt"),
+              mock.patch.object(system, "executable", str(folder / "pythonw.exe"))):
+            self.assertEqual(Path(environments.console_python()).name, "python.exe")
+        with mock.patch.object(system, "executable", str(folder / "python.exe")):
+            self.assertEqual(Path(environments.console_python()).name, "python.exe")
+
     def test_a_digest_is_how_a_path_input_is_recorded(self):
         self.assertEqual(types.normalise_spec("p", {"type": "path.in", "digest": "git"})["digest"], "git")
         self.assertEqual(types.normalise_spec("p", {"type": "path.in", "digest": "none"})["digest"], "none")
