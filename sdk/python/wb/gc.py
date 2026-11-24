@@ -119,7 +119,9 @@ def places_from(config) -> Places:
     store = workspace.store_root()
     records = workspace.folder("records")
     runner = config.values.get("runner") or {}
-    lab = Path(os.path.expanduser(str(runner.get("lab_home") or "../Lab")))
+    # [lab] home, else the lab home wb-host names ([runner] lab_home), as wb play and the doctor read it.
+    home = (config.values.get("lab") or {}).get("home") or runner.get("lab_home") or "../Lab"
+    lab = Path(os.path.expanduser(str(home)))
     lab = lab if lab.is_absolute() else (REPO / lab).resolve()
     previous = ((deploy._records(config).get("releases") or [{}])[-1] or {}).get("previous")
     return Places(
