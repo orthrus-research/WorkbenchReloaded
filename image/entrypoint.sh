@@ -6,10 +6,15 @@
 #   - give that user, the same way, the folders Workbench writes in an rw root (WB_OWNED_DIRS from `wb up`: the ci
 #     and toolchain pin_cache and records); a folder made on the host or by root reads as root's and refuses writes,
 #   - make sure the uid has a passwd entry (OpenSSH refuses to run for a uid without one),
+#   - copy the release it starts into the state volume (image/code.sh), before that volume is given to the user,
 # and then drops every privilege before Workbench starts.
 set -eu
 uid="${WB_UID:-1000}"
 gid="${WB_GID:-1000}"
+. "${WB_CODE_SCRIPT:-/opt/wb/code.sh}"
+if ! wb_pick_code copy; then
+  exit 1
+fi
 if [ "$(id -u)" = "0" ]; then
   getent group "$gid" >/dev/null 2>&1 || echo "wbhost:x:${gid}:" >> /etc/group
   getent passwd "$uid" >/dev/null 2>&1 || echo "wbhost:x:${uid}:${gid}:Workbench:/home/wb:/bin/sh" >> /etc/passwd  # scrub: allow (container path)

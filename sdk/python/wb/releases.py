@@ -1,15 +1,19 @@
 """Releases: immutable copies of Workbench at a commit, so the hooks, the CLI on PATH and the host runner run code
 that a merge cannot change under them.
 
-    <releases>/<commit12>/      what ``git archive <commit>`` holds, plus RELEASE.json (commit, tree, tests, override)
+    <releases>/<commit12>/      what ``git archive <commit>`` holds, plus RELEASE.json: commit, tree, the host
+                                suite's result (tests), the container pass CI recorded for the tree (ci), the image
+                                inputs digest (image), and override or bootstrap when either applies
     <releases>/current          a link to the release in service; wb deploy moves it last
+
+The container runs a copy of the release in its state volume (image/code.sh), so the image holds no Workbench code.
 
 Old releases are wb gc's class ``releases``: every release but the one in service and the one deployed before it.
 
 <releases> is WB_RELEASES, else [paths] releases in machine config, else ~/.local/share/wb/releases (never the config
 folder, whose folders are all read as config, and not AppData, which a packaged app redirects). git config
 wb.cli names <releases>/current/bin/wb, so a hook always runs the deployed release, never a working tree; a working
-tree runs only when started as such (its own bin/wb, with WB_DEV=1)."""
+tree runs only when started as such: `wb dev <verb>` (WB_DEV=1)."""
 
 from __future__ import annotations
 
@@ -43,6 +47,23 @@ def root(config) -> Path:
 
 def current(config) -> Path:
     return root(config) / "current"
+
+
+def serving(config) -> Path | None:
+    """The release folder in service (what ``current`` names, by its real path), or None when there is none."""
+    link = current(config)
+    if not link.exists():
+        return None
+    release = root(config) / Path(os.path.realpath(link)).name
+    return release if (release / "RELEASE.json").is_file() else None
+
+
+def info(release: Path) -> dict:
+    """A release's RELEASE.json, or {} when it has none."""
+    try:
+        return json.loads((Path(release) / "RELEASE.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
 def cli_command(config) -> str:

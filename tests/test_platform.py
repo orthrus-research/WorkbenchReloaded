@@ -149,10 +149,12 @@ class ImageTools(unittest.TestCase):
             self.assertEqual(compose.build("wb-core:test", ["node", "zig"]), 0)
             command = run.call_args[0][0]
             self.assertEqual(command[command.index("--build-arg") + 1], "TOOLS=node,zig")
-            self.assertTrue(command[-2].startswith("WB_COMMIT="))  # the commit last: only the last layer changes
+            label = command[command.index("--label") + 1]
+            self.assertEqual(label, f"{compose.INPUTS_LABEL}={compose.inputs_digest(REPO, ['node', 'zig'])}")
+            self.assertFalse(any(a.startswith("WB_COMMIT=") for a in command))  # the image holds no code to name
             compose.build("wb-core:test")
             arguments = [a for a in run.call_args[0][0] if a.startswith(("TOOLS=", "WB_COMMIT="))]
-            self.assertEqual([a.split("=")[0] for a in arguments], ["WB_COMMIT"])  # no tools: no TOOLS argument
+            self.assertEqual(arguments, [])  # no tools: no TOOLS argument
 
     def test_a_tool_the_pins_do_not_name_is_refused(self):
         from unittest import mock

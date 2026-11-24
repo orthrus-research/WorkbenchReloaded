@@ -5,17 +5,23 @@ mounts and the secrets can never drift from the config.
 - A fresh token is written at every ``wb up`` to ``run/token`` (user-only) and mounted read-only (D14).
 - Roots become bind mounts (``ro`` or ``rw``); secrets become read-only files under /run/secrets.
 - State lives in a named volume (D22).
+- The image carries no Workbench code. The code the container runs is mounted read-only at /opt/wb/release: the
+  release in service (or the one wb deploy starts), whose first start copies it into the state volume, else this
+  checkout, read in place (image/code.sh). So the image is rebuilt only when its own inputs change
+  (``image_inputs``); its label records their digest, which wb deploy compares.
 """
 
 from __future__ import annotations
 
 import getpass
+import hashlib
 import json
 import os
 import secrets as pysecrets
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from . import config as wbconfig
@@ -25,6 +31,8 @@ STATE = "/var/lib/wb"
 # The folders Workbench itself writes under [paths] out, as container paths: the entrypoint gives each to Workbench's
 # user. The old [modules.toolchain] pin_cache is still one of them for this release (see wbconfig.OLD_FOLDER_KEYS).
 OWNED_FOLDERS = ("pin_cache", "records", "store")
+RELEASE_MOUNT = "/opt/wb/release"  # the code the container runs, read-only (image/code.sh)
+INPUTS_LABEL = "cc.orthrus.wb.inputs"  # the digest of the inputs an image was built from
 
 
 class ComposeError(Exception):
@@ -37,6 +45,33 @@ def repo_root() -> Path | None:
         return Path(explicit)
     candidate = Path(__file__).resolve().parents[3]
     return candidate if (candidate / "image" / "Dockerfile").exists() else None
+
+
+@dataclass
+class Code:
+    """The Workbench code a container runs: a host folder, mounted read-only at RELEASE_MOUNT."""
+    host: Path
+    release: str = ""  # its release name, copied into the state volume at first start; "" for a checkout
+    commit: str = ""   # a checkout's commit (a release names its own in RELEASE.json)
+
+
+def code_source(config: wbconfig.Config, release: Path | None = None) -> Code | None:
+    """What the container should run: ``release`` (wb deploy names the one it starts), else the release in service,
+    else this checkout read in place (a machine with no release yet), else None (only an image with code inside
+    could start)."""
+    if release is None:
+        from . import releases
+        try:
+            release = releases.serving(config)
+        except (OSError, RuntimeError):
+            release = None
+    if release is not None:
+        return Code(Path(release), Path(release).name)
+    root = repo_root()
+    if root is None or not (root / "core" / "wb_core").is_dir():
+        return None
+    from wb_core.identity import source_commit
+    return Code(root, "", source_commit(root) or "")
 
 
 def restrict(path: Path):
@@ -85,9 +120,11 @@ def owned_dirs(config: wbconfig.Config) -> list[str]:
     return owned
 
 
-def generate(config: wbconfig.Config, run: Path, profile=None, warnings: list | None = None) -> dict:
+def generate(config: wbconfig.Config, run: Path, profile=None, warnings: list | None = None,
+             code: Code | None = None) -> dict:
     """The compose document for this machine's platform profile (see wb.platform). A configured secret whose file
-    is missing is left out with a warning: the commands that need it show as inactive, the rest of Workbench runs."""
+    is missing is left out with a warning: the commands that need it show as inactive, the rest of Workbench runs.
+    ``code`` is mounted read-only for the entrypoint to run (``code_source``)."""
     warnings = warnings if warnings is not None else []
     from . import platform
     profile = profile or platform.profile()
@@ -114,6 +151,8 @@ def generate(config: wbconfig.Config, run: Path, profile=None, warnings: list | 
         if not Path(host).exists():
             raise ComposeError(f"paths.roots.{name}.host {host} does not exist")
         volumes.append(f"{host}:{container}:{mode}")
+    if code is not None:
+        volumes.append(f"{code.host}:{RELEASE_MOUNT}:ro")
     secrets = {"wb_token": {"file": str(run / "token")}}
     service_secrets = ["wb_token"]
     host_token = run / "host.token"
@@ -138,6 +177,10 @@ def generate(config: wbconfig.Config, run: Path, profile=None, warnings: list | 
         "stop_grace_period": "2m",
         "labels": {"cc.orthrus.wb.profile": f"{profile.os}/{profile.docker}"},
     }
+    if code is not None:
+        service["environment"]["WB_RELEASE"] = code.release
+        if code.commit:
+            service["environment"]["WB_SOURCE_COMMIT"] = code.commit
     owned = owned_dirs(config)
     if owned:
         service["environment"]["WB_OWNED_DIRS"] = ":".join(owned)  # the container's own path separator
@@ -158,12 +201,12 @@ def generate(config: wbconfig.Config, run: Path, profile=None, warnings: list | 
     return {"name": "wb", "services": {"wb": service}, "volumes": {volume: {}}, "secrets": secrets}
 
 
-def write(config: wbconfig.Config, warnings: list | None = None) -> tuple[Path, int]:
+def write(config: wbconfig.Config, warnings: list | None = None, release: Path | None = None) -> tuple[Path, int]:
     folder = config.folder or wbconfig.default_folder()
     run = folder / "run"
     run.mkdir(parents=True, exist_ok=True)
     write_secret_file(run / "token", pysecrets.token_urlsafe(32))
-    document = generate(config, run, warnings=warnings)
+    document = generate(config, run, warnings=warnings, code=code_source(config, release))
     service = document["services"]["wb"]
     if service.get("network_mode") == "host":
         if service["environment"].get("WB_API_LISTEN") != "127.0.0.1":
@@ -184,9 +227,11 @@ def docker(*args: str, check: bool = True, capture: bool = False) -> subprocess.
     return subprocess.run(["docker", *args], check=check, text=True, capture_output=capture)
 
 
-def up(config: wbconfig.Config, wait: float = 90) -> dict:
+def up(config: wbconfig.Config, wait: float = 90, release: Path | None = None) -> dict:
+    """Starts the container on ``release`` (default: the release in service, else this checkout) and waits until
+    it answers."""
     warnings: list[str] = []
-    path, port = write(config, warnings)
+    path, port = write(config, warnings, release)
     for warning in warnings:
         print(f"wb: {warning}", file=sys.stderr)
     docker("compose", "-f", str(path), "up", "-d", "--remove-orphans")
@@ -210,9 +255,73 @@ def down(config: wbconfig.Config):
         docker("compose", "-f", str(path), "down")
 
 
-def build(tag: str = "wb-core:dev", tools: list[str] | None = None) -> int:
-    """Builds the image; ``tools`` names optional tools image/pins.toml pins ([tool.<name>]) to build in."""
-    root = repo_root()
+def image_inputs(root: Path) -> list[Path]:
+    """The files an image is built from, relative to ``root`` (a checkout or a release): the image folder (the
+    Dockerfile, the entrypoint and code script, the pinned package, JDK and tool lists), every other source a COPY or
+    ADD in the Dockerfile names, and .dockerignore. The image installs no Python requirements; a requirements file it
+    ever copies is one of those sources. Workbench's own code is not an input: it runs from a release."""
+    found: set[Path] = set()
+
+    def add(path: Path):
+        if path.is_dir():
+            found.update(p.relative_to(root) for p in path.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+        elif path.is_file():
+            found.add(path.relative_to(root))
+
+    add(root / "image")
+    add(root / ".dockerignore")
+    dockerfile = root / "image" / "Dockerfile"
+    text = dockerfile.read_text(encoding="utf-8") if dockerfile.is_file() else ""
+    for line in text.replace("\\\n", " ").splitlines():
+        words = line.split()
+        if not words or words[0].upper() not in ("COPY", "ADD") or any(w.startswith("--from") for w in words[1:]):
+            continue  # not a copy, or one from another stage of this file
+        for source in [w for w in words[1:-1] if not w.startswith("--")]:
+            for path in (root.glob(source) if any(c in source for c in "*?[") else [root / source]):
+                add(path)
+    return sorted(found, key=lambda p: p.as_posix())
+
+
+def inputs_digest(root: Path, tools: list[str] | None = None) -> str:
+    """SHA-256 over the image's inputs (each path and its bytes, as Docker copies them) and the tools built in."""
+    digest = hashlib.sha256()
+    for relative in image_inputs(root):
+        digest.update(relative.as_posix().encode("utf-8") + b"\0")
+        digest.update(hashlib.sha256((root / relative).read_bytes()).hexdigest().encode("ascii") + b"\n")
+    digest.update(("tools=" + ",".join(sorted(tools or []))).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def image_label(tag: str) -> str | None:
+    """The inputs digest the image ``tag`` was built from: None when there is no such image, "" when it records
+    none (an image from before the label)."""
+    done = subprocess.run(["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", tag],
+                          capture_output=True, text=True)
+    if done.returncode != 0:
+        return None
+    try:
+        labels = json.loads(done.stdout.strip() or "null") or {}
+    except ValueError:
+        labels = {}
+    return str(labels.get(INPUTS_LABEL) or "")
+
+
+def build_reason(tag: str, digest: str, label: str | None) -> str | None:
+    """Why the image must be built, or None when the image ``tag`` was built from these inputs (``label``, from
+    ``image_label``)."""
+    if label is None:
+        return f"there is no image {tag}"
+    if not label:
+        return f"the image {tag} records no inputs digest (it was built with Workbench's code inside)"
+    if label != digest:
+        return f"the image's inputs changed (built from {label[:12]}, now {digest[:12]})"
+    return None
+
+
+def build(tag: str = "wb-core:dev", tools: list[str] | None = None, root: Path | None = None) -> int:
+    """Builds the image from ``root`` (default: this checkout), labelled with its inputs' digest; ``tools`` names
+    optional tools image/pins.toml pins ([tool.<name>]) to build in."""
+    root = root or repo_root()
     if root is None:
         raise ComposeError("wb build needs a Workbench checkout (set WB_REPO)")
     tools = list(tools or [])
@@ -223,11 +332,10 @@ def build(tag: str = "wb-core:dev", tools: list[str] | None = None) -> int:
         if unknown:
             raise ComposeError(f"[core.image] tools names {unknown[0]}, which image/pins.toml does not pin "
                                f"(pinned: {', '.join(sorted(pinned)) or 'none'})")
-    from wb_core.identity import source_commit
     command = ["docker", "build", "-f", str(root / "image" / "Dockerfile"), "-t", tag]
     if tools:
         command += ["--build-arg", "TOOLS=" + ",".join(tools)]
-    command += ["--build-arg", f"WB_COMMIT={source_commit(root) or ''}"]  # last: only the image's last layer changes
+    command += ["--label", f"{INPUTS_LABEL}={inputs_digest(root, tools)}"]
     return subprocess.run([*command, str(root)]).returncode
 
 

@@ -153,8 +153,10 @@ class Stubs(unittest.TestCase):
             self.assertIn(f"hook {name}", text)
             self.assertNotIn(":\\", text)
 
-    def test_the_cli_command_names_this_checkout(self):
-        self.assertIn("bin", setup.cli_command())
+    def test_the_cli_command_names_the_release_in_service(self):
+        command = setup.cli_command()
+        self.assertIn("current", command)  # never a working tree: a hook runs what wb deploy put in service
+        self.assertTrue(command.endswith(("wb.cmd", "wb")), command)
 
 
 if __name__ == "__main__":

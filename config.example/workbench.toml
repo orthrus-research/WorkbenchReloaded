@@ -30,6 +30,14 @@ lab_home = '../Lab'    # relative to the Workbench checkout
 # token_env = ['CUBIC_LAB_TURN_LEASE']
 # lane_env = ['GPU_QUEUE_LANE']
 
+[workspace]
+# Where a person's work lives on this machine, as the host names it. root holds the project homes: a relative
+# [modules.ci.projects] repo is read from it (the older [modules.ci] projects_root still works). It is not a
+# [paths.roots] entry, which names only what the container may read.
+# root = 'D:\code'  # scrub: allow
+# work = 'D:\code\work'  # where wb work makes Works; empty: <root>/work  # scrub: allow
+# set = '~/.local/share/wb/set.git'   # the Set's bare home, which wb land writes
+
 [lab]
 # The game lab on this machine (wb setup asks for each key it lacks).
 # home = ''              # instances, sessions, the lease and lanes; empty: [runner] lab_home

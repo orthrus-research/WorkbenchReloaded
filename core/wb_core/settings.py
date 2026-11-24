@@ -107,6 +107,10 @@ HOST_RUNNER = {
 }
 # Where a person's work lives on this host, read by the host CLI (the daemon only checks it).
 WORKSPACE = {
+    "root": {"type": "string", "default": "",
+             "summary": "the folder project homes are under: a relative [modules.ci.projects] repo is read from it, "
+                        "and the work root defaults to <root>/work; empty: [modules.ci] projects_root. [paths.roots] "
+                        "names what the container may read, which need not be this folder"},
     "work": {"type": "string", "default": "", "summary": "the folder Works are made in; empty: <projects root>/work"},
     "set": {"type": "string", "default": "",
             "summary": "the Set's home: a bare repository on this host that wb land writes with plumbing"},
@@ -256,6 +260,8 @@ def resolve(config: wbconfig.Config, module_schemas: dict[str, dict] | None = No
                for name, schema in module_schemas.items()}
     runner = _check(config, "runner", HOST_RUNNER, values.get("runner"))
     workspace = _check(config, "workspace", WORKSPACE, values.get("workspace"))
+    if workspace["root"] and "ci" in modules and not modules["ci"].get("projects_root"):
+        modules["ci"]["projects_root"] = workspace["root"]  # the one place relative repos resolve from
     lab = check_lab(values.get("lab"), config)
     _out_folders(config, roots, modules)
     return Settings(config=config, core=core, roots=roots, secrets=secrets, schedules=schedules,
