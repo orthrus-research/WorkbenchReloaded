@@ -71,12 +71,22 @@ def build(bundle: Path, lab: Path, info: dict) -> int:
     return 0 if ctx.outcome == "ok" else 1
 
 
+def bundle_jdk(bundle: Path, info: dict) -> Path:
+    """The JDK home in the bundle's own Store copy for the build the instance was made on: the launch file names
+    the Store of the machine that resolved it, which a rental does not have."""
+    from wb_lab import instance as instances
+    receipt = json.loads((bundle / "results" / "instance.json").read_text(encoding="utf-8"))
+    (_, entry), = receipt["jdk"].items()
+    return instances.jdk_home(bundle / info["store"], str(entry["build"]), receipt["system"])
+
+
 def tour(bundle: Path, lab: Path, info: dict) -> int:
     from wb_lab import run as sessions
     os.environ.setdefault("WB_TURN_TOKEN", "rental-" + secrets.token_hex(8))  # the rental is the turn
     ctx = context(bundle, lab, "run", info)
     result = sessions.run(ctx, info["instance"], kind="tour", tour=str(bundle / info["tour"]["file"]),
-                          window=str(info.get("window") or ""), limit=float(info.get("limit") or 5400))
+                          window=str(info.get("window") or ""), limit=float(info.get("limit") or 5400),
+                          jdk=str(bundle_jdk(bundle, info)))
     record = json.loads((Path(result["folder"]) / sessions.SESSION).read_text(encoding="utf-8"))
     shutil.copyfile(Path(result["folder"]) / sessions.SESSION, bundle / "results" / "session.json")
     captured = record.get("tour") or {}
