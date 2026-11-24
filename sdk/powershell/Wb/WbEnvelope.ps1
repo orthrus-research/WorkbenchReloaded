@@ -11,6 +11,7 @@ class WbEnvelope {
     [string] $state
     [string] $phase
     [string] $caller
+    [object[]] $locks
     [object] $waiting
     [string] $outcome
     [Nullable[long]] $code

@@ -157,8 +157,16 @@ class Lander:
     def land(self, targets: dict[str, str], *, urls: dict[str, str] | None = None, branch: str | None = None,
              deadline: float = 600, dry: bool = False, stop_after: str | None = None, holds: dict | None = None,
              drop_holds: list | None = None, third: dict | None = None, platform: dict | None = None,
-             tag: str | None = None, only: list[str] | None = None) -> dict:
+             tag: str | None = None, only: list[str] | None = None, doctor_exempt: dict | None = None,
+             doctor_unexempt: list | None = None) -> dict:
         from wb_core import setfile
+        doctor_exempt, doctor_unexempt = dict(doctor_exempt or {}), list(doctor_unexempt or [])
+        for flag, keys in (("--doctor-exempt", list(doctor_exempt)), ("--doctor-unexempt", doctor_unexempt)):
+            for key in keys:
+                try:
+                    setfile.exempt_key(key)
+                except setfile.SetError as error:
+                    raise WorkspaceError(f"{flag} {error}") from None
         if only:
             unknown = sorted(set(only) - set(targets))
             if unknown:
@@ -218,20 +226,21 @@ class Lander:
             wanted[name] = item
         self.export(revision, text, head=True)
         holds, drop_holds, third, platform = holds or {}, list(drop_holds or []), third or {}, platform or {}
-        if not wanted and not holds and not drop_holds and not third and not platform:
+        if not (wanted or holds or drop_holds or third or platform or doctor_exempt or doctor_unexempt):
             self.say(f"nothing moves: {', '.join(skipped) or 'no project'} already at its line")
             return {"state": "unchanged", "revision": revision}
         if tag and not [n for n in wanted if n != SET]:
             raise WorkspaceError("--tag tags the landed commit of a project, and this landing moves no project's line")
         for name, hold in holds.items():
             hold["artifacts"] = self._seed(name, hold)
-        values = {"base": revision, "holds": holds, "drop_holds": drop_holds, "third": third, "platform": platform}
+        values = {"base": revision, "holds": holds, "drop_holds": drop_holds, "third": third, "platform": platform,
+                  "doctor_exempt": doctor_exempt, "doctor_unexempt": doctor_unexempt}
         # Producers first: the Set's own change against the head; then each wave of landed projects, a project that
         # uses (or reads the files of) another one landing here running after it, against a would-be set that holds
         # the waves before it (and any hold, third entry or platform value this landing moves).
         if SET in wanted:
             self._check(SET, wanted[SET]["commit"], "", "its gate checks against the head")
-        moves_set = bool(holds or drop_holds or third or platform or SET in wanted)
+        moves_set = bool(holds or drop_holds or third or platform or doctor_exempt or doctor_unexempt or SET in wanted)
         built = {SET: wanted[SET]} if SET in wanted else {}
         for index, wave in enumerate(self._waves({n: i for n, i in wanted.items() if n != SET})):
             candidate = self._reach(built, values)["candidate"] if index or moves_set else ""
@@ -250,7 +259,8 @@ class Lander:
         job = self.client.submit("set.land", {"landing": landing, "base": revision, "projects": wanted,
                                              "deadline": deadline, "caller": os.environ.get("WB_CALLER", ""),
                                              "holds": holds, "drop_holds": drop_holds, "third": third,
-                                             "platform": platform, "tag": tag or ""})
+                                             "platform": platform, "tag": tag or "",
+                                             "doctor_exempt": doctor_exempt, "doctor_unexempt": doctor_unexempt})
         self.say(f"{job.id}  set.land {landing}  (wb show {job.id})")
         record = self._prepared(job, landing)
         if dry:  # nothing was pushed, so nothing is deleted from any remote either
@@ -417,7 +427,8 @@ class Lander:
         blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=self.home, input=record["set_json"],
                               capture_output=True, text=True, check=True).stdout.strip()
         names = (list(record["projects"]) or [h.split(":")[0].split("@")[0] for h in record.get("holds") or []]
-                 or ([SET] if record.get("change") or record.get("third") or record.get("platform") else []))
+                 or ([SET] if record.get("change") or record.get("third") or record.get("platform")
+                     or record.get("doctor") else []))
         if not names:
             raise WorkspaceError("a landing that names no project or hold has no identity to commit with")
         first = self._repo(names[0])
@@ -537,6 +548,13 @@ def main(args) -> int:
                     raise WorkspaceError("--third without --module has one file: --third-file runtime=<sha256>")
                 third[args.third] = {"source": args.source, "licence": args.licence, "mod_id": args.mod_id or "",
                                      **({"sha256": files["runtime"]["sha256"]} if files else {})}
+        doctor_exempt = {}
+        if args.doctor_exempt:
+            if not args.reason:
+                raise WorkspaceError("--doctor-exempt needs --reason: why the doctor leaves the path alone (one "
+                                     "reason for every --doctor-exempt of the landing)")
+            doctor_exempt = {key: args.reason for key in args.doctor_exempt}
+        doctor_unexempt = list(args.doctor_unexempt or [])
         given = [t for t in args.targets or [] if not t.startswith("platform.")]
         platform = {}
         for item in args.targets or []:
@@ -545,12 +563,14 @@ def main(args) -> int:
                 if not sep or not key or not value:
                     raise WorkspaceError(f"{item!r}: a platform move is platform.<key>=<value>")
                 platform[key] = value
-        targets = _targets(workspace, given) if given or not (holds or args.drop_hold or third or platform) else {}
+        moves = holds or args.drop_hold or third or platform or doctor_exempt or doctor_unexempt
+        targets = _targets(workspace, given) if given or not moves else {}
         for name in urls:
             targets.setdefault(name, "HEAD")
         result = lander.land(targets, urls=urls, branch=args.branch, dry=args.dry, holds=holds,
                              drop_holds=list(args.drop_hold or []), third=third, platform=platform,
-                             tag=args.tag, only=list(args.only or []))
+                             tag=args.tag, only=list(args.only or []), doctor_exempt=doctor_exempt,
+                             doctor_unexempt=doctor_unexempt)
         reached = result.get("reached") or {}
         if result.get("state") in ("landed", "dry", "set-pushed"):
             _say("reached: " + (", ".join(f"{n} at {i['commit'][:12]} ({', '.join(i.get('why') or [])})"

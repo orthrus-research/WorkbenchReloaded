@@ -17,9 +17,10 @@
     "state": { "enum": ["new", "queued", "awaiting_approval", "running", "settled", "cancelled", "interrupted"] },
     "phase": { "type": ["string", "null"], "description": "quoting while a spends command's quote is being made" },
     "caller": { "type": ["string", "null"], "description": "the label the submitter gave itself (WB_CALLER); never enforced" },
+    "locks": { "type": "array", "items": { "type": "string" }, "description": "the named locks the submit asked for, taken with the command's own, all or none" },
     "waiting": {
       "type": ["object", "null"],
-      "description": "why a queued job has not started: budget, behind <job>, gpu or lock <name> held by <job>, quiet, approval",
+      "description": "why a queued job has not started: budget, behind <job>, gpu or lock <name> held by <job> (with every lock it takes, all or none, and those its submit asked for), quiet, approval",
       "properties": { "reason": { "type": "string" }, "since": { "type": ["string", "null"] } }
     },
     "outcome": { "enum": ["ok", "finding", "usage", "environment", null] },

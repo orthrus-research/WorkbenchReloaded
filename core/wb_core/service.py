@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import secrets as pysecrets
 import shutil
 import subprocess
@@ -308,9 +309,10 @@ class Workbench:
     # submission
     def submit(self, command: str, params: dict | None, *, out: str | None = None, fresh: bool = False,
                path_style: str = "windows", idempotency_key: str | None = None, source: str = "api",
-               parent: str | None = None, caller: str | None = None) -> dict:
+               parent: str | None = None, caller: str | None = None, locks: list | None = None) -> dict:
         if path_style not in ("windows", "posix"):
             raise BadRequest("path_style must be windows or posix")
+        locks = submit_locks(locks)
         if idempotency_key:
             row = self.db.one("SELECT id FROM job WHERE idempotency_key = ?", (idempotency_key,))
             if row:
@@ -327,11 +329,11 @@ class Workbench:
             parent = None
         self.db.execute(
             "INSERT INTO job (id, command, module, command_version, module_version, params, state, machine, "
-            "out_dir, path_style, fresh, idempotency_key, source, submitted, parent, caller) VALUES "
-            "(?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "out_dir, path_style, fresh, idempotency_key, source, submitted, parent, caller, locks) VALUES "
+            "(?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (job, command, entry.module.name, entry.command.version, entry.module.version, dumps(params), machine,
              out, path_style, int(bool(fresh)), idempotency_key, "child" if parent else source, now, parent,
-             (caller or "")[:80] or None))
+             (caller or "")[:80] or None, json.dumps(locks) if locks else None))
         reasons = []
         if not entry.activation.active:
             self._settle(job, "environment", f"{command} is not active", reasons=entry.activation.reasons)
@@ -688,8 +690,10 @@ class Workbench:
         return set(self._lineage(job))
 
     def _blocker(self, machine: str, cpu: float, mem: float, exclusive: set[str], quiet: bool,
-                 job: str | None = None, locks: set[str] | None = None) -> str | None:
-        """Why a job cannot start now, or None when it can. A parent waiting on this child holds nothing back."""
+                 job: str | None = None, locks: set[str] | None = None, own: set[str] | None = None) -> str | None:
+        """Why a job cannot start now, or None when it can. A parent waiting on this child holds nothing back.
+        ``locks`` are every lock the job takes, all or none; ``own`` are those its submit asked for, which a lock
+        wait names, with the rest it takes."""
         waiting = self._ancestors(job) if job else set()
         others = [r for r in self.running.values() if r.job not in waiting]
         # The container runs on the host: for a measurement's quiet they are one machine.
@@ -704,7 +708,11 @@ class Workbench:
                 return f"{sorted(exclusive & r.exclusive)[0].split('@')[0]} held by {r.job}"
         for r in others:
             if (locks or set()) & r.locks:
-                return f"lock {sorted((locks or set()) & r.locks)[0]} held by {r.job}"
+                reason = f"lock {sorted((locks or set()) & r.locks)[0]} held by {r.job}"
+                if own or len(locks) > 1:
+                    reason += f" (it takes {', '.join(sorted(locks))}, all or none" + (
+                        f"; asked at submit: {', '.join(sorted(own))}" if own else "") + ")"
+                return reason
         if machine == "container" and others:
             used_cpu = sum(r.cpu for r in others)
             used_mem = sum(r.mem for r in others)
@@ -714,8 +722,8 @@ class Workbench:
         return None
 
     def _fits(self, machine: str, cpu: float, mem: float, exclusive: set[str], quiet: bool,
-              job: str | None = None, locks: set[str] | None = None) -> bool:
-        return self._blocker(machine, cpu, mem, exclusive, quiet, job, locks) is None
+              job: str | None = None, locks: set[str] | None = None, own: set[str] | None = None) -> bool:
+        return self._blocker(machine, cpu, mem, exclusive, quiet, job, locks, own) is None
 
     def _wait_reason(self, job: str, reason: str | None):
         """Records why a queued job waits, once per change, as an event and in its envelope."""
@@ -731,7 +739,8 @@ class Workbench:
         """Queued jobs in the order they are considered: a descendant of a running job first, so it never waits
         behind jobs that wait for its own ancestor; then by when the job's root was submitted, then its own."""
         order = []
-        for row in self.db.query("SELECT id, command, machine, params, submitted FROM job WHERE state = 'queued'"):
+        for row in self.db.query("SELECT id, command, machine, params, submitted, locks FROM job "
+                                 "WHERE state = 'queued'"):
             lineage = self._lineage(row["id"])
             under_running = any(a in self.running for a in lineage)
             root = self.db.one("SELECT submitted FROM job WHERE id = ?", (lineage[-1],)) if lineage else None
@@ -772,15 +781,17 @@ class Workbench:
                 continue
             params = json.loads(row["params"]) if row["params"] else {}
             cpu, mem, exclusive, quiet, locks = self._resources(entry.command, row["machine"], params, job)
+            own = set(json.loads(row["locks"])) if row.get("locks") else set()
+            locks = locks | own  # the command's and the submit's, taken together or not at all
             key = row["machine"] + ("|" + ",".join(sorted(exclusive)) if exclusive else "")
             if key in blocked and not row["under_running"]:
                 self._wait_reason(job, f"behind {blocked[key]}")
                 continue  # first in, first out per resource; a running job's descendants go ahead
-            reason = self._blocker(row["machine"], cpu, mem, exclusive, quiet, job, locks)
+            reason = self._blocker(row["machine"], cpu, mem, exclusive, quiet, job, locks, own)
             if reason is not None:
                 self._wait_reason(job, reason)
-                if not row["under_running"]:
-                    blocked.setdefault(key, job)
+                if not row["under_running"] and not reason.startswith("lock "):
+                    blocked.setdefault(key, job)  # a lock wait holds no budget, so nothing queues behind it
                 continue
             self._wait_reason(job, None)
             started += 1
@@ -1293,6 +1304,7 @@ class Workbench:
             "children": extra.get("children", []),
             "parent": row["parent"],
             "caller": row["caller"] if "caller" in row.keys() else None,
+            "locks": json.loads(row["locks"]) if "locks" in row.keys() and row["locks"] else [],
             "logs": {"job": f"/v1/logs?job={job}"},
         }
 
@@ -1352,6 +1364,26 @@ def default_prompt(command: Command, quote: dict) -> dict:
 def _redacted(reason: dict) -> dict:
     """A reason with secrets masked in its words, as the summary is."""
     return {k: REDACT(v) if isinstance(v, str) else v for k, v in reason.items()}
+
+
+LOCK_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/=+-]{0,127}$")
+MAX_LOCKS = 32
+
+
+def submit_locks(locks) -> list[str]:
+    """The named locks a submit asks for, checked and in name order: each a name such as ``set``, ``gradle-home``
+    or ``instance:<name>`` (letters, digits, '._:@/=+-', at most 128 characters), at most 32."""
+    if locks in (None, []):
+        return []
+    if not isinstance(locks, list) or not all(isinstance(lock, str) for lock in locks):
+        raise BadRequest("locks must be a list of lock names")
+    bad = [lock for lock in locks if not LOCK_NAME.match(lock)]
+    if bad:
+        raise BadRequest(f"lock {bad[0]!r} is not a lock name: letters, digits and '._:@/=+-', at most 128 "
+                         "characters, starting with a letter or digit")
+    if len(set(locks)) > MAX_LOCKS:
+        raise BadRequest(f"a submit takes at most {MAX_LOCKS} locks")
+    return sorted(set(locks))
 
 
 class _Params(dict):

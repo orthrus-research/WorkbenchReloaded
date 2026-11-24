@@ -192,6 +192,8 @@ params.drop_holds = { type = "list", items = "string", default = [], summary = "
 params.platform = { type = "object", default = {}, summary = "{key: value}: platform values to land (jdk.<major>=<build>, gradle=<version>, cleanroom=<version>, java, cleanroomgradle, cleanroom.lwjgl); every file a value names is fetched from an allowed host and kept" }
 params.third = { type = "object", default = {}, summary = "{name: {module, repository, files: {kind: {sha256, classifier?}}, licence, mod_id}}: third-party files, fetched, checked and kept; without module and repository, {source, licence, mod_id, sha256?}: the one JAR in <out>/third/<name>/, seeded into the Store" }
 params.tag = { type = "string", default = "", summary = "a tag the publish puts on each landed project's commit on its remote (scrubbed with the other ref names)" }
+params.doctor_exempt = { type = "object", default = {}, summary = "{<project>:<path glob>: reason}: paths the doctor leaves alone in a project's tree (the project has a line or is registered; '*' is every project), recorded with the reason and date" }
+params.doctor_unexempt = { type = "list", items = "string", default = [], summary = "doctor.exempt entries to remove, as <project>:<path glob>" }
 result.state = { type = "string" }
 
 [[command]]
@@ -208,6 +210,8 @@ params.holds = { type = "object", default = {}, summary = "as for set.land" }
 params.drop_holds = { type = "list", items = "string", default = [], summary = "as for set.land" }
 params.platform = { type = "object", default = {}, summary = "as for set.land" }
 params.third = { type = "object", default = {}, summary = "as for set.land" }
+params.doctor_exempt = { type = "object", default = {}, summary = "as for set.land" }
+params.doctor_unexempt = { type = "list", items = "string", default = [], summary = "as for set.land" }
 result.candidate = { type = "string" }
 result.reached = { type = "object" }
 

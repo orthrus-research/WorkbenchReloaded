@@ -217,6 +217,37 @@ class Doctor(unittest.TestCase):
         self.assertTrue(any(note.startswith("gamma: main") and "not converted" in note for note in report["notes"]))
         self.assertEqual(report["exempt"], ["evidence/**"])
 
+    def test_a_projects_own_exempt_entry_leaves_only_its_tree_alone(self):
+        data = json.loads(git(self.root / "Set", "show", "HEAD:set.json"))
+        data["doctor"]["exempt"] += [
+            {"project": "alpha", "path": "docs/*.md", "reason": "recorded", "since": "2026-11-24"},
+            {"project": "beta", "path": "build.gradle", "reason": "not alpha's", "since": "2026-11-24"}]
+        commit(self.root / "Set", {"set.json": json.dumps(data)}, "alpha's docs exempt")
+        report = self.report()
+        files = {(f["project"], f["file"]) for f in report["findings"] if f["kind"] not in ("lease", "refresh schedule")}
+        self.assertNotIn(("alpha", "docs/notes.md"), files)
+        self.assertIn(("alpha", "build.gradle"), files)  # beta's entry does not reach alpha's tree
+        self.assertEqual(report["exempt"], ["evidence/**", "alpha:docs/*.md", "beta:build.gradle"])
+        self.assertIn("doctor: exempt (set.json doctor.exempt): evidence/**, alpha:docs/*.md, beta:build.gradle",
+                      doctor.show(report))
+
+    def test_a_set_with_a_malformed_exempt_entry_does_not_parse(self):
+        from wb_core import setfile
+        good = {"schema": 1, "doctor": {"exempt": ["evidence/**", {"project": "alpha", "path": "docs/*.md",
+                                                                   "reason": "recorded"}]}}
+        self.assertEqual(setfile.check(good), [])
+        bad = {"schema": 1, "doctor": {"exempt": ["../x", {"project": "alpha", "path": "**"},
+                                                  {"project": "a b", "path": "x", "reason": "r"}]}}
+        self.assertEqual(setfile.check(bad), [
+            "doctor.exempt[0]: '../x': a glob has no empty, '.' or '..' part",
+            "doctor.exempt[1] has no reason", "doctor.exempt[1]: '**' names every file of the tree",
+            "doctor.exempt[2].project is not a project name or '*'"])
+        text = setfile.dump({"schema": 1, "doctor": {"exempt": [
+            {"project": "beta", "path": "b", "reason": "r"}, "z/**", {"project": "alpha", "path": "a", "reason": "r"},
+            "a/**"]}})
+        self.assertEqual([e if isinstance(e, str) else e["project"] for e in json.loads(text)["doctor"]["exempt"]],
+                         ["a/**", "z/**", "alpha", "beta"])  # one way to write it
+
     def test_a_landed_commit_behind_its_branch_is_read_as_well_as_the_tip(self):
         tip = commit(self.root / "Alpha", {"build.gradle": "// clean\n"}, "alpha three")
         report = self.report()

@@ -8,7 +8,9 @@
   logs with a JSONL sidecar; retention.
 - Admission that cannot deadlock: a running job's descendants go ahead of the queue, a job that ends cancels
   them, every queued job says why it waits (`waiting` in the envelope), health names stalled jobs. Commands may
-  declare named locks and `quiet_if` params, and `inline` commands a running job calls in its own reservation.
+  declare named locks and `quiet_if` params, and `inline` commands a running job calls in its own reservation. A
+  submit may ask for more locks (`wb run --lock <name>`, `locks` in `POST /v1/jobs`), taken with the command's all
+  or none; a lock wait names every lock the job takes and those its submit asked for (`locks` in the envelope).
 - A tool runs until its process exits, not its pipe; deadlines fire without output; nothing a job started
   outlives it (a Job Object on Windows, a child subreaper on Linux); a run stopped at its limit is a finding with
   reason kind timeout, never cached.
@@ -61,6 +63,9 @@
 - Third entries: `wb land --third` fetches a file by Maven coordinate from an allowed host, or, for a file with no
   Maven publication, takes the one JAR dropped in `<out>/third/<name>/`, seeds it into the Store with its source,
   and lands it by SHA-256 with its licence.
+- `wb land --doctor-exempt <project>:<glob> --reason <why>` lands a `doctor.exempt` entry, a path the doctor leaves
+  alone in that project's tree (recorded evidence that names a commit on purpose), with its reason and date;
+  `--doctor-unexempt` removes one. The project has a line or is registered, and the glob is relative to its top.
 - `wb gc` replaces `wb prune`: each kind of thing Workbench creates has a retention rule (`wb gc --rules`); the
   list names every item, its class, size and reason, with a digest, and `wb gc --yes <digest>` removes exactly
   that list or nothing. Pass records, set exports and every byte a set names, seeded and indexed Store files and
