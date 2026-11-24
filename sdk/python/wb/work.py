@@ -204,8 +204,13 @@ def adopt(workspace: Workspace, path: str) -> int:
 
 
 def _unsaved(member: Path) -> list[str]:
-    lines = git(member, "status", "--porcelain", "--ignored", check=False).splitlines()
-    return [line for line in lines if not any(line[3:].startswith(s) for s in SCRATCH)]
+    """Files a member holds that are not committed: changed, untracked or ignored, except build output, which may sit
+    at any depth (a subproject's build/ or .gradle/ is scratch as much as the top one)."""
+    lines = git(member, "status", "--porcelain", "--untracked-files=all", "--ignored=matching",
+                check=False).splitlines()
+    scratch = {s.strip("/") for s in SCRATCH}
+    return [line for line in lines
+            if not any(part in scratch for part in line[3:].strip('"').rstrip("/").split("/"))]
 
 
 def finish(workspace: Workspace) -> int:

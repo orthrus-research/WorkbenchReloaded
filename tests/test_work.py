@@ -77,6 +77,8 @@ class Work(unittest.TestCase):
         member = topic / "demo"
         (member / "build").mkdir()
         (member / "build" / "out.bin").write_text("scratch", encoding="utf-8")
+        (member / "core" / "build").mkdir(parents=True)  # a subproject's build output is scratch too
+        (member / "core" / "build" / "out.bin").write_text("scratch", encoding="utf-8")
         (member / "notes.txt").write_text("unsaved", encoding="utf-8")
         code, out, _ = self.wb("finish", where=topic)
         self.assertEqual(code, 1)
