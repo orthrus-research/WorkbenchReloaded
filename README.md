@@ -199,7 +199,8 @@ projects pin different commits of what they share (the profile's `agree`) is rep
 `lab.ensure`.
 
 A project that is launched defines its launches in its own `project.toml` (`[launch.<name>]`: members as
-`project:artifact@side` or `third@side`, the runtime, params and JVM arguments), and a member may add its own
+`project:artifact@side` or `third@side`, the runtime, params, JVM arguments and, where a file's name matters, the
+name a member is placed under), and a member may add its own
 switches (`[launch.member]`). `lab.resolve folder=<worktree>` resolves one once into `launch.json`: every member by
 SHA-256 from the worktree's set revision (a line, a hold or a third entry), the project itself from the Store by the
 tree CI built, with the mod ids each declares. A member the set or the Store lacks, or two builds of one mod id, is

@@ -7,9 +7,12 @@ A launchable project's project.toml, read at the commit in use, defines its laun
     runtime = "cleanroom"
     params = { seed = 8675309 }
     jvm = { client = ["-Dexample=1"] }
+    place = { "helper@both" = "+Helper-1.0.jar" }
 
 ``<project>:<artifact>@<side>`` names a project's artifact: the product's own from the Store by the tree being
 launched, another project's from its line in the set, or from a hold of that name, which wins as it does for builds.
+``place`` names the file a member is placed under in an instance, where its name matters (a coremod that must sort
+first); otherwise it keeps the Store's name.
 ``<third>[:<kind>]@<side>`` names a third entry's file (kind ``runtime`` unless given). A member's own project.toml may
 add ``[launch.member]`` (``jvm.client``, ``jvm.server``, ``collect``, ``failures``), read at the commit its line names,
 so a member's switch needs no landing in the product.
@@ -31,7 +34,8 @@ from pathlib import Path
 SCHEMA = 1
 SIDES = ("both", "client", "server")
 MEMBER = re.compile(r"^([a-z0-9][a-z0-9._-]*)(?::([a-z0-9][a-z0-9._-]*))?@(both|client|server)$")
-LAUNCH_KEYS = {"members", "runtime", "params", "jvm", "collect", "failures"}
+LAUNCH_KEYS = {"members", "runtime", "params", "jvm", "collect", "failures", "place"}
+PLACE = re.compile(r'^[^/\\:*?"<>|]+\.jar$')  # a bare file name: no folder, nothing Windows refuses
 MEMBER_KEYS = {"jvm", "collect", "failures"}
 RUNTIMES = ("cleanroom",)
 
@@ -96,6 +100,14 @@ def definition(project_toml: dict, name: str, where: str = "project.toml") -> di
         parse_member(member)
     if len(set(members)) != len(members):
         raise LaunchError(f"{where}: launch.{name}.members names a member twice")
+    place = table.get("place") or {}
+    if not isinstance(place, dict):
+        raise LaunchError(f"{where}: launch.{name}.place is a table of member = file name")
+    for member, file in place.items():
+        if member not in members:
+            raise LaunchError(f"{where}: launch.{name}.place names {member}, which is not a member")
+        if not isinstance(file, str) or not PLACE.match(file):
+            raise LaunchError(f"{where}: launch.{name}.place.{member} is a JAR file name, not {file!r}")
     runtime = table.get("runtime", "cleanroom")
     if runtime not in RUNTIMES:
         raise LaunchError(f"{where}: launch.{name}.runtime is one of {', '.join(RUNTIMES)}")
@@ -194,6 +206,8 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
         if entry["kind"] == "third" and thirds[name].get("mod_id") and thirds[name]["mod_id"] not in ids:
             ids = sorted({*ids, thirds[name]["mod_id"]})
         entry.update(file=file_name, path=str(path.relative_to(store)).replace("\\", "/"), mod_ids=ids)
+        if spec in (table.get("place") or {}):
+            entry["place"] = table["place"][spec]
         for mod_id in ids:
             owners.setdefault(mod_id, []).append(spec)
         if source_project and source_project != product and extras is not None:

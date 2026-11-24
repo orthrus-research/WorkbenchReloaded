@@ -112,6 +112,13 @@ class Members(Base):
                                           "jdk": "26.0.2.1+1"})
         self.assertEqual((doc["set"], doc["params"], doc["schema"]), ("9" * 40, {"seed": 8675309}, 1))
 
+    def test_place_names_the_file_a_member_is_placed_under(self):
+        table = {**self.table, "place": {"helper@server": "+Helper-0.2.jar"}}
+        by = {m["member"]: m for m in self.run_resolve(table=table)["members"]}
+        self.assertEqual((by["helper@server"]["place"], by["helper@server"]["file"]),
+                         ("+Helper-0.2.jar", "+helper-0.2.jar"))
+        self.assertNotIn("place", by["cube:mod@both"])
+
     def test_a_hold_wins_over_the_line(self):
         member = {m["member"]: m for m in self.run_resolve()["members"]}["lib:adapter@both"]
         self.assertEqual((member["kind"], member["sha256"], member["commit"], member["reason"]),
@@ -153,7 +160,10 @@ class Definition(unittest.TestCase):
                                ({"members": ["a:mod@everywhere"]}, "is not <project>:<artifact>@<side>"),
                                ({"members": ["a:mod@both", "a:mod@both"]}, "names a member twice"),
                                ({"members": ["a:mod@both"], "runtime": "forge"}, "runtime is one of cleanroom"),
-                               ({"members": ["a:mod@both"], "jvm": {"client": "-Dx"}}, "list of JVM arguments")]:
+                               ({"members": ["a:mod@both"], "jvm": {"client": "-Dx"}}, "list of JVM arguments"),
+                               ({"members": ["a:mod@both"], "place": {"b:mod@both": "b.jar"}}, "which is not a member"),
+                               ({"members": ["a:mod@both"], "place": {"a:mod@both": "mods/a.jar"}}, "is a JAR file name"),
+                               ({"members": ["a:mod@both"], "place": {"a:mod@both": "a\\b.jar"}}, "is a JAR file name")]:
             with self.subTest(pattern=pattern), self.assertRaisesRegex(launch.LaunchError, pattern):
                 launch.definition({"launch": {"default": table}}, "default")
         with self.assertRaisesRegex(launch.LaunchError, r"no \[launch.capture\] \(defined: default\)"):
