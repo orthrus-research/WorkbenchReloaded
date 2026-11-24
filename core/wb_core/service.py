@@ -790,8 +790,8 @@ class Workbench:
             reason = self._blocker(row["machine"], cpu, mem, exclusive, quiet, job, locks, own)
             if reason is not None:
                 self._wait_reason(job, reason)
-                if not row["under_running"]:
-                    blocked.setdefault(key, job)
+                if not row["under_running"] and not reason.startswith("lock "):
+                    blocked.setdefault(key, job)  # a lock wait holds no budget, so nothing queues behind it
                 continue
             self._wait_reason(job, None)
             started += 1

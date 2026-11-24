@@ -50,7 +50,7 @@ class Admission(unittest.TestCase):
 
     def test_locks_asked_at_submit_are_taken_all_or_none(self):
         from wb.client import WbError
-        holder = self.c.submit("selftest.sleep", {"seconds": "3s"}, locks=["instance:demo"])
+        holder = self.c.submit("selftest.sleep", {"seconds": "5s"}, locks=["instance:demo"])
         until(lambda: holder.refresh().state == "running", 20)
         self.assertEqual(holder.refresh().get("locks"), ["instance:demo"])
         both = self.c.submit("selftest.echo", {"text": "both"}, locks=["set", "instance:demo", "set"])
@@ -58,6 +58,11 @@ class Admission(unittest.TestCase):
         self.assertEqual(reason, f"lock instance:demo held by {holder.id} (it takes instance:demo, set, all or none; "
                                  "asked at submit: instance:demo, set)")
         self.assertEqual(both.refresh().get("locks"), ["instance:demo", "set"])
+        # A lock wait holds no budget and queues nothing behind it: a later job that needs only set takes it now,
+        # since the job waiting for both takes neither until it can take both.
+        other = self.c.submit("selftest.echo", {"text": "other"}, locks=["set"])
+        self.assertEqual(other.result(timeout=60).outcome, "ok")
+        self.assertEqual(both.refresh().state, "queued")
         self.assertEqual(both.result(timeout=60).outcome, "ok")
         self.assertEqual(holder.result(timeout=60).outcome, "ok")
         self.assertEqual(self.c.submit("selftest.echo", {"text": "none"}).refresh().get("locks"), [])
