@@ -237,10 +237,11 @@ def _pass_runs(records: Path | None) -> set[Path]:
                 continue
             if any((job or {}).get("status") == "passed" for job in ((data or {}).get("jobs") or {}).values()):
                 needed.add(summary.parent)
-        for entry in (project / "cache").glob("*.json") if (project / "cache").is_dir() else []:
-            run = (_json(entry) or {}).get("runId")
-            if run:
-                needed.add(project / str(run))
+        for folder in (project, project / "stand-ins"):  # a stand-in run's engine keeps its cache one level down
+            for entry in (folder / "cache").glob("*.json") if (folder / "cache").is_dir() else []:
+                run = (_json(entry) or {}).get("runId")
+                if run:
+                    needed.add(folder / str(run))
     return needed
 
 
@@ -264,7 +265,7 @@ def _runs(records: Path):
             yield project, run, False
         stand_ins = project / "stand-ins"
         if stand_ins.is_dir() and not is_link(stand_ins):
-            for run in sorted(p for p in stand_ins.iterdir() if p.is_dir() and not is_link(p)):
+            for run in sorted(p for p in stand_ins.iterdir() if p.is_dir() and not is_link(p) and p.name != "cache"):
                 yield project, run, True
 
 

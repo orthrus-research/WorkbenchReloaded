@@ -81,6 +81,8 @@ class Machine:
         self.fresh = write(project / "fresh" / "summary.json", {"jobs": {"build": {"status": "failed"}}}).parent
         self.stand_in = write(project / "stand-ins" / "s1" / "summary.json",
                               {"jobs": {"build": {"status": "passed"}}}).parent
+        self.stand_in_cache = write(project / "stand-ins" / "cache" / "build-j.json", {"runId": "s2"}).parent
+        self.stand_in_cached = write(project / "stand-ins" / "s2" / "summary.json", {"jobs": {}}).parent
         # A kept session: its folder and the bytes and the instance its files name.
         self.session = write(out / "sessions" / "s1" / "kept.json", {"reason": "baseline"}).parent
         write(self.session / "launch.json", {"members": [{"sha256": self.blob["kept"]}]})
@@ -168,7 +170,7 @@ class Gc(unittest.TestCase):
         listed = self.listed()
         for path in (m.pass_run, m.pass_run / "summary.json"):  # its artifact copies may go, never the record
             self.assertFalse(any(p == str(path) or str(path).startswith(p + os.sep) for p in listed), path)
-        protected = [m.cached, m.fresh, m.session, m.kept_instance,
+        protected = [m.cached, m.fresh, m.session, m.kept_instance, m.stand_in_cache, m.stand_in_cached,
                      m.legacy, m.used_template, m.sets / ("c" * 40),
                      m.releases / "bbbbbbbbbbbb", m.releases / "cccccccccccc"]
         protected += [m.store / "files" / m.blob[n] for n in ("indexed", "set-named", "seeded", "kept", "landed",
