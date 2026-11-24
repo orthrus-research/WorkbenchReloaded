@@ -80,10 +80,12 @@ class HostRunner(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             self.assertTrue(json.loads(response.read())["ok"])
 
-    def test_a_retired_routine_names_wb_play_and_a_turn_holds_one_lease(self):
-        refused = self.c.submit("lab.prepare", {"name": "x"}).result(timeout=120)
-        self.assertEqual(refused.outcome, "usage", refused.summary)
-        self.assertIn("wb play", refused.summary)
+    def test_a_retired_routine_names_its_replacement_and_a_turn_holds_one_lease(self):
+        for name in ("lab.prepare", "lab.play"):
+            with self.assertRaises(Exception) as raised:
+                self.c.submit(name, {"name": "x"})
+            self.assertIn(f"{name} is retired; use vast.bundle-launch", str(raised.exception))
+            self.assertIn("wb play", str(raised.exception))
         steps = [{"id": "one", "command": "lab.prepare", "params": {"name": "x"}}]
         turn = self.c.submit("lab.turn", {"steps": steps}).result(timeout=120)
         self.assertEqual(turn.outcome, "usage", turn.summary)

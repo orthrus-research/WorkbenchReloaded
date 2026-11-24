@@ -72,6 +72,9 @@ RETIRED = {
     **dict.fromkeys(("lab.remove", "lab.prune-instances", "lab.store-gc", "lab.dedupe", "lab.instances"),
                     "wb gc: it lists the instances, templates and blobs it would remove, and removes that list"),
     **dict.fromkeys(("lab.migrate", "lab.migrate-plan"), "[lab] home in this machine's config"),
+    **dict.fromkeys(("lab.prepare", "lab.play"),
+                    "vast.bundle-launch (a rental bundle from a launch file) / wb play (build and play a launch "
+                    "here)"),
 }
 
 

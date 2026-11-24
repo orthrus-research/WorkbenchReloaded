@@ -155,8 +155,8 @@
 - The instance profile and its commands are retired: `lab.inputs`, `lab.checkouts`, `lab.ensure`, `lab.script`,
   `lab.userdev`, `lab.session`, `lab.server-scenario`, `lab.queue`, `lab.snapshot`, `lab.reset`, `lab.remove`,
   `lab.instances`, `lab.prune-instances`, `lab.store-gc`, `lab.dedupe`, `lab.migrate` and `lab.migrate-plan`
-  answer with their replacement for one release; `lab.prepare` and `lab.play` stay only as a rental plan's game
-  steps. The profile, launcher, snapshots, scripts and environments keys of `[modules.lab]` are read by nothing and
+  answer with their replacement for one release, as do `lab.prepare` and `lab.play`, the template rental route's
+  game steps (a rental is a bundle from a launch file, `vast.bundle-launch`; here, `wb play`). The profile, launcher, snapshots, scripts and environments keys of `[modules.lab]` are read by nothing and
   are accepted until the machine's config drops them. `wb play --driver` runs a driver from the project's tree the
   launch was resolved from, and `[lab] env` can name the runtime cache (`cache`) for drivers.
 - The Windows host runner, sharing the GPU lease and lanes with gpu_queue.py; host routines that need no GPU run
