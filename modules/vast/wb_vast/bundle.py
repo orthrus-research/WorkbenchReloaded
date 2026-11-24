@@ -81,6 +81,7 @@ class Bundle:
     partial: str | None
     own_jdk: bool = False
     launch: dict | None = None   # a launch bundle's bundle-launch.json
+    ram_gb: int = 0              # the system memory the run needs; an offer with less is refused
 
     def upload_bytes(self) -> int:
         total = 0
@@ -147,7 +148,8 @@ def load(folder: Path, resolve, *, verify_uploads: bool = True) -> Bundle:
                   disk_gb=int(needs.get("disk_gb", 32)),
                   stop=run.get("stop") or f"pkill -f '/root/{script.name}'",
                   partial=run.get("partial"),
-                  own_jdk=bool(needs.get("own_jdk", False)), launch=launched)
+                  own_jdk=bool(needs.get("own_jdk", False)), launch=launched,
+                  ram_gb=int(needs.get("ram_gb", 0)))
 
 
 # ---------------------------------------------------------------------------------------------

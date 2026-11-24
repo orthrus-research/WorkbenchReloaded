@@ -31,6 +31,7 @@ params.gpu = { type = "string", default = "", summary = "a card; empty: every co
 params.max_dph = { type = "money", unit = "USD/h", default = 0.30 }
 params.driver_branch = { type = "string", pattern = "^R[0-9]{3}$", optional = true, summary = "e.g. R580" }
 params.min_cores = { type = "float", default = 0 }
+params.min_ram_gb = { type = "float", default = 0, summary = "offers with less system memory are left out (a launch bundle's needs.ram_gb is what its session needs)" }
 result.offers = { type = "list" }
 
 [[command]]

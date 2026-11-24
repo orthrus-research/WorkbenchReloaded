@@ -98,12 +98,30 @@ if [ "$GPU" = "1" ]; then
   sampler=$!
 fi
 log "session tour $TOUR"
+free -m > results/memory-before.txt 2>&1
 # shellcheck disable=SC2086
 $WRAP python3 -B runner/launch_run.py tour "$BUNDLE" "$LAB" 2>&1 | tee results/session.log | grep --line-buffered '^RUN '
 code=${PIPESTATUS[0]}
 [ -n "$sampler" ] && kill "$sampler" 2>/dev/null
+free -m > results/memory-after.txt 2>&1
+(dmesg 2>/dev/null || journalctl -k --no-pager 2>/dev/null) | tail -40 > results/kernel.txt
+if [ "$code" -gt 128 ]; then  # killed by a signal, so it printed no reason of its own: say which (9 is the OOM killer's)
+  log "session failed: the runner was killed by signal $((code - 128)); results/kernel.txt and memory-*.txt say more"
+elif [ "$code" -ne 0 ] && ! grep -q '^RUN session' results/session.log; then
+  log "session failed: the runner exited $code without a result; results/session.log ends where it stopped"
+fi
 finish "$code"
 """
+
+
+HEAP = re.compile(r"-Xmx([0-9]+)([gGmM])")
+
+
+def ram_needed(doc: dict) -> int:
+    """The system memory, in GB, a launch's session needs on a rental: its server and its client each with the
+    largest heap the launch file names (-Xmx), and 4 GB for the JVMs' own memory, the display and the runner."""
+    heaps = [int(n) / (1024 if unit.lower() == "m" else 1) for n, unit in HEAP.findall(json.dumps(doc))]
+    return int(-(-(2 * max(heaps or [4]) + 4) // 1))
 
 
 def _git_bytes(repo: Path, *args: str) -> bytes:
@@ -356,7 +374,8 @@ def make(ctx: Context, launch: str, tour: str, name: str | None, window: str, gp
             shutil.copyfile(source, target)
     text = bundles.render(
         {"name": label, "purpose": purpose, "kind": "launch"},
-        {"gpu": bool(gpu), "disk_gb": disk_gb, "own_jdk": True}, [{"path": bundles.FILES, "contents": True}],
+        {"gpu": bool(gpu), "disk_gb": disk_gb, "own_jdk": True, "ram_gb": ram_needed(doc)},
+        [{"path": bundles.FILES, "contents": True}],
         {"script": f"{bundles.FILES}/run.sh", "args": [bundles.REMOTE], "progress": "^RUN ", "done": "RUN done",
          "failed": "^RUN (verify|build|session) failed", "results": [f"{bundles.REMOTE}/results.tar", "/root/run.log"],
          "stop": "pkill -f launch_run.py", "partial": "cd /root/bundle && tar -cf results.tar results"},
