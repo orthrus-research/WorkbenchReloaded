@@ -158,10 +158,11 @@ def read_launch(path: Path) -> tuple[bytes, dict]:
 
 
 def runtime_files(doc: dict) -> dict[str, dict]:
-    """The runtime's files the launch names, each {url, file, sha256}; refused with the fix when any is missing."""
+    """The runtime's files the launch names, each {file, sha256} and the url it is fetched from (a third entry's file,
+    which the Store holds, may have none); refused with the fix when any is missing."""
     files = (doc.get("runtime") or {}).get("files") or {}
     missing = [part for part in RUNTIME_PARTS if not isinstance(files.get(part), dict)
-               or not all(files[part].get(key) for key in ("url", "file", "sha256"))]
+               or not all(files[part].get(key) for key in ("file", "sha256"))]
     if missing:
         version = doc["runtime"]["version"]
         raise ParamError(f"the launch file names no runtime file for {', '.join(missing)} (runtime.files): land the "
@@ -216,7 +217,7 @@ class _Hops(urllib.request.HTTPRedirectHandler):
 
 def runtime_file(ctx: Context, store: Path, part: str, entry: dict, hosts: list[str], candidates: list[Path]) -> Path:
     """A runtime file by SHA-256: the Store's copy, else a candidate folder's, else downloaded; kept in the Store."""
-    digest, name, url = entry["sha256"].lower(), entry["file"], entry["url"]
+    digest, name, url = entry["sha256"].lower(), entry["file"], entry.get("url") or ""
     kept = store / "files" / digest / name
     if kept.is_file():
         if sha256_file(kept) != digest:
@@ -228,6 +229,9 @@ def runtime_file(ctx: Context, store: Path, part: str, entry: dict, hosts: list[
         if candidate.is_file() and sha256_file(candidate) == digest:
             ctx.log.info(f"runtime {part}: {name} from {candidate}")
             return artifacts.put(store, candidate, digest)
+    if not url:
+        raise ParamError(f"runtime {part}: the Store has no {name} with SHA-256 {digest[:12]}, and the launch names no "
+                         "URL to fetch it from (the landing of the third entry that names it keeps it in the Store)")
     if not allowed(url, hosts):
         raise ParamError(f"runtime {part}: {url} is on a host outside the allowed hosts ({', '.join(hosts) or 'none'}; "
                          "[modules.lab] runtime_hosts, by default [modules.ci] store_hosts), and the Store has no "
