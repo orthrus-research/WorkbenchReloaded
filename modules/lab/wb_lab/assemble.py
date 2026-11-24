@@ -318,12 +318,12 @@ def _component(ctx: Context, instance: Instance, cache: Path, uid: str, version:
     if uid in instance.patches:
         return instance.patches[uid], "instance", hashlib.sha256(instance.texts[uid]).hexdigest()
     template = str(ctx.config.get("metadata") or "")
-    if not template:
+    kept = cache / "meta" / uid / f"{version}.json"
+    if kept.is_file():  # read once from the metadata, then kept by uid and version
+        data = kept.read_bytes()
+    elif not template:
         raise ParamError(f"the instance carries no patch for {uid} {version}, and [modules.lab] metadata (a URL "
                          "template with {uid} and {version}) is not set")
-    kept = cache / "meta" / uid / f"{version}.json"
-    if kept.is_file():
-        data = kept.read_bytes()
     else:
         data = download(template.replace("{uid}", uid).replace("{version}", version))
         try:
@@ -381,14 +381,48 @@ def _unpack_natives(paths: list[Path], target: Path) -> list[str]:
     return sorted(set(unpacked))
 
 
-def assemble(ctx: Context, instance: str, system: str = "", arch: str = "", assets: bool = True, game: bool = False):
-    here_system = SYSTEMS.get(platform.system(), platform.system().lower())
-    here_arch = _arch(platform.machine())
+@dataclass
+class Runtime:
+    """A runtime as it was assembled, with local paths: what runtime.json and lab.build's receipt are written from."""
+    system: str
+    arch: str
+    components: list[dict]    # {uid, version, source, sha256} in the instance's order
+    patches: list[dict]       # the components themselves, in that order
+    items: list[Artifact]     # the libraries in class-path order
+    cache: Path
+    client: Path
+    client_sha1: str
+    natives: Path
+    native_files: list[str]
+    asset_index: dict | None  # {id, path, sha1, entries, objects}
+    fetched: dict
+
+    @property
+    def main_class(self) -> str | None:
+        return next((c["mainClass"] for c in reversed(self.patches) if c.get("mainClass")), None)
+
+    @property
+    def tweakers(self) -> list[str]:
+        return [t for c in self.patches for t in c.get("+tweakers") or []]
+
+    def library(self, item: Artifact) -> Path:
+        return self.cache / "libraries" / item.path
+
+
+def host_system() -> tuple[str, str]:
+    return SYSTEMS.get(platform.system(), platform.system().lower()), _arch(platform.machine())
+
+
+def build_runtime(ctx: Context, source: Path, cache: Path, natives_dir: Path, *, system: str = "", arch: str = "",
+                  assets: bool = True, library_folders: list[Path] | None = None,
+                  asset_folders: list[Path] | None = None) -> tuple[Runtime | None, list[str], dict | None]:
+    """Assembles the runtime of the launcher instance ``source`` into ``cache``, its natives unpacked into
+    ``natives_dir``: (the runtime, [], counts), or (None, the problems, each already a finding, and the fetch counts
+    when fetching had begun)."""
+    here_system, here_arch = host_system()
     system, arch = system or here_system, arch or here_arch
     here = (system, arch) == (here_system, here_arch)
-    source = Path(instance)
     read = read_instance(source)
-    cache = _cache(ctx)
     try:
         cache.mkdir(parents=True, exist_ok=True)
     except OSError as error:
@@ -410,9 +444,13 @@ def assemble(ctx: Context, instance: str, system: str = "", arch: str = "", asse
     if problems:
         for problem in problems:
             ctx.finding(problem)
-        return {"runtime": None, "problems": problems}
+        return None, problems, None
 
-    fetcher = Fetcher([Path(p) for p in ctx.config.get("library_candidates") or []])
+    if library_folders is None:
+        library_folders = [Path(p) for p in ctx.config.get("library_candidates") or []]
+    if asset_folders is None:
+        asset_folders = [Path(p) for p in ctx.config.get("asset_candidates") or []]
+    fetcher = Fetcher(library_folders)
     failures: list[str] = []
 
     def get(item: Artifact) -> None:
@@ -431,11 +469,10 @@ def assemble(ctx: Context, instance: str, system: str = "", arch: str = "", asse
     except Mismatch as error:
         failures.append(str(error))
 
-    asset_record = None
+    asset_index = None
     if assets and (game or {}).get("assetIndex"):
         index = game["assetIndex"]
         index_path = cache / "assets" / "indexes" / f"{index['id']}.json"
-        asset_folders = [Path(p) for p in ctx.config.get("asset_candidates") or []]
         try:
             fetcher.fetch(index_path, str(index["sha1"]).lower(), index.get("url"),
                           candidates=[f / "indexes" / index_path.name for f in asset_folders])
@@ -457,37 +494,51 @@ def assemble(ctx: Context, instance: str, system: str = "", arch: str = "", asse
 
             with ThreadPoolExecutor(max_workers=16) as pool:
                 list(pool.map(get_object, sorted(objects)))
-            asset_record = {"root": ctx.host_path(cache / "assets"), "index": index["id"], "entries": len(entries),
-                            "objects": len(objects)}
+            asset_index = {"id": index["id"], "path": index_path, "sha1": str(index["sha1"]).lower(),
+                           "entries": len(entries), "objects": len(objects)}
     if failures:
         for failure in sorted(failures):
             ctx.finding(failure)
-        return {"runtime": None, "problems": sorted(failures), "fetched": fetcher.counts}
+        return None, sorted(failures), fetcher.counts
 
-    natives_dir = ctx.out / "natives"
     unpacked = _unpack_natives([cache / "libraries" / i.path for i in items if i.native], natives_dir)
-    library_records = [{"name": i.name, "path": ctx.host_path(cache / "libraries" / i.path), "sha1": i.sha1,
-                        "native": i.native} for i in items]
-    tweakers = [t for c in components for t in c.get("+tweakers") or []]
+    return Runtime(system, arch, recorded, components, items, cache, client, jar["sha1"].lower(), natives_dir, unpacked,
+                   asset_index, fetcher.counts), [], fetcher.counts
+
+
+def assemble(ctx: Context, instance: str, system: str = "", arch: str = "", assets: bool = True, game: bool = False):
+    source = Path(instance)
+    natives_dir = ctx.out / "natives"
+    built, problems, counts = build_runtime(ctx, source, _cache(ctx), natives_dir, system=system, arch=arch,
+                                            assets=assets)
+    if built is None:
+        return {"runtime": None, "problems": problems, **({"fetched": counts} if counts is not None else {})}
+    library_records = [{"name": i.name, "path": ctx.host_path(built.library(i)), "sha1": i.sha1,
+                        "native": i.native} for i in built.items]
+    asset_record = None
+    if built.asset_index:
+        asset_record = {"root": ctx.host_path(built.cache / "assets"), "index": built.asset_index["id"],
+                        "entries": built.asset_index["entries"], "objects": built.asset_index["objects"]}
+    components = built.patches
     runtime = {
         "schema": SCHEMA,
         "instance": ctx.host_path(source),
-        "system": system,
-        "arch": arch,
-        "components": recorded,
-        "main_class": next((c["mainClass"] for c in reversed(components) if c.get("mainClass")), None),
-        "tweakers": tweakers,
+        "system": built.system,
+        "arch": built.arch,
+        "components": built.components,
+        "main_class": built.main_class,
+        "tweakers": built.tweakers,
         "jvm_args": [a for c in components for a in c.get("+jvmArgs") or []],
         "game_arguments": next((c["minecraftArguments"] for c in reversed(components)
                                 if c.get("minecraftArguments")), None),
         "traits": sorted({t for c in components for t in c.get("+traits") or []}),
         "libraries": library_records,
-        "client": {"path": ctx.host_path(client), "sha1": jar["sha1"].lower()},
-        "classpath": [r["path"] for r in library_records] + [ctx.host_path(client)],
+        "client": {"path": ctx.host_path(built.client), "sha1": built.client_sha1},
+        "classpath": [r["path"] for r in library_records] + [ctx.host_path(built.client)],
         "natives": ctx.host_path(natives_dir),
-        "native_files": unpacked,
+        "native_files": built.native_files,
         "assets": asset_record,
-        "fetched": fetcher.counts,
+        "fetched": built.fetched,
         "game": None,
     }
     if game:
@@ -502,9 +553,9 @@ def assemble(ctx: Context, instance: str, system: str = "", arch: str = "", asse
     target.write_text(json.dumps(runtime, indent=1) + "\n", encoding="utf-8")
     ctx.output("runtime.json", target)
     ctx.output("natives", natives_dir)
-    counts = fetcher.counts
-    ctx.summary(f"runtime for {system} {arch}: {len(items)} librar{'y' if len(items) == 1 else 'ies'}, main class "
-                f"{runtime['main_class']}, {asset_record['objects'] if asset_record else 0} asset object(s); "
-                f"{counts['downloaded']} downloaded, {counts['cached']} cached, {counts['candidate']} from candidates")
-    return {"runtime": ctx.host_path(target), "main_class": runtime["main_class"], "libraries": len(items),
+    ctx.summary(f"runtime for {built.system} {built.arch}: {len(built.items)} librar"
+                f"{'y' if len(built.items) == 1 else 'ies'}, main class {runtime['main_class']}, "
+                f"{asset_record['objects'] if asset_record else 0} asset object(s); {counts['downloaded']} downloaded, "
+                f"{counts['cached']} cached, {counts['candidate']} from candidates")
+    return {"runtime": ctx.host_path(target), "main_class": runtime["main_class"], "libraries": len(built.items),
             "fetched": counts, "problems": []}

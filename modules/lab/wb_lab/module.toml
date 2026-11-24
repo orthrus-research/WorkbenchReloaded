@@ -19,6 +19,9 @@ asset_base = { type = "string", default = "https://resources.download.minecraft.
 runtime_cache = { type = "string", default = "", summary = "where lab.assemble keeps libraries, client JARs and assets, shared by every runtime; empty: <state>/cache/runtime (put it under a configured root for the host to use what it holds)" }
 library_candidates = { type = "list", items = "string", default = [], summary = "folders lab.assemble searches by file name for a library with the SHA-1 its metadata names before downloading it (a Gradle cache, a launcher's libraries)" }
 asset_candidates = { type = "list", items = "string", default = [], summary = "asset folders (holding objects/ and indexes/) lab.assemble searches before downloading" }
+instances = { type = "string", default = "", summary = "where lab.build keeps its templates (.store) and the instances made from them, one folder each; empty: <lab home>/instances" }
+runtime_hosts = { type = "list", items = "string", default = [], summary = "the hosts lab.build downloads a runtime file (runtime.files of a launch) from, every redirect included; empty: [modules.ci] store_hosts" }
+runtime_candidates = { type = "list", items = "string", default = [], summary = "folders lab.build searches by file name for a runtime file with the SHA-256 the launch names before downloading it" }
 pack_cache = { type = "string", default = "", summary = "where lab.pack keeps pack files by SHA-512, shared by every pack; empty: <state>/cache/packs" }
 pack_hosts = { type = "list", items = "string", default = ["cdn.modrinth.com", "github.com", "raw.githubusercontent.com", "gitlab.com"], summary = "the hosts lab.pack downloads from (by default the ones the Modrinth pack format allows)" }
 curseforge_api = { type = "string", default = "https://api.curseforge.com", summary = "the CurseForge API lab.pack asks about a CurseForge pack's files (with the secret curseforge_api_key)" }
@@ -332,6 +335,25 @@ result.runtime = { type = "string", optional = true }
 result.main_class = { type = "string", optional = true }
 result.libraries = { type = "int", optional = true }
 result.problems = { type = "list" }
+
+[[command]]
+name = "build"
+summary = "Build a game instance from a resolved launch file (lab.resolve's launch.json) and nothing else: the runtime (the server by its installer on the launch's JDK from the Store, the client from its launcher instance, every runtime file by SHA-256), each member's Store file hashed again and placed by side, the base's files and JVM profile, the configure hook the request names, and instance.json naming every file by SHA-256 relative to {instance}, {cache} and {jdk:N} with the server's and client's command lines. One template per launch file, base and parameters; instances are hard-linked from it. Nothing is started."
+handler = "wb_lab.instance:build"
+runs_on = ["host"]
+timeout = "2h"
+params.launch = { type = "path.in", summary = "the launch file (wb run lab.resolve folder=<worktree> writes <worktree>/.local/launch/<name>.json); its runtime.files name the runtime's own files" }
+params.name = { type = "string", pattern = "^[a-z0-9][a-z0-9._-]*$", summary = "the instance's name: its folder under [modules.lab] instances" }
+params.base = { type = "string", default = "cubature:standalone", summary = "the base the instance starts from (wb_lab/bases.py, until its project carries it)" }
+params.port = { type = "int", default = 25565, min = 1, max = 65535, summary = "the server's port, written into the instance and its client command" }
+params.params = { type = "object", default = {}, summary = "values over the launch's params (seed, and what the configure hook reads); they are part of the template's key" }
+params.eula = { type = "bool", default = false, summary = "true writes eula.txt, recording that the requester accepts the Minecraft EULA for this instance" }
+params.configure = { type = "path.in", optional = true, summary = "a Python file whose configure(instance, launch, params, placed) makes a launched product's own changes after the base; its bytes are part of the template's key" }
+params.fresh = { type = "bool", default = false, summary = "make the instance again: replaces one of this name built from this or another template" }
+result.instance = { type = "string" }
+result.template = { type = "string" }
+result.reused = { type = "bool" }
+result.built = { type = "bool" }
 
 [[command]]
 name = "server"

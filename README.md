@@ -204,7 +204,19 @@ name a member is placed under), and a member may add its own
 switches (`[launch.member]`). `lab.resolve folder=<worktree>` resolves one once into `launch.json`: every member by
 SHA-256 from the worktree's set revision (a line, a hold or a third entry), the project itself from the Store by the
 tree CI built, with the mod ids each declares. A member the set or the Store lacks, or two builds of one mod id, is
-refused before anything is written.
+refused before anything is written. Once the set's platform names the runtime's own files
+(`platform.cleanroom.{installer,universal,prism}`), the launch file carries them too, in `runtime.files`.
+
+`lab.build launch=<launch.json> name=<name>` builds an instance from that file and nothing else: the server by the
+runtime's installer on the launch's exact JDK from the Store, the client from the runtime's launcher instance (as
+`lab.assemble` does), each runtime file by SHA-256 from the Store, a candidate folder or an allowed host; every member's
+Store file hashed again and placed by side; the base's files and JVM profile (`base`, for now the interim
+`cubature:standalone` in `wb_lab/bases.py`), then the configure hook the request names for the product's own changes
+(`examples/launch/configure_riven.py` shows one). Its `instance.json` names every file by SHA-256 relative to
+`{instance}`, `{cache}` and `{jdk:N}`, with the launch file's SHA-256 and the server's and client's command lines. One
+template is built per launch file, base and parameters, and each further instance is hard-linked from it in under a
+second. `modules/lab/tools/compare_instances.py` compares such an instance with one the old route prepared, file by
+file and command line by command line.
 
 ## Money
 
