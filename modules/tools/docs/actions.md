@@ -173,7 +173,10 @@ Jobs run concurrently once the jobs they `needs` have passed. A job claims `shar
 starts (`--keep-going` continues), and a job whose need failed is skipped.
 
 The jobs' memory together is `memory_fraction` of the machine's, or `--memory GIB` when the
-caller has reserved memory for the run (Workbench passes its job's reservation). A run's id is
+caller has reserved memory for the run (Workbench passes its job's reservation). Workbench's
+`ci.run` reserves, from the jobs file of the commit it runs, `[project] reserve` GiB when the
+project declares it (so its checks can run side by side), else the largest single job's claim
+(each job then has what it claims, run one at a time when they do not fit together). A run's id is
 the time it started, or `--run-id ID` (Workbench passes its job id), which must be new. Making
 the run's folder claims the id, so several runs may share one records folder at once.
 

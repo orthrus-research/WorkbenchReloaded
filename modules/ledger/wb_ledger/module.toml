@@ -136,7 +136,7 @@ result.imported = { type = "object" }
 
 [[command]]
 name = "import-ci"
-summary = "Import a CI project's run records: one run per CI run (ci/<project>/<run id>), its trees as inputs, each job's seconds and status as measurements (idempotent)."
+summary = "Import a CI project's run records: one run per CI run (ci/<project>/<run id>), its trees as inputs, each check's seconds and status as measurements (idempotent)."
 handler = "wb_ledger.commands:import_ci"
 params.project = { type = "string", pattern = "^[^/\\\\]+$", summary = "the CI project; its runs are recorded as ci/<project>/<run id>" }
 params.runs = { type = "path.in", optional = true, summary = "a folder of the project's run records, each a folder with a summary.json (default: the records ci.run keeps in Workbench's state)" }

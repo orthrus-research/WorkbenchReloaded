@@ -56,7 +56,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 |---|---|---|
 | `assets` | Assets and resource packs: content JSON generated from one manifest, reference blockstates copied from the client JAR into a pack complete but for its textures, and texture readability metrics. | `generate`, `blockstates`, `texture-metrics` |
 | `build` | Builds with receipts and reproducible archives. | `receipt`, `archive` |
-| `ci` | Run a project's jobs, gate pushes on them, and keep commits clean. | `run`, `host-run`, `gate`, `status`, `hook`, `actions`, `scrub`, `matrix`, `store-verify`, `store-export`, `store-import`, `land`, `reach`, `store-platform` |
+| `ci` | Run a project's checks, gate pushes on them, and keep commits clean. | `run`, `host-run`, `gate`, `status`, `hook`, `actions`, `scrub`, `matrix`, `store-verify`, `store-export`, `store-import`, `land`, `reach`, `store-platform` |
 | `content` | Content and data: modpack scripts, recipes and placement data, read without running the game. | `scripts`, `recipe-graph`, `placement` |
 | `drive` | Workload drivers: what a game session is made to do and see. Tours checked before a session plays them, camera paths made from keyframes and checked against the frames captured along them, and block galleries laid out for review. | `tour-lint`, `path`, `path-check`, `gallery`, `send` |
 | `frames` | Score captured frames: pass or fail against references, capture noise, wrong-view checks, and PSNR/SSIM quality (from Quadrature's frames.py). | `compare`, `measure`, `check`, `quality` |
@@ -211,10 +211,7 @@ the layer behind every value.
 
 A machine's paths are named once, as the host names them, in `[paths]`: `out` (the read-write root, mounted at
 `/mnt/out`, holding the Store, the run records and the pin cache), `releases`, `backup`, and `[paths.roots.<name>]`
-for the other folders the container may read or write (mounted at `/mnt/<name>`). Where project homes are is
-`[workspace] root` (a relative `[modules.ci.projects]` repo is read from it, and `wb work` makes Works in
-`<root>/work` unless `[workspace] work` says otherwise); it is its own key because `[paths.roots]` names only what
-the container may read, which can be wider. The old spellings
+for the other folders the container may read or write (mounted at `/mnt/<name>`). The old spellings
 (`[paths.roots.out]`, a root's `container`, `[modules.ci] store`, `records` and `pin_cache`, `[modules.toolchain]
 pin_cache`) are still read for one release, each with a warning in `wb status`, `wb config show --local` and the
 daemon's log.
@@ -309,22 +306,10 @@ python tests/run_all.py            # every suite; --quick skips the SDK and host
 python image/pins.py check         # image locks match image/pins.toml
 python schema/generate.py --check  # SDK envelope types match the schema
 wb build                           # docker build -f image/Dockerfile -t wb-core:dev .
-wb deploy                          # this checkout's commit into service; --commit <sha> for another (the undo)
-wb dev status                      # any verb, with the CLI of the Workbench working tree you stand in
 ```
 
-`wb setup` makes this machine's first release when it has none, puts a `wb` shim in `~/.local/bin` (`WB_BIN` names
-another folder; it prints the command that adds the folder to `PATH` and never changes `PATH` itself) and installs
-the hooks. The shim and the hooks run the release in service, `<releases>/current`; `wb dev` (or `WB_DEV=1`) runs a
-working tree on purpose. Run the CLI from a checkout with `bin\wb.cmd` (or `bin/wb`). The config folder is
-`~/.config/wb`; start from `config.example`.
-
-The image holds no Workbench code. The container runs the release it was started on: `wb up` and `wb deploy` mount
-it read-only and the first start copies it into the state volume, where the daemon imports it (`image/code.sh`); a
-machine with no release yet runs the checkout in place. `wb deploy` gates on the container pass CI recorded for the
-commit's tree and on the host suite, records both in the release's `RELEASE.json`, and builds the image only when its
-own inputs changed (the image folder, the other files its Dockerfile copies, `.dockerignore`, and `[core.image]
-tools`), by the digest the image is labelled with; a Python-only deploy is a restart.
+Run the CLI from a checkout with `bin\wb.cmd` (or `bin/wb`). The config folder is `~/.config/wb`; start from
+`config.example`.
 
 The image holds its JDKs; other toolchains are optional. `image/pins.toml` pins them (`[tool.<name>]`: a download
 and its SHA-256, today Node and Zig), and a machine names the ones its projects need in `[core.image] tools =

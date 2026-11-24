@@ -272,6 +272,19 @@ class Types(unittest.TestCase):
             with self.assertRaises(ManifestError):
                 parse(path, "m")
 
+    def test_a_sized_command_names_a_file_of_its_own_package_and_a_fallback(self):
+        from wb_core.manifest import ManifestError, parse
+        head = '[module]\nname = "m"\nversion = "1"\n\n[[command]]\nname = "c"\nhandler = "wb_m.x:c"\n'
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "module.toml"
+            for resources in ('{ mem_gb = 8, mem_from = "wb_other.x:size" }', '{ mem_from = "wb_m.x:size" }',
+                              '{ mem_gb = 8, mem_from = "wb_m.x" }'):
+                path.write_text(head + f"resources = {resources}\n", encoding="utf-8")
+                with self.assertRaises(ManifestError, msg=resources):
+                    parse(path, "wb_m")
+            path.write_text(head + 'resources = { mem_gb = 8, mem_from = "wb_m.size:mem_gb" }\n', encoding="utf-8")
+            self.assertEqual(parse(path, "wb_m").commands[0].resources["mem_from"], "wb_m.size:mem_gb")
+
 
     def test_an_object_says_what_it_holds(self):
         table = types.normalise_spec("t", {"type": "object", "fields": {"a": "int", "b": {"type": "bool",
@@ -692,6 +705,54 @@ class Restart(unittest.TestCase):
             self.assertEqual(done.outcome, "ok")
         finally:
             second.stop()
+
+
+class Backup(unittest.TestCase):
+    def test_a_restored_backup_opens_with_queued_jobs_still_queued(self):
+        """wb backup's online copy, taken while one job runs and two wait, restored as another daemon's state: the
+        running job is interrupted, as any restart leaves it, and the waiting ones are still queued and then run."""
+        import shutil
+        import subprocess
+        from wb import backup
+        restore = Path(tempfile.mkdtemp(prefix="wb-restore-"))
+        copy = restore / "state" / "db" / "wb.sqlite"
+        copy.parent.mkdir(parents=True)
+        first = Daemon().start()
+        try:
+            running = first.client.submit("selftest.sleep", {"seconds": "60s"})
+            for _ in range(100):
+                if running.refresh().state == "running":
+                    break
+                time.sleep(0.1)
+            first.client.request("POST", "/v1/drain", {"on": True})  # what keeps them queued: a deploy's drain
+            queued = [first.client.submit("selftest.echo", {"text": f"kept {n}"}) for n in range(2)]
+            for job in queued:
+                for _ in range(100):
+                    if (job.refresh().get("waiting") or {}).get("reason", "").startswith("draining"):
+                        break
+                    time.sleep(0.1)
+            source = first.workbench.state / "db" / "wb.sqlite"
+            subprocess.run([sys.executable, "-c", backup.snapshot_script(source.as_posix(), copy.as_posix())],
+                           check=True, capture_output=True)
+        finally:
+            first.stop()
+        try:
+            counts = backup._counts(copy)  # what the backup's manifest records
+            self.assertEqual((counts["jobs"].get("queued"), counts["jobs"].get("running"), counts["check"]),
+                             (2, 1, "ok"))
+            second = Daemon(state=restore / "state")
+            try:
+                second.workbench.recover()
+                states = {row["id"]: row["state"] for row in second.workbench.db.query("SELECT id, state FROM job")}
+                self.assertEqual([states[job.id] for job in queued], ["queued", "queued"])
+                self.assertEqual(states[running.id], "interrupted")
+                second.start()
+                for job in queued:
+                    self.assertEqual(second.client.job(job.id).result(timeout=60).outcome, "ok")
+            finally:
+                second.stop()
+        finally:
+            shutil.rmtree(restore, ignore_errors=True)
 
 
 if __name__ == "__main__":

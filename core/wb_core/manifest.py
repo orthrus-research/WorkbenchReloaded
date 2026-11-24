@@ -149,9 +149,15 @@ def parse(path: Path, package: str) -> Module:
         if raw.get("spends") and not raw.get("quote"):
             raise ManifestError(f"{where}: a command that spends must name its quote handler")
         resources = dict(raw.get("resources", {}))
-        unknown = set(resources) - {"cpu", "mem_gb", "gpu", "quiet", "quiet_if", "locks"}
+        unknown = set(resources) - {"cpu", "mem_gb", "mem_from", "gpu", "quiet", "quiet_if", "locks"}
         if unknown:
             raise ManifestError(f"{where}: unknown resources {sorted(unknown)}")
+        sizer = resources.get("mem_from")
+        if sizer is not None and not (isinstance(sizer, str) and sizer.startswith(f"{package}.")
+                                      and ":" in sizer and "mem_gb" in resources):
+            # The daemon calls it at submit, so it is a file of this module's own package, beside a fallback.
+            raise ManifestError(f"{where}: resources.mem_from is '{package}.<file>:<function>', with mem_gb as the "
+                                "reservation when it has no answer")
         for key in ("quiet_if", "locks"):
             names = resources.get(key, [])
             if not isinstance(names, list) or not all(isinstance(v, str) and v for v in names):

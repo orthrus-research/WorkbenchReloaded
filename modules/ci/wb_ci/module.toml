@@ -1,7 +1,7 @@
 [module]
 name = "ci"
 version = "0.1.0"
-summary = "Run a project's jobs, gate pushes on them, and keep commits clean."
+summary = "Run a project's checks, gate pushes on them, and keep commits clean."
 
 [config]
 projects_root = { type = "string", default = "", summary = "the host folder relative project repos are under (a shared config names repos relatively)" }
@@ -36,11 +36,15 @@ gate = { type = "bool", optional = true, summary = "false: its pushes are only s
 
 [[command]]
 name = "run"
-summary = "Run a project's jobs from a clean clone (pinned repositories at their pins), keeping the records in Workbench; their Gradle builds get toolchain's rescue repository."
+summary = "Run a project's checks from a clean clone (pinned repositories at their pins), keeping the records in Workbench; their Gradle builds get toolchain's rescue repository."
 handler = "wb_ci.commands:run"
 requires = { binary = ["git"], module = ["toolchain"] }
-# One run of a project at a time, so two never interleave their writes to the project's Store index.
-resources = { cpu = 4, mem_gb = 8, locks = ["ci:{project}"] }
+# Two checks of one project run side by side: each has its own clone, run folder and records, and the Store index,
+# the input cache and the Python environments are safe to write at once. Only two runs of one commit wait for each
+# other, so the second reuses the first's passes instead of building the same tree twice. The memory a run reserves
+# is read from the jobs file it will run (wb_ci/reserve.py): [project] reserve, else its largest single claim; 8 GB
+# when that file cannot be read.
+resources = { cpu = 4, mem_gb = 8, mem_from = "wb_ci.reserve:mem_gb", locks = ["ci:{project}@{commit}"] }
 timeout = "3h"
 params.project = { type = "string", summary = "a name under [modules.ci.projects]" }
 params.commit = { type = "string", default = "HEAD", summary = "the commit to run; worktree: the checkout's working tree as it would be committed" }
@@ -83,7 +87,7 @@ result.leased = { type = "list" }
 
 [[command]]
 name = "gate"
-summary = "The push gate: refuse pushed commits whose trees have not passed every required job in Workbench's records."
+summary = "The push gate: refuse pushed commits whose trees have not passed every check their gate needs in Workbench's records."
 handler = "wb_ci.commands:gate"
 requires = { binary = ["git"] }
 params.project = { type = "string" }
@@ -108,7 +112,7 @@ params.install = { type = "bool", default = true, summary = "false: remove it, r
 
 [[command]]
 name = "actions"
-summary = "Run a project's build and test jobs in its own checkout, like a small CI (ci.run builds from clean trees instead)."
+summary = "Run a project's checks in its own checkout, like a small CI (ci.run builds from clean trees instead)."
 handler = "wb_tools.adapter:run_tool"
 aliases = ["tools.actions"]
 params.argv = { type = "list", items = "string", default = [], summary = "the tool's own arguments; absolute host paths are translated" }
@@ -142,7 +146,7 @@ result.results = { type = "list", optional = true }
 
 [[command]]
 name = "store-verify"
-summary = "Rebuild what the Store keeps for a project cold (a fresh clone, every job, no build cache) at the commit it was built from, and record whether each file came out to its SHA-256; a file that did not is a finding."
+summary = "Rebuild what the Store keeps for a project cold (a fresh clone, every check, no build cache) at the commit it was built from, and record whether each file came out to its SHA-256; a file that did not is a finding."
 handler = "wb_ci.commands:store_verify"
 aliases = ["store.verify"]
 resources = { cpu = 1, mem_gb = 0.5 }

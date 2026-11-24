@@ -36,7 +36,14 @@ artifacts = ["build/out.jar"]
 steps = [{ name = "build", run = ["{python}", "-c", "import pathlib; p = pathlib.Path('build'); p.mkdir(exist_ok=True); (p / 'out.jar').write_bytes(b'built bytes')"] }]
 
 [jobs.clean-env]
-steps = [{ name = "env", run = ["{python}", "-c", "import os, sys; sys.exit(3 if [k for k in os.environ if k.startswith('WB_') and k not in ('WB_PIN_CACHE', 'WB_COLD', 'WB_GRADLE')] else 0)"] }]
+steps = [{ name = "env", run = ["{python}", "-c", "import os, sys; sys.exit(3 if [k for k in os.environ if k.startswith('WB_') and k not in ('WB_PIN_CACHE', 'WB_COLD', 'WB_GRADLE', 'WB_BUILD_CACHE')] else 0)"] }]
+
+[jobs.cache-env]
+steps = [{ name = "env", run = ["{python}", "-c", "import os; print('cache', os.environ.get('WB_BUILD_CACHE', '')); print('opts', os.environ.get('GRADLE_OPTS', ''))"] }]
+
+[jobs.slow-built]
+artifacts = ["build/slow.jar"]
+steps = [{ name = "build", run = ["{python}", "-c", "import pathlib, time; time.sleep(3); p = pathlib.Path('build'); p.mkdir(exist_ok=True); (p / 'slow.jar').write_bytes(b'slow bytes')"] }]
 
 [jobs.unbuilt]
 artifacts = ["build/missing.jar"]
@@ -88,6 +95,10 @@ class Ci(unittest.TestCase):
         git(cls.demo, "commit", "-q", "-m", "demo")
         cls.head = git(cls.demo, "rev-parse", "HEAD")
         cls.d = Daemon(f"""
+            [core.budget]
+            cpu_cores = 16
+            mem_gb = 64
+
             [modules.ci]
             excludes = ["NOTES.local.md"]
             git_config = {{ "core.autocrlf" = "true" }}
@@ -242,6 +253,64 @@ class Ci(unittest.TestCase):
         # The cold builds read no Gradle build cache: every build's Gradle home has the script that turns it off.
         self.assertIn("WB_COLD", (self.d.state / "cache" / "gradle" / "init.d" / "workbench-cold.gradle").read_text())
 
+    def test_two_checks_of_one_project_at_once_both_complete(self):
+        from wb_core import artifacts
+        git(self.demo, "commit", "-q", "--allow-empty", "-m", "the same tree again")
+        again = git(self.demo, "rev-parse", "HEAD")
+        try:
+            jobs = [self.c.submit("ci.run", {"project": "demo", "commit": commit, "workflow": "slow-built",
+                                             "if_needed": False}) for commit in (self.head, again)]
+            for job in jobs:
+                result = job.result(timeout=600)
+                self.assertEqual(result.outcome, "ok", result.summary)
+                self.assertEqual(result.data.passed, ["slow-built"])
+            first, second = (self.d.workbench.db.one("SELECT started, settled FROM job WHERE id = ?", (job.id,))
+                             for job in jobs)
+            self.assertLess(first["started"], second["settled"])  # side by side: neither waited for the other
+            self.assertLess(second["started"], first["settled"])
+            # Both wrote the one index entry of their shared tree, and neither's commit was lost.
+            index = artifacts.find(self.d.state / "store", "demo", git(self.demo, "rev-parse", "HEAD^{tree}"))
+            self.assertTrue({self.head, again} <= set(index["commits"]), index["commits"])
+            self.assertEqual(index["artifacts"]["slow.jar"]["sha256"], hashlib.sha256(b"slow bytes").hexdigest())
+            self.assertNotIn("disagreements", index)
+        finally:
+            git(self.demo, "reset", "-q", "--hard", self.head)
+
+    def cache_env(self, params: dict) -> dict:
+        result = self.c.submit("ci.run", {"project": "demo", "workflow": "cache-env", "if_needed": False,
+                                          **params}).result(timeout=600)
+        self.assertEqual(result.outcome, "ok", result.summary)
+        log = next(p for root in (self.d.out, self.d.state) for p in root.rglob(f"{result.job}/cache-env/*.log"))
+        return dict(line.split(" ", 1) if " " in line else (line, "")
+                    for line in log.read_text(encoding="utf-8").splitlines() if line.startswith(("cache", "opts")))
+
+    def test_a_clean_commits_run_gets_the_gradle_homes_build_cache(self):
+        sys.path.insert(0, str(REPO / "modules" / "ci"))
+        from wb_ci import commands
+        home = self.d.state / "cache" / "gradle"
+        clean = self.cache_env({"commit": self.head})
+        self.assertEqual(clean["cache"].strip(), str(home / "caches" / "workbench-build-cache"))
+        self.assertIn("-Dorg.gradle.caching=true", clean["opts"])  # the Gradle property that turns the cache on
+        script = (home / "init.d" / "workbench-build-cache.gradle").read_bytes()
+        self.assertEqual(script, commands.CACHE_INIT)
+        text = script.decode("utf-8")
+        self.assertIn('System.getenv("WB_BUILD_CACHE")', text)       # only a run that names the folder
+        self.assertIn('!System.getenv("WB_COLD")', text)             # never a cold rebuild
+        self.assertIn("settings.buildCache.local.directory = new File(cacheFolder)", text)
+        self.assertNotIn("startParameter", text)                      # deprecated in Gradle 9: the property does it
+        # A working tree's run, and a cold rebuild, get no cache.
+        for params in ({"commit": "worktree"}, {"commit": self.head, "cold": True}):
+            with self.subTest(params=params):
+                other = self.cache_env(params)
+                self.assertEqual(other["cache"].strip(), "")
+                self.assertNotIn("org.gradle.caching", other["opts"])
+
+    def test_two_runs_of_one_commit_wait_for_each_other(self):
+        entry = self.d.workbench.registry.get("ci.run")
+        locks = lambda **params: self.d.workbench._resources(entry.command, "container", params)[4]  # noqa: E731
+        self.assertEqual(locks(project="demo", commit="abc"), {"ci:demo@abc"})
+        self.assertNotEqual(locks(project="demo", commit="abc"), locks(project="demo", commit="def"))
+
     def test_a_step_gets_none_of_workbenchs_own_environment(self):
         result = self.c.submit("ci.run", {"project": "demo", "workflow": "clean-env"}).result(timeout=600)
         self.assertEqual(result.outcome, "ok", result.summary)
@@ -321,6 +390,118 @@ class Ci(unittest.TestCase):
         self.assertTrue((hooks / "pre-push.before-workbench").exists())
         commands.hook(Ctx(), "demo", False)
         self.assertEqual((hooks / "pre-push").read_text(encoding="utf-8"), "#!/bin/sh\necho mine\n")
+
+
+SIZED = """
+[settings]
+name = "sized"
+
+[jobs.small]
+steps = [{ name = "ok", run = ["{python}", "-c", "pass"] }]
+
+[jobs.big]
+memory = 12
+steps = [{ name = "ok", run = ["{python}", "-c", "pass"] }]
+
+[jobs.on-gpu]
+gpu = true
+memory = 30
+steps = [{ name = "ok", run = ["{python}", "-c", "pass"] }]
+"""
+
+RESERVED = """schema = 1
+gate = ["small"]
+
+[project]
+name = "sized"
+reserve = 20
+
+[checks.small]
+steps = [["{python}", "-c", "pass"]]
+"""
+
+
+class Reservation(unittest.TestCase):
+    """ci.run reserves what the jobs file of the commit it runs asks for, not a fixed 8 GB: the project's declared
+    reserve, else its largest single claim (a host or GPU check is not ci.run's), at most the machine's budget."""
+
+    @classmethod
+    def setUpClass(cls):
+        root = Path(tempfile.mkdtemp(prefix="wb-reserve-"))
+        cls.repo = root / "data" / "sized"
+        cls.repo.mkdir(parents=True)
+        git(cls.repo, "init", "-q", "-b", "main")
+        (cls.repo / "actions.toml").write_text(SIZED, encoding="utf-8")
+        git(cls.repo, "add", "-A")
+        git(cls.repo, "commit", "-q", "-m", "claims")
+        cls.claims = git(cls.repo, "rev-parse", "HEAD")
+        (cls.repo / "project.toml").write_text(RESERVED, encoding="utf-8")
+        git(cls.repo, "add", "-A")
+        git(cls.repo, "commit", "-q", "-m", "a declared reserve")
+        cls.reserved = git(cls.repo, "rev-parse", "HEAD")
+        cls.d = Daemon(f"""
+            [core.budget]
+            cpu_cores = 16
+            mem_gb = 16
+
+            [modules.ci.projects.sized]
+            repo = '{cls.repo}'
+            jdk = ""
+            """, root=root).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.d.stop()
+
+    def reservation(self, params: dict) -> dict:
+        job = self.d.client.submit("ci.run", {"project": "sized", "dry_run": True, **params})
+        job.result(timeout=300)
+        found = [e["data"] for e in self.d.workbench.events(job.id) if e["kind"] == "reservation"]
+        self.assertEqual(len(found), 1)
+        return found[0]
+
+    def test_the_largest_single_claim_of_the_commits_jobs_file(self):
+        found = self.reservation({"commit": self.claims})
+        self.assertEqual(found["mem_gb"], 12.0)  # big; the GPU check's 30 is the host's
+        self.assertIn("largest claim in actions.toml: big", found["why"])
+
+    def test_a_declared_reserve_wins_and_is_held_to_the_budget(self):
+        found = self.reservation({"commit": self.reserved})
+        self.assertEqual(found["mem_gb"], 16.0)
+        self.assertIn("[project] reserve = 20 in project.toml", found["why"])
+        self.assertIn("held to the budget of 16 GB", found["why"])
+
+    def test_the_working_tree_is_read_for_commit_worktree(self):
+        found = self.reservation({"commit": "worktree"})
+        self.assertEqual(found["mem_gb"], 16.0)  # project.toml, from the checkout's files
+
+    def test_a_commit_it_cannot_read_leaves_the_manifests_eight(self):
+        found = self.reservation({"commit": "0" * 40})
+        self.assertEqual(found["mem_gb"], 8.0)
+        self.assertIn("had no answer; the manifest's 8 GB", found["why"])
+
+    def test_the_worker_is_given_the_reservation_and_a_restart_sizes_again(self):
+        job = self.d.client.submit("ci.run", {"project": "sized", "dry_run": True, "commit": self.claims})
+        job.result(timeout=300)
+        self.assertNotIn(job.id, self.d.workbench.sized)  # forgotten once the job ended
+        entry = self.d.workbench.registry["ci.run"]
+        params = {"project": "sized", "commit": self.claims}
+        spec = self.d.workbench._spec(job.id, entry, params, None, "run", entry.command.handler, None)
+        self.assertEqual(spec["reservation"], {"cpu": 4.0, "mem_gb": 12.0})  # as after a restart: read again
+        self.d.workbench.sized.pop(job.id)
+
+    def test_the_claims_match_the_engines(self):
+        sys.path.insert(0, str(REPO / "modules" / "tools" / "src"))
+        sys.path.insert(0, str(REPO / "modules" / "ci"))
+        from orthrus_tools import actions
+        from wb_ci import reserve
+        self.assertEqual(reserve.DEFAULT_MEMORY, actions.DEFAULT_MEMORY)
+        self.assertEqual(reserve.JOBS_FILES, actions.config_names())
+        config = actions.load(self.repo, self.repo / "actions.toml")
+        budget = actions.Budget(config.jobs, 0, 64.0)
+        engine = max(budget.claim(n)[1] for n, job in config.jobs.items() if not actions.on_host(job))
+        import tomllib
+        self.assertEqual(reserve.claim(tomllib.loads(SIZED), "actions.toml")[0], engine)
 
 
 CHECK = """import sys

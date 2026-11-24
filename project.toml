@@ -9,12 +9,12 @@ name = "workbench"
 python = ["tests/requirements.txt"]
 
 [checks.generated]
-description = "lock files, the SDKs' envelope types and the command tables match their sources"
+description = "lock files, envelope types and command tables match their sources; help keeps to the vocabulary"
 steps = [["{python}", "-B", "tests/run_all.py", "--part", "generated"]]
 inputs = ["image/*.py", "image/*.toml", "image/*.lock", "image/*.txt", "schema/**/*.py", "schema/**/*.json",
           "sdk/**/*.py", "sdk/**/*.ts", "sdk/**/*.java", "sdk/**/*.ps1", "sdk/**/*.psm1", "sdk/**/*.psd1",
           "modules/*/wb_*/module.toml", "README.md", "docs/*.md", "tools/*.py", "tests/run_all.py",
-          "tests/test_command_tables.py"]
+          "tests/test_command_tables.py", "tests/test_vocabulary.py"]
 
 [checks.core]
 description = "the core, the CLI and the host runner (tests/)"

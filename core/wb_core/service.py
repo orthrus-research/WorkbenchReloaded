@@ -151,6 +151,10 @@ class Workbench:
         self.job_tokens: dict[str, str] = {}
         self.hooks: dict[str, dict] = {}    # module -> the outcome of its start-up hook, shown by health
         self.quoting: set[str] = set()
+        # A queued or running job's memory, for a command whose manifest sizes it (resources.mem_from): measured once
+        # at submit from what the job will run, and again after a restart.
+        self.sized: dict[str, float] = {}
+        self.sizers: dict[str, object] = {}
         self.seq: dict[str, int] = {}
         self.stopping = threading.Event()
         self.cpu_budget = core["budget"].get("cpu_cores") or float(os.cpu_count() or 2)
@@ -291,6 +295,8 @@ class Workbench:
         sets = ", ".join(["state = ?"] + [f"{k} = ?" for k in columns])
         with self.cond:
             self.db.execute(f"UPDATE job SET {sets} WHERE id = ?", (state, *columns.values(), job))
+            if state in ("settled", "cancelled", "interrupted"):
+                self.sized.pop(job, None)
             self.cond.notify_all()
         self.add_event(job, "state", {"state": state})
 
@@ -346,6 +352,8 @@ class Workbench:
                 return self.envelope(job)
             with self.cond:
                 self.quoting.add(job)
+        if entry.command.resources.get("mem_from"):
+            self._size(job, entry, checked)
         self._set_state(job, "queued")  # validated: from here the dispatcher may take it
         if entry.command.spends:
             self._start_quote(job, entry)
@@ -602,15 +610,57 @@ class Workbench:
                 self.hub.error(f"startup hook failed: {error}", module=module.name)
                 self.hooks[module.name] = {"outcome": "environment", "summary": str(error), "at": iso(time.time())}
 
-    def _resources(self, command: Command, machine: str, params: dict | None = None
+    def _size(self, job: str, entry: Entry, params: dict) -> float:
+        """The memory a job of a sized command reserves: what its manifest's ``mem_from`` function answers from the
+        job's params (ci.run: the largest single claim of the jobs file it will run, or the project's declared
+        reserve), at most the machine's budget; the manifest's ``mem_gb`` when it has no answer. Recorded as the
+        job's ``reservation`` event, with why."""
+        fallback = float(entry.command.resources.get("mem_gb", 0.5))
+        target = entry.command.resources["mem_from"]
+        try:
+            answer = self._sizer(entry.module, target)(self.settings.modules.get(entry.module.name, {}),
+                                                        list(self.settings.roots), dict(params))
+        except Exception as error:  # noqa: BLE001 - a sizer that fails leaves the manifest's reservation
+            answer = None
+            why = f"{target} failed ({type(error).__name__}: {error}); the manifest's {fallback:g} GB"
+        else:
+            why = f"{target} had no answer; the manifest's {fallback:g} GB"
+        if answer:
+            mem, why = float(answer[0]), str(answer[1])
+            if mem > self.mem_budget:
+                why += f", held to the budget of {self.mem_budget:g} GB"
+                mem = float(self.mem_budget)
+        else:
+            mem = fallback
+        with self.cond:
+            self.sized[job] = mem
+        self.add_event(job, "reservation", {"mem_gb": mem, "why": why})
+        return mem
+
+    def _sizer(self, module: Module, target: str):
+        """The function ``target`` ('<package>.<file>:<function>') names, loaded from the module's own folder."""
+        if target not in self.sizers:
+            import importlib.util
+            name, _, function = target.partition(":")
+            parts = name.split(".")
+            path = module.directory.joinpath(*parts[1:]).with_suffix(".py")
+            spec = importlib.util.spec_from_file_location(f"_wb_sizer_{module.name}_{'_'.join(parts[1:])}", path)
+            loaded = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(loaded)
+            self.sizers[target] = getattr(loaded, function)
+        return self.sizers[target]
+
+    def _resources(self, command: Command, machine: str, params: dict | None = None, job: str | None = None
                    ) -> tuple[float, float, set[str], bool, set[str]]:
         """What a job claims: CPU and memory on the container, exclusive keys (the GPU), quiet, and named locks.
         ``quiet_if`` names params that make a run a measurement when set, or ``param=value`` when they have that
-        value; a lock may name a param as ``{name}``."""
+        value; a lock may name a param as ``{name}``. A sized command's memory is what ``_size`` found for ``job``."""
         res = command.resources
         params = params or {}
         cpu = float(res.get("cpu", 1)) if machine == "container" else 0.0
         mem = float(res.get("mem_gb", 0.5)) if machine == "container" else 0.0
+        if machine == "container" and job and res.get("mem_from"):
+            mem = self.sized[job] if job in self.sized else self._size(job, self.registry[command.full], params)
         exclusive = {f"gpu@{machine}"} if res.get("gpu") else set()
         def when(entry: str) -> bool:
             name, sep, value = entry.partition("=")
@@ -717,7 +767,7 @@ class Workbench:
                 self._wait_reason(job, "approval")
                 continue
             params = json.loads(row["params"]) if row["params"] else {}
-            cpu, mem, exclusive, quiet, locks = self._resources(entry.command, row["machine"], params)
+            cpu, mem, exclusive, quiet, locks = self._resources(entry.command, row["machine"], params, job)
             key = row["machine"] + ("|" + ",".join(sorted(exclusive)) if exclusive else "")
             if key in blocked and not row["under_running"]:
                 self._wait_reason(job, f"behind {blocked[key]}")
@@ -805,7 +855,8 @@ class Workbench:
                 "module_config": self.settings.modules.get(module.name, {}), "secrets": secrets,
                 "jdks": self.checker.jdks, "quote": quote, "machine": "container", "path_style": path_style,
                 "roots": [r.__dict__ for r in self.settings.roots], "sys_path": sys_path,
-                "reservation": dict(zip(("cpu", "mem_gb"), self._resources(entry.command, "container", params)[:2])),
+                "reservation": dict(zip(("cpu", "mem_gb"), self._resources(entry.command, "container", params,
+                                                                           job)[:2])),
                 "env": {"WB_URL": f"http://127.0.0.1:{self.settings.core['api']['port']}",
                         "WB_INSTALL_ID": self.install_id,
                         "WB_TOKEN": self.job_token(job), "WB_JOB": job, "WB_STATE_DIR": str(self.state)}}
@@ -929,6 +980,7 @@ class Workbench:
                 self._cancel_descendants(job, "its parent ended")  # before the parent's reservation is released
             with self.cond:
                 self.running.pop(job, None)
+                self.sized.pop(job, None)
                 self.cond.notify_all()
             if outcome is not None and not requoted:
                 if outcome == "cancelled":

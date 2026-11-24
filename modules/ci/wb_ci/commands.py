@@ -52,6 +52,21 @@ if (System.getenv("WB_COLD")) {
     }
 }
 """
+CACHE_SCRIPT = "workbench-build-cache.gradle"  # in the Gradle home's init.d: a clean commit's builds share a cache
+CACHE_FOLDER = "workbench-build-cache"  # under the Gradle home's caches/
+CACHE_PROPERTY = "-Dorg.gradle.caching=true"  # in GRADLE_OPTS: every build of a clean commit's run uses the cache
+CACHE_INIT = b"""// Written by Workbench's ci module. A run whose tree is a clean commit (WB_BUILD_CACHE names the folder, and
+// GRADLE_OPTS sets org.gradle.caching) reads and writes the local build cache there, in this Gradle home, so a task
+// whose inputs an earlier commit already built (compileJava after a docs-only commit) takes its outputs from the
+// cache. A working tree's run and a cold run (WB_COLD) use none.
+def cacheFolder = System.getenv("WB_BUILD_CACHE")
+if (cacheFolder && !System.getenv("WB_COLD")) {
+    gradle.settingsEvaluated { settings ->
+        settings.buildCache.local.enabled = true
+        settings.buildCache.local.directory = new File(cacheFolder)
+    }
+}
+"""
 
 
 # ---------------------------------------------------------------------------------------------
@@ -262,9 +277,10 @@ def _gradle_home(ctx: Context) -> tuple[Path, dict]:
     lines = ["# written by Workbench's ci module", f"org.gradle.java.installations.paths={','.join(jdks)}",
              "org.gradle.java.installations.auto-detect=false", "org.gradle.java.installations.auto-download=false"]
     (home / "gradle.properties").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    cold = home / "init.d" / COLD_SCRIPT
-    if not cold.is_file() or cold.read_bytes() != COLD_INIT:
-        write_atomic(cold, COLD_INIT)
+    for name, script in ((COLD_SCRIPT, COLD_INIT), (CACHE_SCRIPT, CACHE_INIT)):
+        target = home / "init.d" / name
+        if not target.is_file() or target.read_bytes() != script:
+            write_atomic(target, script)
     if ctx.machine == "host":
         # toolchain.repo-init writes the rescue repository for builds in the container, which a host job cannot ask;
         # a host check's {gradle} builds on the set's Gradle and Store alone.
@@ -634,9 +650,10 @@ def _checkout(ctx: Context, project: str, entry: dict, commit: str, checkout, wo
 
 
 def _environment(ctx: Context, entry: dict, config, root: Path, work: Path, set: str, stand_ins: dict | None,
-                 cold: bool) -> dict:
+                 cold: bool, clean: bool = False) -> dict:
     """What a run's steps get: the JDKs, the Gradle home, the pin cache, the {gradle} launcher on the set, the files
-    another project's tree lends its checks, the set's identities and the project's env; and {python}."""
+    another project's tree lends its checks, the set's identities and the project's env; and {python}. A ``clean``
+    run (its tree a commit, not a working tree, against no stand-in) gets the Gradle home's build cache."""
     major = str(entry["jdk"] if "jdk" in entry else ctx.config.get("jdk", "26"))  # "": no JAVA_HOME
     pins = _folder(ctx, "pin_cache", _state() / "cache" / "pins")
     pins.mkdir(parents=True, exist_ok=True)
@@ -655,6 +672,11 @@ def _environment(ctx: Context, entry: dict, config, root: Path, work: Path, set:
     env = {**_jdk_env(ctx, major), "GRADLE_USER_HOME": str(gradle_home), "WB_PIN_CACHE": str(pins),
            "WB_GRADLE": str(launcher), **({"GRADLE_OPTS": gradle_opts} if gradle_opts else {}),
            **{k: str(v) for k, v in (entry.get("env") or {}).items()}, **({"WB_COLD": "1"} if cold else {})}
+    if clean and not cold and not stand_ins:
+        # The Gradle property switches the cache on (setting it from an init script is deprecated in Gradle 9);
+        # the init script points it at the folder.
+        env["WB_BUILD_CACHE"] = str(gradle_home / "caches" / CACHE_FOLDER)
+        env["GRADLE_OPTS"] = " ".join(filter(None, [env.get("GRADLE_OPTS"), CACHE_PROPERTY]))
     python = _python(ctx, root, [str(r) for r in entry.get("python") or config.data.get("project", {}).get("python")
                                  or []])
     return {"env": env, "python": python, "served": served, "set": set_revision, "tools": tools,
@@ -708,7 +730,7 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
         root, sha, worktree, config, pinned = (tree[k] for k in ("root", "commit", "worktree", "config", "pinned"))
         records = tree["records"]
         jobs_file = _jobs_copy(root, entry, records, work)
-        prepared = _environment(ctx, entry, config, root, work, set, stand_ins, cold)
+        prepared = _environment(ctx, entry, config, root, work, set, stand_ins, cold, clean=not worktree)
         served, set_revision, tools = prepared["served"], prepared["set"], prepared["tools"]
         if stand_ins:
             # Against stand-in bytes a run vouches for nothing: its records go one level down, where the gate, which
@@ -823,7 +845,7 @@ def _store_artifacts(ctx: Context, project: str, sha: str, trees: dict, records:
     """Keeps what each passed producing job built (its ``artifacts``) in the Store, by SHA-256 and under the
     project's tree, and in the pin cache. The copy comes from the run record, which the engine wrote after the
     job passed and its trees held still; a run whose trees moved records no pass and keeps nothing."""
-    from wb_core import artifacts as store
+    from wb_core import artifacts as store, filelock
     tree = next(iter(trees.values()), None)  # the project's own tree comes first
     if not run_id or not tree:
         return {}
@@ -847,7 +869,12 @@ def _store_artifacts(ctx: Context, project: str, sha: str, trees: dict, records:
             placed = _store_plugins(root, store.path_of(root, item["sha256"], file_name))
             ctx.log.info(f"the Set's plugins from {file_name}: {placed} file(s) added to the Store's plugins folder")
     if kept:
-        store.record(root, project, tree, sha, kept)
+        try:
+            store.record(root, project, tree, sha, kept)  # merged with what another run of the tree records at once
+        except (OSError, store.StoreError, filelock.LockTimeout) as error:
+            ctx.reason("store", f"{project} {tree[:12]}", f"the index was not written: {error}",
+                       "run the check again once the Store's index entry is readable")
+            return {}
         ctx.log.info(f"kept {len(kept)} artifact(s) of {project} tree {tree[:12]} in the Store: "
                      + ", ".join(f"{n} {k['sha256'][:12]}" for n, k in kept.items()))
     return kept

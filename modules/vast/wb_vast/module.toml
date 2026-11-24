@@ -50,13 +50,13 @@ params.days = { type = "int", default = 7, min = 1, max = 90 }
 
 [[command]]
 name = "instances"
-summary = "List the account's instances."
+summary = "List the account's rented machines."
 handler = "wb_vast.commands:instances"
 requires = { network = ["console.vast.ai:443"] }
 
 [[command]]
 name = "destroy"
-summary = "Destroy one instance (stops its billing)."
+summary = "Destroy one rented machine (stops its billing)."
 handler = "wb_vast.commands:destroy"
 requires = { network = ["console.vast.ai:443"] }
 params.instance = { type = "string", pattern = "^[0-9]+$" }

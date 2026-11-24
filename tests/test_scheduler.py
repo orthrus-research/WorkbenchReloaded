@@ -1,5 +1,6 @@
-"""The scheduler: parents that call children never deadlock, a queued job says why it waits, a job that ends takes
-its descendants with it, inline calls need no job of their own, quiet can depend on a param, and named locks."""
+"""The scheduler: parents that call children never deadlock, running memory never exceeds the budget, a queued job
+says why it waits, a job that ends takes its descendants with it, inline calls need no job of their own, quiet can
+depend on a param, and named locks."""
 
 import sys
 import time
@@ -110,6 +111,50 @@ class Admission(unittest.TestCase):
         same = self.c.request("POST", "/v1/jobs", {"command": "selftest.echo", "params": {}},
                               {"X-Wb-Commit": self.d.workbench.commit or ""})
         self.assertTrue(same["job"])
+
+class Recorded(dict):
+    """The scheduler's running jobs, with what they reserve after every change: one snapshot per start or end."""
+    def __init__(self):
+        super().__init__()
+        self.snapshots: list[dict[str, float]] = []
+
+    def __setitem__(self, job, running):
+        super().__setitem__(job, running)
+        self.snapshots.append({j: r.mem for j, r in self.items()})
+
+    def pop(self, job, *default):
+        value = super().pop(job, *default)
+        self.snapshots.append({j: r.mem for j, r in self.items()})
+        return value
+
+
+class MemoryBudget(unittest.TestCase):
+    """Memory is the budget that binds here (16 cores, 2 GB; every job reserves 0.5 GB): four parents fit, and each
+    parent's child must start while the other parents still hold theirs."""
+
+    def test_running_memory_never_exceeds_the_budget_with_parents_calling_children(self):
+        d = Daemon("[core.budget]\ncpu_cores = 16\nmem_gb = 2\n").start()
+        try:
+            recorded = Recorded()
+            d.workbench.running = recorded
+            parents = [d.client.submit("selftest.nest", {"sleep": "1s", "hold": "0.5s"}) for _ in range(6)]
+            for job in parents:
+                result = job.result(timeout=180)
+                self.assertEqual((result.outcome, result.data.inner_outcome), ("ok", "ok"), result.summary)
+            parent_of = {row["job"]: row.get("parent") for row in d.client.jobs(limit=100)}
+            peak = 0.0
+            for snapshot in recorded.snapshots:
+                # A parent that waits on a running child lends it its reservation (the scheduler admits the child
+                # beside everything but its own ancestors), so it counts once, through that child.
+                lending = {parent_of.get(job) for job in snapshot} & set(snapshot)
+                held = sum(mem for job, mem in snapshot.items() if job not in lending)
+                self.assertLessEqual(held, 2.0 + 1e-9, snapshot)
+                peak = max(peak, held)
+            self.assertEqual(peak, 2.0)  # the budget was reached, so it is what held the rest back
+            self.assertGreater(max(len(s) for s in recorded.snapshots), 4)  # children ran beside four parents
+        finally:
+            d.stop()
+
 
 class Rules(unittest.TestCase):
     def service(self):
