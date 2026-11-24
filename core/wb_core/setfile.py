@@ -4,7 +4,8 @@
     third.<name>     = a third-party file by coordinate or URL with its SHA-256 and licence
     platform         = {java, jdk: {<major>: {build, linux: {url, sha256}, windows: {url, sha256}}}, gradle, ...}
     holds.<name>     = one artifact, or one consumer's view of a project, on another commit, with a reason
-    doctor.exempt    = paths the copied-pin check leaves alone
+    doctor.exempt    = paths the copied-pin check leaves alone: {project, path, reason, since} for one project's
+                       path glob (project "*" for every project's), or a bare glob, every project's, with no reason
 
 Only a landing writes it. Exports of a revision live beside the Store, ``<out>/sets/<revision>/set.json``, never
 pruned, so a job reads exactly the revision its caller resolved."""
@@ -49,7 +50,96 @@ def check(data) -> list[str]:
         for artifact, item in ((line or {}).get("artifacts") or {}).items():
             if not HEX64.match(str((item or {}).get("sha256", ""))):
                 found.append(f"projects.{name}.artifacts.{artifact}.sha256 is not 64 hex")
+    exempt = (data.get("doctor") or {}).get("exempt") or []
+    if not isinstance(exempt, list):
+        found.append("doctor.exempt is not a list")
+        exempt = []
+    for index, entry in enumerate(exempt):
+        if isinstance(entry, dict):
+            project, path = entry.get("project"), entry.get("path")
+            if not (isinstance(project, str) and (project == "*" or PROJECT_NAME.match(project))):
+                found.append(f"doctor.exempt[{index}].project is not a project name or '*'")
+            if not (isinstance(entry.get("reason"), str) and entry["reason"].strip()):
+                found.append(f"doctor.exempt[{index}] has no reason")
+        else:
+            path = entry
+        problem = exempt_problem(path)
+        if problem:
+            found.append(f"doctor.exempt[{index}]: {problem}")
     return found
+
+
+# -- doctor.exempt ------------------------------------------------------------------------------------------------
+
+PROJECT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+GLOB_PART = re.compile(r"^[A-Za-z0-9._+@,=*?-]+$")
+EVERY = "*"
+
+
+def exempt_problem(pattern) -> str | None:
+    """Why ``pattern`` is not a doctor.exempt path glob, or None. A glob is a path relative to the top of a project's
+    tree, '/' between its parts, each part letters, digits, '._+@,=-' and the wildcards '*' (within a part), '**'
+    (across parts) and '?'; no part is '.' or '..', and at least one part names something, so no glob is the whole
+    tree."""
+    if not isinstance(pattern, str) or not pattern:
+        return "a path glob is a non-empty string"
+    if "\\" in pattern:
+        return f"{pattern!r}: '/' separates a glob's parts, not '\\'"
+    if pattern.startswith("/") or re.match(r"^[A-Za-z]:", pattern):
+        return f"{pattern!r} is not relative to the project's top"
+    parts = pattern.split("/")
+    for part in parts:
+        if part in ("", ".", ".."):
+            return f"{pattern!r}: a glob has no empty, '.' or '..' part"
+        if not GLOB_PART.match(part):
+            return f"{pattern!r}: a part is letters, digits, '._+@,=-', '*' and '?'"
+    if all(set(part) <= {"*", "?"} for part in parts):
+        return f"{pattern!r} names every file of the tree"
+    return None
+
+
+def exempt_key(text: str) -> tuple[str, str]:
+    """``<project>:<path glob>`` as (project, glob); the project '*' is every project. Raises SetError."""
+    project, sep, pattern = str(text).partition(":")
+    if not sep or not (project == EVERY or PROJECT_NAME.match(project)):
+        raise SetError(f"{text!r}: name a project and a path glob as <project>:<glob> (the project '*' is every "
+                       "project)")
+    problem = exempt_problem(pattern)
+    if problem:
+        raise SetError(problem)
+    return project, pattern
+
+
+def exempt_entries(data: dict) -> list[dict]:
+    """Each doctor.exempt entry as {project, path, reason?, since?}; a bare glob is every project's."""
+    out = []
+    for entry in (data.get("doctor") or {}).get("exempt") or []:
+        if isinstance(entry, dict):
+            out.append({"project": str(entry.get("project")), "path": str(entry.get("path")),
+                        **{k: entry[k] for k in ("reason", "since") if entry.get(k)}})
+        else:
+            out.append({"project": EVERY, "path": str(entry)})
+    return out
+
+
+def exempt_list(entries: list[dict]) -> list:
+    """doctor.exempt as written: bare globs (every project's, with no reason) first, then each entry with its project,
+    path, reason and since, by project and path."""
+    bare = sorted(e["path"] for e in entries if e["project"] == EVERY and not e.get("reason"))
+    full = sorted((e for e in entries if e["project"] != EVERY or e.get("reason")),
+                  key=lambda e: (e["project"], e["path"]))
+    return [*bare, *({k: e[k] for k in ("project", "path", "reason", "since") if e.get(k)} for e in full)]
+
+
+def exempt_paths(data: dict, project: str) -> list[str]:
+    """The globs the doctor leaves alone in ``project``'s tree: every project's, and its own."""
+    return [e["path"] for e in exempt_entries(data) if e["project"] in (EVERY, project)]
+
+
+def exempt_shown(data: dict) -> list[str]:
+    """Each entry as one word: a bare glob, else ``<project>:<glob>``."""
+    return [e["path"] if e["project"] == EVERY and not e.get("reason") else f"{e['project']}:{e['path']}"
+            for e in exempt_entries(data)]
 
 
 LOCAL_PATH = re.compile(r"^([A-Za-z]:[\\/]|[\\/]|\.\.?[\\/]|~)")
@@ -120,6 +210,8 @@ def dump(data: dict) -> str:
     ordered = dict(data)
     for key in ("projects", "third", "holds"):
         ordered[key] = {name: (data.get(key) or {})[name] for name in sorted(data.get(key) or {})}
+    if (data.get("doctor") or {}).get("exempt"):
+        ordered["doctor"] = {**data["doctor"], "exempt": exempt_list(exempt_entries(data))}
     return json.dumps(ordered, indent=1, ensure_ascii=False) + "\n"
 
 

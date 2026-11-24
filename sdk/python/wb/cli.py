@@ -684,7 +684,7 @@ def build_parser() -> argparse.ArgumentParser:
                    "with seeded bytes (--file, --commit, --reason, --source)")
     p.add_argument("--file", help="--hold: the bytes")
     p.add_argument("--commit", help="--hold: the commit they were built from")
-    p.add_argument("--reason", help="--hold: why they are held")
+    p.add_argument("--reason", help="--hold: why they are held; --doctor-exempt: why the doctor leaves the paths alone")
     p.add_argument("--source", help="--hold, --third without --module: where the bytes came from (a URL or a backup)")
     p.add_argument("--drop-hold", action="append", metavar="NAME", help="remove a hold")
     p.add_argument("--third", metavar="NAME", help="land a third-party entry (--module, --repository, --third-file; without --module: the one JAR in <out>/third/<name>/, with --source and --licence)")
@@ -694,6 +694,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="--third: a file and the SHA-256 it must have (runtime=..., dev:dev=...)")
     p.add_argument("--licence", help="--third: its licence (SPDX id)")
     p.add_argument("--mod-id", help="--third: the mod id it loads as")
+    p.add_argument("--doctor-exempt", action="append", metavar="PROJECT:GLOB",
+                   help="a path glob in a project's tree that wb status --doctor leaves alone, such as recorded "
+                        "evidence (repeatable; with --reason; the project '*' is every project)")
+    p.add_argument("--doctor-unexempt", action="append", metavar="PROJECT:GLOB",
+                   help="remove a doctor.exempt entry (repeatable)")
     p = add("backup", cmd_backup, "copy the job database, the ledger and the scrub rules off this drive")
     p.add_argument("--to", help="the folder to back up into (default [paths] backup, else ~/wb-backup)")
     p = add("store", cmd_store, "what CI built: by project and commit, a kept file's path, or bytes to seed")

@@ -5,7 +5,7 @@
   field, a pin file (cc.lock.json, anything in a pins/ folder), a refresh or sync task in its build or checks files,
   and a sibling commit, which is a 40-hex literal naming a commit the Set lists for another project or a commit in
   another registered project's repository. A branch that carries no project.toml is not converted yet and is only
-  named. Paths that set.json ``doctor.exempt`` lists are never read.
+  named. Paths that set.json ``doctor.exempt`` lists for every project, or for that project, are never read.
 - Workbench's own schedules: none may refresh or sync pins.
 - The lease: the old lock path (``[runner] lease_file``, the configured alias) is the file the lease is taken on,
   and each registered checkout's old in-tree route to it (``.local/<its place under the lab home>``) resolves to
@@ -214,7 +214,7 @@ def lease(settings, projects: dict) -> tuple[list[str], list[dict]]:
 def run(workspace, settings=None) -> dict:
     """The whole report: ``{"read", "notes", "confirmed", "findings"}``."""
     set_file = workspace.set_file()
-    exempt = [str(p) for p in ((set_file.get("doctor") or {}).get("exempt") or [])]
+    from wb_core import setfile
     listed = {str(line.get("commit")): name for name, line in (set_file.get("projects") or {}).items()
               if line.get("commit")}
     for key, hold in (set_file.get("holds") or {}).items():
@@ -229,6 +229,7 @@ def run(workspace, settings=None) -> dict:
                     if name not in (project.name, "set") and other.repo.is_dir()}
         for label, commit in item["commits"]:
             done.append(f"{project.name} {item['branch']} ({label})")
+            exempt = setfile.exempt_paths(set_file, project.name)
             for finding in scan(project, commit, siblings, exempt, listed):
                 findings.append({"project": project.name, "branch": f"{item['branch']} ({label})", **finding})
     findings += schedules(workspace.config)
@@ -242,7 +243,8 @@ def run(workspace, settings=None) -> dict:
     if settings is not None:
         confirmed, found = lease(settings, projects)
         findings += found
-    return {"read": done, "notes": notes, "confirmed": confirmed, "findings": findings, "exempt": exempt}
+    return {"read": done, "notes": notes, "confirmed": confirmed, "findings": findings,
+            "exempt": setfile.exempt_shown(set_file)}
 
 
 def show(report: dict) -> str:

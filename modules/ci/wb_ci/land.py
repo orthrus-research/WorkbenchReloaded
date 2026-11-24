@@ -282,11 +282,56 @@ def _hold(ctx: Context, name: str, hold: dict) -> tuple[dict, str]:
     return entry, f"hold {name} at {hold['commit'][:12]}: {hold['reason']}"
 
 
+def _doctor(ctx: Context, current: dict, composed: dict, exempt: dict, unexempt: list) -> list[str]:
+    """doctor.exempt with the entries ``unexempt`` names removed and those ``exempt`` names added, each with its
+    reason and the date it landed; the body lines that say so. An entry's project has a line in the set or is
+    registered here (or is '*', every project); its glob is a path relative to the project's top."""
+    entries, body = setfile.exempt_entries(composed), []
+    if not exempt and not unexempt:
+        return body
+    known = set(current.get("projects") or {}) | set(ctx.config.get("projects") or {})
+    for key in unexempt:
+        try:
+            project, path = setfile.exempt_key(key)
+        except setfile.SetError as error:
+            raise ParamError(f"--doctor-unexempt {error}") from None
+        kept = [e for e in entries if (e["project"], e["path"]) != (project, path)]
+        if len(kept) == len(entries):
+            raise ParamError(f"doctor.exempt has no {project}:{path} to remove (it has: "
+                             f"{', '.join(setfile.exempt_shown(composed)) or 'none'})")
+        entries = kept
+        body.append(f"doctor exempt {project}:{path} removed")
+    for key in sorted(exempt):
+        try:
+            project, path = setfile.exempt_key(key)
+        except setfile.SetError as error:
+            raise ParamError(f"--doctor-exempt {error}") from None
+        if project != setfile.EVERY and project not in known:
+            raise ParamError(f"--doctor-exempt {key}: {project} has no line in the set and is not registered here "
+                             f"(have: {', '.join(sorted(known)) or 'none'})")
+        reason = " ".join(str(exempt[key] or "").split())
+        if not reason:
+            raise ParamError(f"--doctor-exempt {key}: say why the doctor leaves it alone (--reason)")
+        there = [e for e in entries if (e["project"], e["path"]) == (project, path)]
+        if there:
+            raise ParamError(f"{project}:{path} is exempt already"
+                             + (f" ({there[0]['reason']})" if there[0].get("reason") else "")
+                             + "; --doctor-unexempt it in the same landing to restate why")
+        entries.append({"project": project, "path": path, "reason": reason, "since": time.strftime("%Y-%m-%d")})
+        body.append(f"doctor exempt {project}:{path}: {reason}")
+    if entries:
+        composed.setdefault("doctor", {})["exempt"] = setfile.exempt_list(entries)
+    else:
+        composed.setdefault("doctor", {}).pop("exempt", None)
+    return body
+
+
 # -- composing ----------------------------------------------------------------------------------------------------
 
 def _compose(ctx: Context, base: str, projects: dict, holds: dict, drop_holds: list, third: dict,
-             platform: dict) -> dict:
-    """The set a landing makes from the head: its lines, holds, third entries and platform values, with the body
+             platform: dict, doctor_exempt: dict | None = None, doctor_unexempt: list | None = None) -> dict:
+    """The set a landing makes from the head: its lines, holds, third entries, platform values and doctor.exempt
+    entries, with the body
     lines that say what moved. Composing from the head means a landing that waited on the lock builds on the one
     before it."""
     projects = dict(projects or {})
@@ -333,6 +378,7 @@ def _compose(ctx: Context, base: str, projects: dict, holds: dict, drop_holds: l
             composed["platform"], platform_text = platforms.resolve(ctx, key, str(platform[key]),
                                                                     composed.get("platform") or {})
             body.append(platform_text)
+    body += _doctor(ctx, current, composed, doctor_exempt or {}, list(doctor_unexempt or []))
     return {"base": base, "current": current, "composed": composed, "lines": lines, "body": body,
             "change": change, "logic_moved": logic_moved}
 
@@ -538,6 +584,16 @@ def _set_gate(ctx: Context, composed: dict) -> tuple[list[str], list[str]]:
     return problems + launch_problems, warnings
 
 
+def _doctor_parts(verb: str, keys: list[str]) -> list[str]:
+    """The subject's words for doctor.exempt entries: one by name, several by count and project."""
+    if len(keys) == 1:
+        return [f"{verb} {keys[0]}"]
+    if keys:
+        projects = sorted({key.partition(":")[0] for key in keys})
+        return [f"{verb} {len(keys)} paths of {', '.join(projects)}"]
+    return []
+
+
 def _candidate(text: str) -> str:
     return "candidate-" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
 
@@ -545,12 +601,13 @@ def _candidate(text: str) -> str:
 # -- the commands -------------------------------------------------------------------------------------------------
 
 def reach(ctx: Context, base: str, projects: dict, holds: dict | None = None, drop_holds: list | None = None,
-          third: dict | None = None, platform: dict | None = None):
+          third: dict | None = None, platform: dict | None = None, doctor_exempt: dict | None = None,
+          doctor_unexempt: list | None = None):
     """What a landing of these values would reach, without the lock: the would-be set (exported as a candidate, so
     a check can run against it), the Set gate's verdict on it, and each reached consumer with whether its gate checks
     already have pass records under their new keys."""
     holds, drop_holds, third, platform = holds or {}, list(drop_holds or []), third or {}, platform or {}
-    made = _compose(ctx, base, projects or {}, holds, drop_holds, third, platform)
+    made = _compose(ctx, base, projects or {}, holds, drop_holds, third, platform, doctor_exempt, doctor_unexempt)
     composed = made["composed"]
     problems, warnings = _set_gate(ctx, composed)
     if problems:
@@ -576,11 +633,14 @@ def reach(ctx: Context, base: str, projects: dict, holds: dict | None = None, dr
 
 def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float = 600, caller: str = "",
          holds: dict | None = None, drop_holds: list | None = None, third: dict | None = None,
-         platform: dict | None = None, tag: str = ""):
+         platform: dict | None = None, tag: str = "", doctor_exempt: dict | None = None,
+         doctor_unexempt: list | None = None):
     holds, drop_holds, third, platform = holds or {}, list(drop_holds or []), third or {}, platform or {}
+    doctor_exempt, doctor_unexempt = doctor_exempt or {}, list(doctor_unexempt or [])
     projects = dict(projects or {})
-    if not projects and not holds and not drop_holds and not third and not platform:
-        raise ParamError("nothing to land: name a project, a hold, a third entry or a platform value")
+    if not (projects or holds or drop_holds or third or platform or doctor_exempt or doctor_unexempt):
+        raise ParamError("nothing to land: name a project, a hold, a third entry, a platform value or a doctor.exempt "
+                         "entry")
     tagged = sorted(n for n in projects if n != SET)
     if tag and (not TAG.match(tag) or ".." in tag or tag.endswith(".lock")):
         raise ParamError(f"--tag {tag!r} is not a tag name git takes")
@@ -589,7 +649,7 @@ def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float 
     root = commands._store_root(ctx)
     if landings.read(root, landing):
         raise ParamError(f"landing {landing} exists already")
-    made = _compose(ctx, base, projects, holds, drop_holds, third, platform)
+    made = _compose(ctx, base, projects, holds, drop_holds, third, platform, doctor_exempt, doctor_unexempt)
     base, current, composed, lines, body = (made[k] for k in ("base", "current", "composed", "lines", "body"))
     change = made["change"]
     # Checked again at the head, under the keys the new set gives: each landed project, then each reached consumer.
@@ -626,6 +686,7 @@ def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float 
     parts = [f"{n} {lines[n]['commit'][:8]}" for n in (moved or sorted(lines))]
     parts += [f"hold {n}" for n in sorted(holds)] + [f"drop hold {n}" for n in drop_holds]
     parts += [f"third {n}" for n in sorted(third)] + [f"platform.{k} {platform[k]}" for k in sorted(platform)]
+    parts += _doctor_parts("doctor exempt", sorted(doctor_exempt)) + _doctor_parts("doctor unexempt", doctor_unexempt)
     parts = ([f"set files {change[:8]}"] if change else []) + parts
     subject = "Land " + ", ".join(parts)
     message = subject + "\n\n" + "\n".join(body) + f"\n\nLanding {landing} (job {ctx.job}).\n"
@@ -644,7 +705,8 @@ def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float 
         "projects": {n: {"commit": lines[n]["commit"], "branch": lines[n]["branch"],
                          "old": (setfile.line(current, n) or {}).get("commit")} for n in sorted(lines)},
         "change": change, "third": sorted(third), "platform": sorted(platform),
-        "holds": sorted(holds) + list(drop_holds), "set_json": text, "message": message, "created": time.time(),
+        "holds": sorted(holds) + list(drop_holds), "doctor": sorted(doctor_exempt) + doctor_unexempt,
+        "set_json": text, "message": message, "created": time.time(),
         "deadline": time.time() + deadline, "reached": reached, "notes": notes, "warnings": warnings,
         **({"tag": tag} if tag else {})})
     ctx.progress("publishing", msg=f"landing {landing}: waiting for wb land to publish (lock set held)")

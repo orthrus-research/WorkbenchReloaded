@@ -61,6 +61,9 @@
 - Third entries: `wb land --third` fetches a file by Maven coordinate from an allowed host, or, for a file with no
   Maven publication, takes the one JAR dropped in `<out>/third/<name>/`, seeds it into the Store with its source,
   and lands it by SHA-256 with its licence.
+- `wb land --doctor-exempt <project>:<glob> --reason <why>` lands a `doctor.exempt` entry, a path the doctor leaves
+  alone in that project's tree (recorded evidence that names a commit on purpose), with its reason and date;
+  `--doctor-unexempt` removes one. The project has a line or is registered, and the glob is relative to its top.
 - `wb gc` replaces `wb prune`: each kind of thing Workbench creates has a retention rule (`wb gc --rules`); the
   list names every item, its class, size and reason, with a digest, and `wb gc --yes <digest>` removes exactly
   that list or nothing. Pass records, set exports and every byte a set names, seeded and indexed Store files and

@@ -502,6 +502,69 @@ class Land(unittest.TestCase):
         self.lander().reconcile()  # the killed landing's refs go with the next landing's reconcile
         self.assertFalse([r for r in self.remote_refs(self.lib_remote) if "refs/landed/" in r])
 
+    def test_9j_a_doctor_exempt_entry_lands_with_its_reason_and_is_removed(self):
+        before = git(self.home, "rev-parse", "main")
+        recorded = {"lib:docs/recorded/*-inputs.json": "the commits inspected on one day, recorded",
+                    "two:tools/build.ps1": "the commits inspected on one day, recorded"}
+        result = self.lander().land({}, doctor_exempt=recorded)
+        self.assertEqual(result["state"], "landed", self.said)
+        exempt = self.set_json()["doctor"]["exempt"]
+        self.assertEqual([(e["project"], e["path"], e["reason"]) for e in exempt],
+                         [("lib", "docs/recorded/*-inputs.json", recorded["lib:docs/recorded/*-inputs.json"]),
+                          ("two", "tools/build.ps1", recorded["two:tools/build.ps1"])])
+        self.assertTrue(all(len(e["since"]) == 10 for e in exempt), exempt)
+        message = git(self.home, "log", "-1", "--format=%B", "main")
+        self.assertTrue(message.startswith("Land doctor exempt 2 paths of lib, two"), message)
+        self.assertIn("doctor exempt two:tools/build.ps1: the commits inspected", message)
+        self.assertEqual(git(self.home, "rev-parse", "main^"), before)  # one landing, nothing else moved
+        moved = git(self.home, "rev-parse", "main")
+        refused = {
+            "nosuch:docs/x.md": "no line in the set and is not registered",  # neither a line nor registered
+            "lib:/etc/x": "not relative",
+            "lib:docs/../x": "'..' part",
+            "lib:**/*": "names every file",
+            "lib:docs\\x.md": "'/' separates",
+            "lib:tools/build.ps1 ": "a part is letters",
+            "docs/x.md": "<project>:<glob>",
+        }
+        for key, why in refused.items():
+            with self.assertRaises(WorkspaceError, msg=key) as raised:
+                self.lander().land({}, doctor_exempt={key: "a reason"})
+            self.assertIn(why, str(raised.exception), key)
+        with self.assertRaises(WorkspaceError) as raised:  # one already there is refused, with what it says
+            self.lander().land({}, doctor_exempt={"two:tools/build.ps1": "again"})
+        self.assertIn("exempt already (the commits inspected", str(raised.exception))
+        with self.assertRaises(WorkspaceError) as raised:
+            self.lander().land({}, doctor_unexempt=["lib:docs/other.md"])
+        self.assertIn("has no lib:docs/other.md to remove", str(raised.exception))
+        self.assertEqual(git(self.home, "rev-parse", "main"), moved)  # no refusal moved the Set
+        restated = self.lander().land({}, doctor_unexempt=["two:tools/build.ps1"],
+                                      doctor_exempt={"two:tools/build.ps1": "the recipe of a held build"})
+        self.assertEqual(restated["state"], "landed", self.said)
+        self.assertEqual([e["reason"] for e in self.set_json()["doctor"]["exempt"] if e["project"] == "two"],
+                         ["the recipe of a held build"])
+        removed = self.lander().land({}, doctor_unexempt=["lib:docs/recorded/*-inputs.json", "two:tools/build.ps1"])
+        self.assertEqual(removed["state"], "landed", self.said)
+        self.assertNotIn("exempt", self.set_json()["doctor"])
+        self.assertTrue(git(self.home, "log", "-1", "--format=%s", "main")
+                        .startswith("Land doctor unexempt 2 paths of lib, two"))
+
+    def test_9k_doctor_exempt_on_the_command_line_needs_a_reason(self):
+        from unittest import mock
+        from wb import cli
+        from wb import land as land_cli
+        args = cli.build_parser().parse_args(["land", "--doctor-exempt", "lib:docs/x.md"])
+        said = []
+        with mock.patch.object(land_cli, "_say", said.append), \
+                mock.patch.object(land_cli, "Workspace", lambda: Workspace(self.d.config)), \
+                mock.patch.object(cli, "_client", lambda: self.c):
+            self.assertEqual(land_cli.main(args), 2)
+        self.assertIn("--doctor-exempt needs --reason", said[0])
+        args = cli.build_parser().parse_args(["land", "--doctor-exempt", "lib:a.md", "--doctor-exempt", "two:b/*.md",
+                                              "--doctor-unexempt", "*:evidence/**", "--reason", "recorded"])
+        self.assertEqual((args.doctor_exempt, args.doctor_unexempt, args.reason),
+                         (["lib:a.md", "two:b/*.md"], ["*:evidence/**"], "recorded"))
+
     def test_y_the_backup_keeps_the_set_and_the_seeded_bytes(self):
         from wb import backup
         folder = Path(tempfile.mkdtemp(prefix="wb-backup-"))
