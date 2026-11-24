@@ -194,7 +194,12 @@ def from_project(data: dict, name: str) -> dict:
                 steps.append(step)
             else:
                 refuse(f"checks.{check}.steps: a step is an argument list or {{ name, run, cwd }}")
-        jobs[check] = {**{k: v for k, v in entry.items() if k not in ("steps", "tools")}, "steps": steps}
+        tools = entry.get("tools") or []
+        if not isinstance(tools, list) or not all(isinstance(t, str) and re.fullmatch(r"[a-z0-9][a-z0-9._-]*:[^:]+", t)
+                                                  for t in tools):
+            refuse(f"checks.{check}.tools lists files another project's tree holds, each '<project>:<glob>'")
+        jobs[check] = {**{k: v for k, v in entry.items() if k not in ("steps", "tools")}, "steps": steps,
+                       **({"tools": list(tools)} if tools else {})}
     artifacts = data.get("artifacts") or {}
     for artifact, entry in artifacts.items():
         for key in sorted(set(entry) - ARTIFACT_KEYS):

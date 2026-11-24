@@ -387,6 +387,53 @@ def _stand_ins(ctx: Context, work: Path, wanted: dict) -> list[str]:
     return args
 
 
+def _tools(ctx: Context, config, work: Path, revision: str) -> dict[str, str]:
+    """Files a check reads from another project's tree (tools = ['<project>:<glob>']), exported at the commit the
+    run's set names for that project, into the folder beside the clone where its checkout would be, so the tools that
+    look for a sibling checkout find them there. Returns each project with the commit its files came from."""
+    import fnmatch
+    import io
+    import tarfile
+    from wb_core import setfile
+    wanted: dict[str, set[str]] = {}
+    for job in config.jobs.values():
+        for item in job.get("tools") or []:
+            project, glob = str(item).split(":", 1)
+            wanted.setdefault(project, set()).add(glob)
+    if not wanted:
+        return {}
+    sets = _store_root(ctx).parent / "sets"
+    revision = revision or setfile.read_head(sets) or ""
+    try:
+        lines = (setfile.read_export(sets, revision).get("projects") or {}) if revision else {}
+    except setfile.SetError as error:
+        raise EnvironmentProblem(f"tools: the set {revision[:12]} cannot be read: {error}") from None
+    laid = {}
+    for project, globs in sorted(wanted.items()):
+        line = lines.get(project)
+        if not line:
+            raise EnvironmentProblem(f"a check reads {project}'s files (tools), but the set {revision[:12] or '(none)'} "
+                                     f"has no line for {project}")
+        source = _project(ctx, project)["source"]
+        sha = _resolve(ctx, source, line["commit"])
+        git_dir = str(_git_dir(ctx, source))
+        names = _git(ctx, ["--git-dir", git_dir, "ls-tree", "-r", "--name-only", sha]).splitlines()
+        chosen = sorted(n for n in names if any(fnmatch.fnmatchcase(n, g) for g in globs))
+        if not chosen:
+            raise EnvironmentProblem(f"tools: nothing in {project} at {sha[:12]} matches {', '.join(sorted(globs))}")
+        done = subprocess.run(["git", "--git-dir", git_dir, "archive", "--format=tar", sha, "--", *chosen],
+                              env={**os.environ, **GIT_SAFE}, capture_output=True)
+        if done.returncode != 0:
+            raise EnvironmentProblem(f"tools: git archive of {project} at {sha[:12]} failed: "
+                                     + done.stderr.decode(errors="replace")[-300:])
+        target = work / source.name
+        with tarfile.open(fileobj=io.BytesIO(done.stdout)) as archive:
+            archive.extractall(target, filter="data")
+        laid[project] = sha
+        ctx.log.info(f"tools: {len(chosen)} file(s) of {project} at {sha[:12]} beside the clone ({target.name})")
+    return laid
+
+
 def _gradle_launcher(ctx: Context, work: Path, revision: str, extra: list | None = None) -> tuple[Path, str]:
     """The launcher {gradle} runs: the Gradle distribution the set's platform names, from the Store, with -Pset.dir
     (the run's export of the set), -Pset.store, -Pset.plugins, -Pset.exact=true and the platform's JDK builds as
@@ -477,6 +524,7 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
         pins.mkdir(parents=True, exist_ok=True)
         gradle_home, served = _gradle_home(ctx)
         launcher, set_revision, gradle_opts = _gradle_launcher(ctx, work, set, _stand_ins(ctx, work, stand_ins or {}))
+        tools = _tools(ctx, config, work, set_revision or set)
         if stand_ins:
             # Against stand-in bytes a run vouches for nothing: its records go one level down, where the gate, which
             # reads <records>/<run>/summary.json, never counts them, and its step logs stay readable.
@@ -531,7 +579,7 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
                     + ("" if jobs_done else f" ({document.get('summary') or 'nothing to run'})"))
     return {"project": project, "commit": sha, "worktree": worktree, "pinned": pinned, "run": run_id,
             "trees": trees, "passed": passed, "failed": failed, "repository": served, "stored": stored,
-            "engine": result, "set": set_revision, "stand_ins": dict(stand_ins or {})}
+            "engine": result, "set": set_revision, "stand_ins": dict(stand_ins or {}), "tools": tools}
 
 
 def _store_artifacts(ctx: Context, project: str, sha: str, trees: dict, records: Path, run_id: str | None,

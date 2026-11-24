@@ -329,6 +329,68 @@ sys.exit({code})
 """
 
 
+class Tools(unittest.TestCase):
+    """A check's tools (another project's files it reads) are laid beside the clone at the commit the set names."""
+
+    @classmethod
+    def setUpClass(cls):
+        for module in ("tools", "build", "lab", "ci"):
+            sys.path.insert(0, str(REPO / "modules" / module))
+        from wb_ci import commands
+        cls.commands = commands
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp(prefix="wb-tools-"))
+        self.cube = self.base / "Cube"
+        self.cube.mkdir()
+        git(self.cube, "init", "-q", "-b", "main")
+        for name, text in {"tools/a.py": "a1", "tools/sub/b.py": "b1", "lab/run.properties": "v=1", "README": "r"}.items():
+            (self.cube / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.cube / name).write_text(text, encoding="utf-8")
+        git(self.cube, "add", "-A")
+        git(self.cube, "commit", "-q", "-m", "one")
+        self.line = git(self.cube, "rev-parse", "HEAD")
+        (self.cube / "tools/a.py").write_text("a2", encoding="utf-8")  # the checkout moves on; the line does not
+        git(self.cube, "commit", "-q", "-am", "two")
+        self.store = self.base / "out" / "store"
+        self.store.mkdir(parents=True)
+        export = self.base / "out" / "sets" / "r1" / "set.json"
+        export.parent.mkdir(parents=True)
+        export.write_text(json.dumps({"schema": 1, "projects": {"cube": {"commit": self.line, "artifacts": {}}}}),
+                          encoding="utf-8")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.base, ignore_errors=True)
+
+    def lay_out(self, tools):
+        from unittest import mock
+        from wb_core.module import Context
+        ctx = Context({"job": "direct", "command": "ci.run", "module": "ci", "work": str(self.base / "job" / "work"),
+                       "out": str(self.base / "job" / "out"), "module_config": {}}, lambda *a, **k: None)
+        config = type("C", (), {"jobs": {"quality": {"tools": tools}, "build": {}}})()
+        work = self.base / "trees" / "run"
+        with mock.patch.object(self.commands, "_store_root", return_value=self.store), \
+                mock.patch.object(self.commands, "_project", return_value={"source": self.cube}):
+            return self.commands._tools(ctx, config, work, "r1"), work / "Cube"
+
+    def test_the_lines_files_matching_each_glob_are_laid_beside_the_clone(self):
+        laid, folder = self.lay_out(["cube:tools/**", "cube:lab/run.properties"])
+        self.assertEqual(laid, {"cube": self.line})
+        self.assertEqual((folder / "tools/a.py").read_text(encoding="utf-8"), "a1")
+        self.assertTrue((folder / "tools/sub/b.py").is_file())
+        self.assertTrue((folder / "lab/run.properties").is_file())
+        self.assertFalse((folder / "README").exists())
+
+    def test_a_project_the_set_has_no_line_for_is_refused(self):
+        from wb_core.module import EnvironmentProblem
+        with self.assertRaisesRegex(EnvironmentProblem, "has no line for other"):
+            self.lay_out(["other:tools/**"])
+
+    def test_no_tools_lays_out_nothing(self):
+        self.assertEqual(self.lay_out([])[0], {})
+
+
 class PythonLookup(unittest.TestCase):
     """ci.matrix finds a version wherever the host keeps it, and takes only an interpreter that says it is that one."""
 

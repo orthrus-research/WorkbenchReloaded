@@ -482,6 +482,15 @@ class ProjectManifestTest(Project):
             self.load()
         self.assertIn("top-level key", str(raised.exception))
 
+    def test_a_checks_tools_are_kept_and_must_name_a_project(self):
+        self.write_manifest(MANIFEST.replace('[checks.docs]', '[checks.docs]\ntools = ["cube:tools/**", "cube:lab/x.properties"]'))
+        self.assertEqual(self.load().jobs["docs"]["tools"], ["cube:tools/**", "cube:lab/x.properties"])
+        self.assertNotIn("tools", self.load().jobs["build"])
+        self.write_manifest(MANIFEST.replace('[checks.docs]', '[checks.docs]\ntools = ["tools/**"]'))
+        with self.assertRaises(actions.ToolError) as raised:
+            self.load()
+        self.assertIn("checks.docs.tools", str(raised.exception))
+
     def test_a_commits_own_file_is_found_whichever_kind_it_is(self):
         self.write_manifest(MANIFEST)
         commit = commit_all(self.root)
