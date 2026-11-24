@@ -19,6 +19,22 @@ from wb_host import lease  # noqa: E402
 from wb_host.runner import HostServer, Runner  # noqa: E402
 
 
+class Refresh(unittest.TestCase):
+    def test_a_config_edit_reaches_the_next_run_without_a_restart(self):
+        import dataclasses
+        lab = Path(tempfile.mkdtemp(prefix="wb-lab-"))
+        probe = Daemon(f"[runner]\nlab_home = '{lab}'\n")
+        probe.hub.close()
+        before = probe.settings
+        after = dataclasses.replace(before, lab={**dict(before.lab or {}), "trusted": ["demo"]})
+        stamps = iter([("a",), ("a",), ("b",), ("b",)])
+        runner = Runner(before, probe.modules, reload=lambda: after, stamp=lambda: next(stamps), log=lambda _: None)
+        self.assertFalse(runner.refresh())  # unchanged: nothing read
+        self.assertTrue(runner.refresh())  # a file changed: read again
+        self.assertEqual(runner.lab["trusted"], ["demo"])
+        self.assertFalse(runner.refresh())
+
+
 class HostRunner(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

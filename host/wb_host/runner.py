@@ -43,8 +43,12 @@ class Run:
 
 
 class Runner:
-    def __init__(self, settings, modules: list[Module], *, log=None):
+    def __init__(self, settings, modules: list[Module], *, log=None, reload=None, stamp=None):
         self.settings = settings
+        # How to read the machine's config again, and a stamp of its files: a person's edit (a project added to
+        # [lab] trusted, a secret, a JDK) reaches the next run without restarting the runner.
+        self._reload, self._stamp_of = reload, stamp
+        self._stamp = stamp() if stamp else None
         self.modules = {m.name: m for m in modules}
         self.routines = {c.full: (m, c) for m in modules for c in m.commands if "host" in c.runs_on}
         self.runs: dict[str, Run] = {}
@@ -111,7 +115,24 @@ class Runner:
                 run.finished = True
                 self.cond.notify_all()
 
+    def refresh(self) -> bool:
+        """Reads the config again when its files changed since the runner last read them; True when it did."""
+        if not (self._reload and self._stamp_of):
+            return False
+        stamp = self._stamp_of()
+        if stamp == self._stamp:
+            return False
+        settings = self._reload()
+        self.settings, self._stamp = settings, stamp
+        self.lab = dict(getattr(settings, "lab", None) or {})
+        runner = settings.runner
+        self.jdks = {**find_jdks(settings), **{str(k): str(v) for k, v in (runner.get("jdks") or {}).items()}}
+        self.java_home = str(runner.get("java_home") or "")
+        self.log("config changed: read again ([lab], secrets, JDKs)")
+        return True
+
     def _spawn(self, run: Run, token: str | None):
+        self.refresh()
         work = self.lab_home / "runs" / run.id
         work.mkdir(parents=True, exist_ok=True)
         (work / "cancel").unlink(missing_ok=True)

@@ -43,11 +43,20 @@ def serve(args) -> int:
 
     config = wbconfig.load(args.config) if args.config else wbconfig.load()
     modules = discover([REPO_ROOT / "modules"])
-    settings = resolve(config, {m.name: m.config for m in modules})
+    schemas = {m.name: m.config for m in modules}
+    settings = resolve(config, schemas)
+    folder = Path(args.config) if args.config else wbconfig.default_folder()
+
+    def stamp():
+        files = sorted(folder.rglob("*.toml")) if folder.is_dir() else []
+        return tuple((str(f), f.stat().st_mtime_ns, f.stat().st_size) for f in files)
+
+    def reload():
+        return resolve(wbconfig.load(args.config) if args.config else wbconfig.load(), schemas)
     token_path = Path(os.path.expanduser(settings.runner["token_file"]))
     token = _token(token_path)
     port = args.port or settings.runner["port"]
-    runner = Runner(settings, modules)
+    runner = Runner(settings, modules, reload=reload, stamp=stamp)
     server = HostServer(runner, token, port)
     print(f"wb-host serving {len(runner.routines)} routine(s) on 127.0.0.1:{server.server_address[1]}; "
           f"lab home {runner.lab_home}; lease {runner.lease_file}", flush=True)
