@@ -131,6 +131,45 @@ class Third(Fetch):
             land._third(self.context(["elsewhere.test"]), "lib", wanted)  # a host outside the list
 
 
+class ThirdFromFolder(Fetch):
+    """A third-party file with no Maven publication: the one JAR in <out>/third/<name>/, seeded with its source."""
+
+    def drop(self, *names, body=b"scala provider"):
+        folder = Path(self.folder.name) / "out" / "third" / "scalar"
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (folder / name).write_bytes(body)
+        return hashlib.sha256(body).hexdigest()
+
+    def test_the_folders_jar_is_seeded_and_landed_with_its_source(self):
+        from wb_ci import land
+        digest = self.drop("Scalar Legacy-1.0.1.jar")
+        wanted = {"source": "https://example.org/scalar/1.0.1", "licence": "LGPL-2.1", "mod_id": "scalar"}
+        entry, line = land._third(self.context([]), "scalar", wanted)
+        self.assertEqual(entry, {"file": "Scalar Legacy-1.0.1.jar", "sha256": digest,
+                                 "source": "https://example.org/scalar/1.0.1", "licence": "LGPL-2.1", "mod_id": "scalar"})
+        self.assertTrue((self.store / "files" / digest / "Scalar Legacy-1.0.1.jar").is_file())
+        seeded = json.loads((self.store / "seeded" / f"{digest}.json").read_text(encoding="utf-8"))
+        self.assertEqual((seeded["as"], seeded["source"]), ("third:scalar", "https://example.org/scalar/1.0.1"))
+        self.assertIn("third scalar Scalar Legacy-1.0.1.jar from https://example.org/scalar/1.0.1 (LGPL-2.1)", line)
+        again, _ = land._third(self.context([]), "scalar", {**wanted, "sha256": digest})  # the SHA-256 given matches
+        self.assertEqual(again["sha256"], digest)
+
+    def test_other_bytes_two_jars_or_no_source_are_refused(self):
+        from wb_ci import land
+        self.drop("a.jar")
+        wanted = {"source": "https://example.org/scalar", "licence": "LGPL-2.1"}
+        with self.assertRaisesRegex(ParamError, "not the 000000000000 given"):
+            land._third(self.context([]), "scalar", {**wanted, "sha256": "0" * 64})
+        with self.assertRaisesRegex(ParamError, "--source"):
+            land._third(self.context([]), "scalar", {"licence": "LGPL-2.1"})
+        self.drop("b.jar")
+        with self.assertRaisesRegex(ParamError, "put its one JAR in .*found 2"):
+            land._third(self.context([]), "scalar", wanted)
+        with self.assertRaisesRegex(ParamError, "found 0"):
+            land._third(self.context([]), "nothing", wanted)
+
+
 class Plugins(unittest.TestCase):
     """The Set's packed plugins go into the Store's plugins folder once, by logic id, never replaced."""
 

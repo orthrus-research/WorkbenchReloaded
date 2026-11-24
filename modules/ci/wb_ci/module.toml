@@ -146,7 +146,7 @@ params.deadline = { type = "float", default = 600, min = 5, summary = "seconds t
 params.caller = { type = "string", default = "" }
 params.holds = { type = "object", default = {}, summary = "{<project>:<artifact>[@<consumer>]: {commit, artifacts: {name: {sha256, file}}, reason, source}}: kept on another commit, with seeded bytes" }
 params.drop_holds = { type = "list", items = "string", default = [], summary = "holds to remove" }
-params.third = { type = "object", default = {}, summary = "{name: {module, repository, files: {kind: {sha256, classifier?}}, licence, mod_id}}: third-party files, fetched, checked and kept" }
+params.third = { type = "object", default = {}, summary = "{name: {module, repository, files: {kind: {sha256, classifier?}}, licence, mod_id}}: third-party files, fetched, checked and kept; without module and repository, {source, licence, mod_id, sha256?}: the one JAR in <out>/third/<name>/, seeded into the Store" }
 result.state = { type = "string" }
 
 [[command]]

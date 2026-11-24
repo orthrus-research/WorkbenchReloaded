@@ -119,6 +119,16 @@ class Members(Base):
                          ("+Helper-0.2.jar", "+helper-0.2.jar"))
         self.assertNotIn("place", by["cube:mod@both"])
 
+    def test_a_third_file_without_a_coordinate_is_its_runtime_file(self):
+        doc = json.loads(json.dumps(self.set_doc))
+        doc["third"]["helper"] = {"file": "+helper-0.2.jar", "sha256": self.digests["+helper-0.2.jar"],
+                                  "source": "https://example.org/helper", "licence": "MIT", "mod_id": "helper"}
+        member = {m["member"]: m for m in self.run_resolve(set_doc=doc)["members"]}["helper@server"]
+        self.assertEqual((member["kind"], member["artifact"], member["file"], member["source"], member["mod_ids"]),
+                         ("third", "runtime", "+helper-0.2.jar", "https://example.org/helper", ["helper"]))
+        with self.assertRaisesRegex(launch.LaunchError, r"third entry helper has no dev file \(it has: runtime\)"):
+            self.run_resolve(table={"members": ["helper:dev@both"]}, set_doc=doc)
+
     def test_a_hold_wins_over_the_line(self):
         member = {m["member"]: m for m in self.run_resolve()["members"]}["lib:adapter@both"]
         self.assertEqual((member["kind"], member["sha256"], member["commit"], member["reason"]),

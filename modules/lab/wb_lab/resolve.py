@@ -184,12 +184,16 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
             source_project, source_commit = name, lines[name]["commit"]
         elif name in thirds:
             kind = part or "runtime"
-            digest = (thirds[name].get("files") or {}).get(kind)
+            third = thirds[name]
+            # A coordinate's files by kind; a file without one (from the drop folder) is its runtime file.
+            files = third.get("files") or ({"runtime": third["sha256"]} if third.get("sha256") else {})
+            digest = files.get(kind)
             if not digest:
                 raise LaunchError(f"member {spec}: third entry {name} has no {kind} file "
-                                  f"(it has: {', '.join(sorted(thirds[name].get('files') or {})) or 'none'})")
-            entry.update(kind="third", artifact=kind, sha256=digest, module=thirds[name].get("module", ""),
-                         licence=thirds[name].get("licence", ""))
+                                  f"(it has: {', '.join(sorted(files)) or 'none'})")
+            file_name = third.get("file") if not third.get("files") else None
+            entry.update(kind="third", artifact=kind, sha256=digest, module=third.get("module", ""),
+                         licence=third.get("licence", ""), **({"source": third["source"]} if third.get("source") else {}))
             source_project, source_commit = None, None
         else:
             known = sorted({*lines, *thirds, product})

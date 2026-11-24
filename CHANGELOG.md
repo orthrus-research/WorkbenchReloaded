@@ -35,7 +35,13 @@
   revision in its `.set`; `wb work sync` moves it, and every verb says how far behind it is. `wb work --all`
   lists each line, open landings, and unconverted projects with the pins they still carry. `store.platform`
   fetches the platform's JDKs and Gradle into the Store by SHA-256 from allowed hosts.
-- project.toml (schema 1): a project's checks, gate and artifacts, read before actions.toml.
+- project.toml (schema 1): a project's checks, gate and artifacts, read before actions.toml. A check that reads
+  another project's files declares them (`tools`), and `ci.run` lays them beside the clone at the set's commit.
+- Third entries: `wb land --third` fetches a file by Maven coordinate from an allowed host, or, for a file with no
+  Maven publication, takes the one JAR dropped in `<out>/third/<name>/`, seeds it into the Store with its source,
+  and lands it by SHA-256 with its licence.
+- `lab.resolve`: a project's `[launch.<name>]` resolved once into launch.json, every member by SHA-256 from the
+  worktree's set revision and the project itself from the Store; two builds of one mod id are refused.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,
   ledger, vast, ci, release, plan, frames, tools (the former standalone tools, 0.6.0), selftest.
 - The lab reads a profile's checkouts at a ref, each from a snapshot fixed at its commit for the whole job

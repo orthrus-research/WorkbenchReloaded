@@ -540,9 +540,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--file", help="--hold: the bytes")
     p.add_argument("--commit", help="--hold: the commit they were built from")
     p.add_argument("--reason", help="--hold: why they are held")
-    p.add_argument("--source", help="--hold: where the bytes came from (a URL or a backup)")
+    p.add_argument("--source", help="--hold, --third without --module: where the bytes came from (a URL or a backup)")
     p.add_argument("--drop-hold", action="append", metavar="NAME", help="remove a hold")
-    p.add_argument("--third", metavar="NAME", help="land a third-party entry (--module, --repository, --third-file)")
+    p.add_argument("--third", metavar="NAME", help="land a third-party entry (--module, --repository, --third-file; without --module: the one JAR in <out>/third/<name>/, with --source and --licence)")
     p.add_argument("--module", help="--third: group:artifact:version")
     p.add_argument("--repository", help="--third: the Maven repository's URL")
     p.add_argument("--third-file", action="append", metavar="KIND[:CLASSIFIER]=SHA256",

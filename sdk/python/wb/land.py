@@ -394,10 +394,20 @@ def main(args) -> int:
                 if not sep or not kind or len(digest) != 64:
                     raise WorkspaceError(f"--third-file {item!r}: KIND[:CLASSIFIER]=SHA256")
                 files[kind] = {"sha256": digest.lower(), **({"classifier": classifier} if classifier else {})}
-            if not (args.module and args.repository and files):
-                raise WorkspaceError("--third needs --module, --repository and at least one --third-file")
-            third[args.third] = {"module": args.module, "repository": args.repository, "files": files,
-                                 "licence": args.licence or "", "mod_id": args.mod_id or ""}
+            if args.module or args.repository:
+                if not (args.module and args.repository and files):
+                    raise WorkspaceError("--third needs --module, --repository and at least one --third-file")
+                third[args.third] = {"module": args.module, "repository": args.repository, "files": files,
+                                     "licence": args.licence or "", "mod_id": args.mod_id or ""}
+            else:
+                # No coordinate: the one JAR in the drop folder beside the Store (<out>/third/<name>/).
+                if not (args.source and args.licence):
+                    raise WorkspaceError("--third without --module takes the JAR in <out>/third/<name>/ and needs "
+                                         "--source (where it came from) and --licence")
+                if set(files) - {"runtime"}:
+                    raise WorkspaceError("--third without --module has one file: --third-file runtime=<sha256>")
+                third[args.third] = {"source": args.source, "licence": args.licence, "mod_id": args.mod_id or "",
+                                     **({"sha256": files["runtime"]["sha256"]} if files else {})}
         given = list(args.targets or [])
         targets = _targets(workspace, given) if given or not (holds or args.drop_hold or third) else {}
         for name in urls:

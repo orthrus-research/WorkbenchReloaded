@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -142,10 +143,44 @@ def _set_change(ctx: Context, wanted: dict, base: str, current: dict) -> tuple[s
     return sha, logic, body
 
 
+THIRD_DIR = "third"  # beside the Store: <out>/third/<name>/ holds the JAR a third entry without a coordinate comes from
+
+
+def _third_file(ctx: Context, name: str, wanted: dict) -> tuple[dict, str]:
+    """A third-party file with no Maven publication: the one JAR in <out>/third/<name>/, seeded into the Store with
+    where it came from, and landed as {file, sha256, source, licence, mod_id}, which build-logic's set.third and the
+    launch read from the Store. A SHA-256 given must be the file's."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", name):
+        raise ParamError(f"third.{name}: a name is lowercase letters, digits, '.', '_' and '-'")
+    root = commands._store_root(ctx)
+    folder = root.parent / THIRD_DIR / name
+    shown = ctx.host_path(folder)
+    jars = sorted(p for p in folder.glob("*.jar") if p.is_file()) if folder.is_dir() else []
+    if len(jars) != 1:
+        raise ParamError(f"third.{name}: put its one JAR in {shown} (found {len(jars)})")
+    source, licence = str(wanted.get("source") or ""), str(wanted.get("licence") or "")
+    if not source or not licence:
+        raise ParamError(f"third.{name}: a file without a coordinate needs where it came from (--source) and its "
+                         "licence (--licence)")
+    digest = store.sha256(jars[0])
+    expected = str(wanted.get("sha256") or "").lower()
+    if expected and expected != digest:
+        raise ParamError(f"third.{name}: {jars[0].name} in {shown} is {digest[:12]}, not the {expected[:12]} given")
+    store.seed(root, jars[0], f"third:{name}", source, f"the set's third entry {name}",
+               commands._folder(ctx, "pin_cache", commands._state() / "cache" / "pins"))
+    entry = {"file": jars[0].name, "sha256": digest, "source": source, "licence": licence}
+    if wanted.get("mod_id"):
+        entry["mod_id"] = str(wanted["mod_id"])
+    return entry, f"third {name} {jars[0].name} from {source} ({licence}): {digest[:12]}"
+
+
 def _third(ctx: Context, name: str, wanted: dict) -> tuple[dict, str]:
     """A third-party entry: each file is fetched from its Maven repository (from a host in store_hosts, every redirect
-    checked), checked against the SHA-256 given, and kept in the Store. Returns the entry and the body line."""
+    checked), checked against the SHA-256 given, and kept in the Store. Returns the entry and the body line. An entry
+    without a module comes from the drop folder instead (_third_file)."""
     import tempfile
+    if not wanted.get("module") and not wanted.get("repository"):
+        return _third_file(ctx, name, wanted)
     from . import platform
     root = commands._store_root(ctx)
     hosts = [str(h) for h in ctx.config.get("store_hosts") or []]
