@@ -170,6 +170,66 @@ class ThirdFromFolder(Fetch):
             land._third(self.context([]), "nothing", wanted)
 
 
+class PlatformValues(Fetch):
+    """A platform move is one typed value: each file it names is downloaded from its publisher, kept in the Store and
+    named by the SHA-256 of those bytes, checked against the publisher's checksum file where there is one."""
+
+    def setUp(self):
+        super().setUp()
+        temurin = "https://github.com/adoptium/temurin26-binaries/releases/download/jdk-26.0.3%2B4/OpenJDK26U-jdk_x64"
+        self.jdk = {"linux": f"{temurin}_linux_hotspot_26.0.3_4.tar.gz",
+                    "windows": f"{temurin}_windows_hotspot_26.0.3_4.zip"}
+        self.bodies[self.jdk["linux"]] = tarred()
+        self.bodies[self.jdk["windows"]] = zipped()
+        for url in self.jdk.values():
+            self.bodies[url + ".sha256.txt"] = (hashlib.sha256(self.bodies[url]).hexdigest() + "  x\n").encode()
+        cleanroom = "https://github.com/CleanroomMC/Cleanroom/releases/download/0.7.15-alpha/cleanroom-0.7.15-alpha"
+        self.cleanroom = [f"{cleanroom}-installer.jar", f"{cleanroom}-universal.jar", f"{cleanroom}.zip"]
+        for index, url in enumerate(self.cleanroom):
+            self.bodies[url] = f"cleanroom part {index}".encode()
+
+    def serve(self, url, hosts=()):
+        if url not in self.bodies:
+            raise OSError(f"404 {url}")
+        return io.BytesIO(self.bodies[url])
+
+    def resolve(self, key, value):
+        from wb_ci import platform
+        with mock.patch.object(platform, "_open", self.serve):
+            return platform.resolve(self.context(["github.com", "services.gradle.org"]), key, value, self.set["platform"])
+
+    def test_a_jdk_build_names_both_archives_by_their_bytes(self):
+        changed, line = self.resolve("jdk.26", "26.0.3+4")
+        entry = changed["jdk"]["26"]
+        self.assertEqual((entry["build"], entry["linux"]["url"]), ("26.0.3+4", self.jdk["linux"]))
+        self.assertEqual(entry["windows"]["sha256"], hashlib.sha256(zipped()).hexdigest())
+        self.assertTrue((self.store / "files" / entry["linux"]["sha256"]).is_dir())
+        self.assertEqual(self.set["platform"]["jdk"]["26"]["build"], "26.0.2.1+1")  # the given platform is not changed
+        self.assertIn("platform.jdk.26 = 26.0.3+4", line)
+
+    def test_bytes_the_publishers_checksum_disagrees_with_are_refused(self):
+        self.bodies[self.jdk["linux"] + ".sha256.txt"] = b"0" * 64
+        with self.assertRaisesRegex(EnvironmentProblem, "its publisher states"):
+            self.resolve("jdk.26", "26.0.3+4")
+
+    def test_cleanroom_names_its_installer_universal_and_prism_zip(self):
+        changed, _ = self.resolve("cleanroom", "0.7.15-alpha")
+        entry = changed["cleanroom"]
+        self.assertEqual(entry["version"], "0.7.15-alpha")
+        self.assertEqual(entry["installer"]["file"], "cleanroom-0.7.15-alpha-installer.jar")
+        self.assertEqual(entry["prism"]["sha256"], hashlib.sha256(b"cleanroom part 2").hexdigest())
+
+    def test_plain_values_are_typed_and_unknown_keys_refused(self):
+        changed, _ = self.resolve("java", "27")
+        self.assertEqual(changed["java"], 27)
+        with self.assertRaisesRegex(ParamError, "is int"):
+            self.resolve("java", "twenty-seven")
+        with self.assertRaisesRegex(ParamError, "not a key a landing sets"):
+            self.resolve("color", "blue")
+        with self.assertRaisesRegex(ParamError, "written like 26.0.2.1"):
+            self.resolve("jdk.26", "latest")
+
+
 class Plugins(unittest.TestCase):
     """The Set's packed plugins go into the Store's plugins folder once, by logic id, never replaced."""
 

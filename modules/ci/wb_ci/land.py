@@ -235,12 +235,13 @@ def _hold(ctx: Context, name: str, hold: dict) -> tuple[dict, str]:
 
 
 def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float = 600, caller: str = "",
-         holds: dict | None = None, drop_holds: list | None = None, third: dict | None = None):
-    holds, drop_holds, third = holds or {}, list(drop_holds or []), third or {}
+         holds: dict | None = None, drop_holds: list | None = None, third: dict | None = None,
+         platform: dict | None = None):
+    holds, drop_holds, third, platform = holds or {}, list(drop_holds or []), third or {}, platform or {}
     projects = dict(projects or {})
     change_wanted = projects.pop(SET, None)
-    if not projects and not holds and not drop_holds and not change_wanted and not third:
-        raise ParamError("nothing to land: name a project, a hold or a hold to drop")
+    if not projects and not holds and not drop_holds and not change_wanted and not third and not platform:
+        raise ParamError("nothing to land: name a project, a hold, a third entry or a platform value")
     sets = _sets(ctx)
     root = commands._store_root(ctx)
     head = setfile.read_head(sets)
@@ -278,11 +279,18 @@ def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float 
     for name in sorted(third):
         composed.setdefault("third", {})[name], third_text = _third(ctx, name, third[name])
         body.append(third_text)
+    if platform:
+        from . import platform as platforms
+        for key in sorted(platform):
+            ctx.progress("platform", msg=f"platform.{key} = {platform[key]}")
+            composed["platform"], platform_text = platforms.resolve(ctx, key, str(platform[key]),
+                                                                    composed.get("platform") or {})
+            body.append(platform_text)
     text = setfile.dump(composed)
     moved = [n for n in sorted(lines) if (setfile.line(current, n) or {}).get("commit") != lines[n]["commit"]]
     parts = [f"{n} {lines[n]['commit'][:8]}" for n in (moved or sorted(lines))]
     parts += [f"hold {n}" for n in sorted(holds)] + [f"drop hold {n}" for n in drop_holds]
-    parts += [f"third {n}" for n in sorted(third)]
+    parts += [f"third {n}" for n in sorted(third)] + [f"platform.{k} {platform[k]}" for k in sorted(platform)]
     parts = ([f"set files {change[:8]}"] if change else []) + parts
     subject = "Land " + ", ".join(parts)
     message = subject + "\n\n" + "\n".join(body) + f"\n\nLanding {landing} (job {ctx.job}).\n"
@@ -298,7 +306,8 @@ def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float 
         "id": landing, "state": "prepared", "job": ctx.job, "caller": caller, "base": base,
         "projects": {n: {"commit": lines[n]["commit"], "branch": lines[n]["branch"],
                          "old": (setfile.line(current, n) or {}).get("commit")} for n in sorted(lines)},
-        "change": change, "third": sorted(third), "holds": sorted(holds) + list(drop_holds), "set_json": text, "message": message, "created": time.time(),
+        "change": change, "third": sorted(third), "platform": sorted(platform),
+        "holds": sorted(holds) + list(drop_holds), "set_json": text, "message": message, "created": time.time(),
         "deadline": time.time() + deadline})
     ctx.progress("publishing", msg=f"landing {landing}: waiting for wb land to publish (lock set held)")
     ctx.log.info(f"landing {landing} prepared: {subject}")

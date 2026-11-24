@@ -137,3 +137,109 @@ def fetch(ctx: Context, revision: str = "", only: list | None = None, unpack: bo
                 + (f" ({', '.join(fetched)})" if fetched else ""))
     return {"revision": revision, "fetched": fetched, "held": kept,
             "folders": [str(root / i["into"]) for i in items] if unpack else []}
+
+
+# --- typed platform values: one value lands a platform move ---------------------------------------------------------
+#
+# A landing names a platform key and one value: platform.jdk.<major>=<build>, platform.gradle=<version>,
+# platform.cleanroom=<version>, or a plain value (platform.java, platform.cleanroomgradle, platform.cleanroom.lwjgl).
+# Each file a value names is downloaded from its publisher on an allowed host and kept in the Store; its SHA-256 is the
+# one computed from those bytes, checked against the publisher's own checksum file where it publishes one.
+
+PLAIN = {"java": int, "cleanroomgradle": str, "cleanroom.lwjgl": str}
+
+
+def _temurin(major: int, build: str) -> dict:
+    """The Temurin archives of a JDK build for Linux and Windows, and their checksum files."""
+    import re
+    import urllib.parse
+    if major == 8:
+        if not re.fullmatch(r"8u\d+-b\d+", build):
+            raise ParamError(f"a Java 8 build is written like 8u512-b09, not {build!r}")
+        tag, version = f"jdk{build}", build.replace("-", "")
+    else:
+        if not re.fullmatch(rf"{major}(\.\d+)*\+\d+", build):
+            raise ParamError(f"a Java {major} build is written like {major}.0.2.1+1, not {build!r}")
+        tag, version = f"jdk-{build}", build.replace("+", "_")
+    base = (f"https://github.com/adoptium/temurin{major}-binaries/releases/download/{urllib.parse.quote(tag)}/"
+            f"OpenJDK{major}U-jdk_x64")
+    return {"linux": f"{base}_linux_hotspot_{version}.tar.gz", "windows": f"{base}_windows_hotspot_{version}.zip"}
+
+
+def _checksum(url: str, hosts: list[str]) -> str | None:
+    """The SHA-256 a publisher states beside a file, when it states one (the first 64-hex token)."""
+    import re
+    try:
+        with _open(url, hosts) as response:
+            found = re.search(rb"\b[0-9a-fA-F]{64}\b", response.read(4096))
+    except Exception:
+        return None
+    return found.group(0).decode().lower() if found else None
+
+
+def keep(ctx: Context, url: str, stated: str | None = None) -> tuple[str, str]:
+    """Downloads a file from an allowed host into the Store and returns (sha256, file name); bytes that differ from a
+    checksum the publisher states are refused and nothing is kept."""
+    hosts = [str(h) for h in ctx.config.get("store_hosts") or []]
+    if not _allowed(url, hosts):
+        raise ParamError(f"{url} is on a host outside [modules.ci] store_hosts")
+    root = commands._store_root(ctx)
+    name = urllib.parse.unquote(urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1])
+    with tempfile.TemporaryDirectory(dir=root) as scratch:
+        target = Path(scratch) / name
+        hasher = hashlib.sha256()
+        with _open(url, hosts) as response, open(target, "wb") as handle:
+            while block := response.read(1 << 20):
+                hasher.update(block)
+                handle.write(block)
+                if ctx.cancelled.is_set():
+                    raise EnvironmentProblem("cancelled while downloading")
+        digest = hasher.hexdigest()
+        if stated and stated != digest:
+            raise EnvironmentProblem(f"{url} is {digest}, but its publisher states {stated}; nothing kept")
+        store.put(root, target, digest, commands._folder(ctx, "pin_cache", commands._state() / "cache" / "pins"))
+    return digest, name
+
+
+def resolve(ctx: Context, key: str, value: str, platform: dict) -> tuple[dict, str]:
+    """The platform with ``key`` set from ``value``, every file it names kept in the Store, and the landing's line."""
+    import json
+    hosts = [str(h) for h in ctx.config.get("store_hosts") or []]
+    changed = json.loads(json.dumps(platform or {}))
+    if key in PLAIN:
+        try:
+            typed = PLAIN[key](value)
+        except ValueError:
+            raise ParamError(f"platform.{key} is {PLAIN[key].__name__}, not {value!r}") from None
+        table, _, leaf = key.rpartition(".")
+        (changed.setdefault(table, {}) if table else changed)[leaf] = typed
+        return changed, f"platform.{key} = {typed}"
+    if key.startswith("jdk."):
+        major = key[4:]
+        if not major.isdigit():
+            raise ParamError(f"platform.{key}: name a JDK by its major, platform.jdk.26=<build>")
+        entry = {"build": value}
+        for system, url in _temurin(int(major), value).items():
+            digest, _ = keep(ctx, url, _checksum(url + ".sha256.txt", hosts))
+            entry[system] = {"url": url, "sha256": digest}
+        changed.setdefault("jdk", {})[major] = entry
+        return changed, f"platform.jdk.{major} = {value} (linux {entry['linux']['sha256'][:12]}, windows " \
+                        f"{entry['windows']['sha256'][:12]})"
+    if key == "gradle":
+        url = f"https://services.gradle.org/distributions/gradle-{value}-bin.zip"
+        digest, _ = keep(ctx, url, _checksum(url + ".sha256", hosts))
+        changed["gradle"] = {"version": value, "url": url, "sha256": digest}
+        return changed, f"platform.gradle = {value} ({digest[:12]})"
+    if key == "cleanroom":
+        base = f"https://github.com/CleanroomMC/Cleanroom/releases/download/{value}/cleanroom-{value}"
+        entry = dict(changed.get("cleanroom") or {})
+        entry["version"] = value
+        for part, url in (("installer", f"{base}-installer.jar"), ("universal", f"{base}-universal.jar"),
+                          ("prism", f"{base}.zip")):
+            digest, name = keep(ctx, url)
+            entry[part] = {"url": url, "file": name, "sha256": digest}
+        changed["cleanroom"] = entry
+        return changed, (f"platform.cleanroom = {value} (installer {entry['installer']['sha256'][:12]}, universal "
+                         f"{entry['universal']['sha256'][:12]}, prism {entry['prism']['sha256'][:12]})")
+    raise ParamError(f"platform.{key} is not a key a landing sets (jdk.<major>, gradle, cleanroom, "
+                     f"{', '.join(sorted(PLAIN))})")
