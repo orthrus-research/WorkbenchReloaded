@@ -21,6 +21,8 @@ REPO = HERE.parents[2]
 sys.path[:0] = [str(REPO / "core"), str(REPO / "sdk" / "python"), str(REPO / "modules" / "lab")]
 
 from wb_core.module import Context, EnvironmentProblem, ParamError  # noqa: E402
+from wb_lab import channel as channels  # noqa: E402
+from wb_lab import desktop as desktops  # noqa: E402
 from wb_lab import instance as instances  # noqa: E402
 from wb_lab import run as runs  # noqa: E402
 from wb_lab.store import Store  # noqa: E402
@@ -66,6 +68,23 @@ if os.environ.get("FAKE_CRASH"):
     print('Exception in thread "main" java.lang.IllegalStateException: no GL', flush=True)
     sys.exit(3)
 connection = socket.create_connection(("127.0.0.1", int(args[args.index("--port") + 1])))
+if os.environ.get("FAKE_FIXTURE"):  # a fixture mod: answers the requests of the session's client channel
+    channel = Path(next(a.split("=", 1)[1] for a in sys.argv if a.startswith("-Dfixture.channel=")))
+    (channel / "fixture-ready.json").write_text("{}")
+    print("fixture ready", flush=True)
+    while True:
+        inbox = channel / "request.json"
+        if inbox.exists():
+            query = json.loads(inbox.read_text())
+            os.replace(inbox, channel / "responses" / (query["id"] + "-request.json"))
+            answer = channel / "responses" / (query["id"] + ".json")
+            failed = query["action"] == "fail"
+            answer.with_suffix(".tmp").write_text(json.dumps({"ok": not failed, "result": {"echo": query},
+                                                              "error": "asked to fail" if failed else None}))
+            os.replace(answer.with_suffix(".tmp"), answer)
+            if query["action"] == "quit":
+                sys.exit(0)
+        time.sleep(0.05)
 if os.environ.get("FAKE_OPEN_SECONDS"):
     time.sleep(float(os.environ["FAKE_OPEN_SECONDS"]))
     sys.exit(0)
@@ -91,7 +110,7 @@ class Sessions(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         os.environ["WB_TURN_TOKEN"] = "a-token"
         self.addCleanup(os.environ.pop, "WB_TURN_TOKEN", None)
-        for name in ("FAKE_CRASH", "FAKE_IGNORE_STOP", "FAKE_OPEN_SECONDS"):
+        for name in ("FAKE_CRASH", "FAKE_IGNORE_STOP", "FAKE_OPEN_SECONDS", "FAKE_FIXTURE"):
             self.addCleanup(os.environ.pop, name, None)
         self.system = "windows" if os.name == "nt" else "linux"
         self.store = self.root / "store"
@@ -289,6 +308,122 @@ class Sessions(unittest.TestCase):
         self.assertEqual(ctx.outcome, "ok", ctx.findings)
         self.assertIn("say hello", (self.instance() / "server" / "commands.log").read_text().splitlines())
         self.assertEqual(record["exit"]["client"], 0)
+
+    # -- the client channel and the hidden desktop -----------------------------------------------------------------
+    def fixture_instance(self, name: str = "fixture"):
+        """An instance whose launch names the session's channel and folder to its client, as a fixture mod reads them."""
+        self.make_instance(name)
+        path = self.instance(name) / instances.RECEIPT
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        receipt["client"]["command"][3:3] = ["-Dfixture.channel={channel}", "-Dfixture.session={session}"]
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+        os.environ["FAKE_FIXTURE"] = "1"
+
+    def write_commands(self, session: str, lines: list[str]):
+        folder = self.root / "sessions" / session
+
+        def write():
+            deadline = time.monotonic() + 30
+            while not (folder / "channel" / "fixture-ready.json").exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            with (folder / "commands.txt").open("a", encoding="utf-8") as stream:
+                for line in lines:
+                    stream.write(line + "\n")
+                    stream.flush()
+                    time.sleep(0.2)
+        threading.Thread(target=write, daemon=True).start()
+
+    def test_client_lines_of_the_commands_file_reach_the_fixture_through_the_channel(self):
+        self.fixture_instance()
+        session = "20261124-100000-c0ffee"
+        self.write_commands(session, ["client status", 'client echo {"text": "hi"}', "say to the server",
+                                      "client {broken", "client fail", "client quit"])
+        ctx, result, record = self.play(instance="fixture", kind="open", session=session)
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        folder = Path(result["folder"])
+        client = record["commands"]["client"]
+        self.assertIn(f"-Dfixture.channel={folder / 'channel'}", client)  # {channel} filled when the game starts
+        self.assertIn(f"-Dfixture.session={folder}", client)
+        requests = record["channel"]["requests"]
+        self.assertEqual(record["channel"]["folder"], str(folder / "channel"))
+        answered = [r for r in requests if r["state"] == "answered"]
+        self.assertEqual([r["action"] for r in answered], ["status", "echo", "fail", "quit"])
+        self.assertEqual([r["ok"] for r in answered], [True, True, False, True])
+        self.assertEqual(answered[2]["error"], "asked to fail")
+        self.assertEqual(answered[1]["request"]["text"], "hi")
+        echo = json.loads((folder / answered[1]["answer"]).read_text())
+        self.assertEqual(echo["result"]["echo"]["action"], "echo")
+        refused = [r for r in requests if r["state"] == "refused"]
+        self.assertEqual(len(refused), 1)
+        self.assertIn("not a JSON object", refused[0]["error"])
+        self.assertIn("say to the server", (self.instance("fixture") / "server" / "commands.log").read_text())
+        self.assertEqual(record["exit"]["client"], 0)  # the fixture's quit ended the session
+
+    def test_lab_send_sends_one_request_to_a_running_session_and_waits_for_its_answer(self):
+        session = "20261124-100000-5e0d00"
+        folder = self.root / "sessions" / session
+        (folder / "channel" / "responses").mkdir(parents=True)
+        (folder / runs.SESSION).write_text(json.dumps({"state": "running"}), encoding="utf-8")
+        stop = threading.Event()
+
+        def fixture():
+            inbox = folder / "channel" / "request.json"
+            while not stop.is_set():
+                if inbox.exists():
+                    query = json.loads(inbox.read_text())
+                    inbox.unlink()
+                    (folder / "channel" / "responses" / f"{query['id']}.json").write_text(
+                        json.dumps({"ok": True, "result": {"owner": "title", "asked": query}}))
+                time.sleep(0.02)
+        threading.Thread(target=fixture, daemon=True).start()
+        self.addCleanup(stop.set)
+        ctx = self.context("send")
+        result = runs.send(ctx, session, "status", {"detail": 2}, timeout=10)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["answer"]["result"]["asked"]["detail"], 2)
+        self.assertTrue(Path(result["file"]).is_file())
+        (folder / runs.SESSION).write_text(json.dumps({"state": "ended"}), encoding="utf-8")
+        with self.assertRaisesRegex(ParamError, "is ended, not running"):
+            runs.send(ctx, session, "status")
+
+    def test_a_request_while_another_is_unread_waits_and_an_unanswered_one_times_out(self):
+        folder = self.root / "channel"
+        (folder / "responses").mkdir(parents=True)
+        first = channels.post(folder, {"action": "status"})
+        with self.assertRaisesRegex(channels.ChannelError, "still unread"):
+            channels.post(folder, {"action": "status"})
+        with self.assertRaisesRegex(channels.ChannelError, "stayed unread"):
+            channels.send(folder, "status", timeout=0.3)
+        relay = channels.Relay(folder, timeout=0.2)
+        (folder / "request.json").unlink()
+        relay.add("status")
+        relay.pump()  # written
+        time.sleep(0.3)
+        ended = relay.pump()  # nobody read it: taken back, recorded, the channel free again
+        self.assertEqual([r["state"] for r in ended], ["timed_out"])
+        self.assertFalse((folder / "request.json").exists())
+        self.assertNotEqual(ended[0]["id"], first["id"])
+        self.assertEqual(channels.parse('capture {"name": "a.png"}'), {"name": "a.png", "action": "capture"})
+        with self.assertRaisesRegex(channels.ChannelError, "names no action"):
+            channels.parse('{"name": "a.png"}')
+
+    @unittest.skipUnless(desktops.available(), "a hidden desktop is a Windows feature")
+    def test_a_client_on_a_hidden_desktop_runs_there_and_the_desktop_never_has_the_input(self):
+        self.fixture_instance("hidden")
+        session = "20261124-100000-d0d0d0"
+        self.write_commands(session, ["client status", "client quit"])
+        ctx, result, record = self.play(instance="hidden", kind="open", session=session, desktop="hidden")
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        desktop = record["desktop"]
+        self.assertTrue(desktop["name"].startswith("wb-session-"))
+        self.assertTrue(desktop["never_input"])
+        self.assertNotIn(desktop["name"], desktop["input_seen"])
+        self.assertEqual(record["inputs"]["desktop"], "hidden")
+        self.assertEqual([r["action"] for r in record["channel"]["requests"]], ["status", "quit"])
+        self.assertIn("fixture ready", (Path(result["folder"]) / "client-console.log").read_text())  # its pipe
+        self.assertEqual(record["exit"]["client"], 0)
+        with self.assertRaisesRegex(ParamError, "none of hidden"):
+            self.play(kind="open", desktop="elsewhere", label="other")
 
     # -- kinds that are evidence, and drivers -------------------------------------------------------------------
     def test_measure_plays_a_fresh_copy_of_the_launch_it_names(self):

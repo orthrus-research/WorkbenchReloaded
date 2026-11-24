@@ -44,15 +44,22 @@ A launch also names:
 - ``configure = "launch/configure.py"``: the product's script, run by lab.build only for a project in ``[lab] trusted``;
 - ``params``: each a default value, whose type it fixes, or a table ``{ type, default, min, max, choices }``; lab.build
   refuses a value of another type or one the launch does not declare;
-- ``tour`` (the rules lab.run drives a tour by) and ``drivers`` (``{ command = [...], cwd = "..." }`` per name).
+- ``tour`` (the rules lab.run drives a tour by) and ``drivers`` (``{ command = [...], cwd = "..." }`` per name);
+- ``runtime``: ``"cleanroom"`` (the platform's Cleanroom), or a table naming another version of it for this launch:
+  ``{ kind = "cleanroom", version = "0.7.7-alpha", installer = { url, file, sha256 }, universal = {...},
+  prism = {...} }`` with that version's files by SHA-256 (lab.build fetches each from an allowed host), or
+  ``{ kind = "cleanroom", version = "...", third = "<entry>" }`` taking them from a third entry of the set (its
+  ``files`` by kind ``installer``, ``universal`` and ``prism``, kept in the Store). A launch that inherits another
+  runs on that launch's runtime and may only name the same one.
 
 launch.json records the launch definition's commit with the tree id of its ``launch/`` folder, and the base's
 project, commit, table and overlay tree id, so lab.build exports exactly those trees and resolves nothing.
 
 launch.json names every member by SHA-256 with its Store path and the mod ids its mcmod.info declares; a launch that
 would load two builds of one mod id is refused before anything is written, as is a member the set or the Store lacks.
-Its ``runtime`` names the kind, version and exact JDK build, and, once the platform names them
-(``platform.cleanroom.{installer,universal,prism}``), the runtime's own files by URL and SHA-256 in ``runtime.files``.
+Its ``runtime`` names the kind, version and exact JDK build, and the runtime's own files by URL and SHA-256 in
+``runtime.files``: the launch's own, a third entry's, or, for the platform's version, the platform's
+(``platform.cleanroom.{installer,universal,prism}``) once it names them; ``runtime.source`` says which.
 The code names no project."""
 
 from __future__ import annotations
@@ -74,6 +81,9 @@ PLACE = re.compile(r'^[^/\\:*?"<>|]+\.jar$')  # a bare file name: no folder, not
 MEMBER_KEYS = {"jvm", "collect", "failures"}
 RUNTIMES = ("cleanroom",)
 RUNTIME_FILES = ("installer", "universal", "prism")  # platform.cleanroom's files, copied into runtime.files
+RUNTIME_KEYS = {"kind", "version", "third", *RUNTIME_FILES}
+RUNTIME_VERSION = re.compile(r"^[0-9][A-Za-z0-9._+-]*$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
 # A base: what lab.build starts every instance of a runtime from (wb_lab.instance names each key's use).
 BASE_KEYS = {"summary", "runtime", "player", "installer", "memory", "jvm_profile", "jvm_args_file", "overlay", "files",
              "views", "eula", "ready", "server", "client"}
@@ -335,11 +345,102 @@ def definition(project_toml: dict, name: str, where: str = "project.toml") -> di
             raise LaunchError(f"{where}: launch.{name}.place names {member}, which is not a member")
         if not isinstance(file, str) or not PLACE.match(file):
             raise LaunchError(f"{where}: launch.{name}.place.{member} is a JAR file name, not {file!r}")
-    runtime = table.get("runtime", "cleanroom")
-    if runtime not in RUNTIMES:
-        raise LaunchError(f"{where}: launch.{name}.runtime is one of {', '.join(RUNTIMES)}")
+    runtime_of(table, f"{where}: launch.{name}")
     _jvm(table.get("jvm"), f"{where}: launch.{name}")
     return table
+
+
+def runtime_of(table: dict, where: str) -> dict:
+    """A launch's ``runtime``, checked: ``{kind}`` for a bare kind, else the table with its version and either its
+    three files (each ``url`` on https, a bare ``file`` name and its ``sha256``) or the third entry it names."""
+    value = table.get("runtime", "cleanroom")
+    if isinstance(value, str):
+        if value not in RUNTIMES:
+            raise LaunchError(f"{where}.runtime is one of {', '.join(RUNTIMES)}, or a table naming its version")
+        return {"kind": value}
+    if not isinstance(value, dict):
+        raise LaunchError(f"{where}.runtime is a kind ({', '.join(RUNTIMES)}) or a table {{ kind, version, ... }}")
+    for key in sorted(set(value) - RUNTIME_KEYS):
+        raise LaunchError(f"{where}: unknown key runtime.{key} (known: {', '.join(sorted(RUNTIME_KEYS))})")
+    if value.get("kind", "cleanroom") not in RUNTIMES:
+        raise LaunchError(f"{where}.runtime.kind is one of {', '.join(RUNTIMES)}")
+    version = value.get("version")
+    if not isinstance(version, str) or not RUNTIME_VERSION.match(version):
+        raise LaunchError(f"{where}.runtime.version is the runtime's version (like 0.7.7-alpha), not {version!r}")
+    out = {"kind": value.get("kind", "cleanroom"), "version": version}
+    named = [part for part in RUNTIME_FILES if part in value]
+    if "third" in value:
+        if named:
+            raise LaunchError(f"{where}.runtime names a third entry and files ({', '.join(named)}): one or the other")
+        if not isinstance(value["third"], str) or not MEMBER.match(value["third"] + "@both"):
+            raise LaunchError(f"{where}.runtime.third names a third entry of the set, not {value['third']!r}")
+        return {**out, "third": value["third"]}
+    if named:
+        missing = [part for part in RUNTIME_FILES if part not in value]
+        if missing:
+            raise LaunchError(f"{where}.runtime names {', '.join(named)} but not {', '.join(missing)}: a runtime is "
+                              "its installer, its universal JAR and its launcher instance")
+        files = {}
+        for part in RUNTIME_FILES:
+            entry = value[part]
+            if not isinstance(entry, dict) or set(entry) != {"url", "file", "sha256"}:
+                raise LaunchError(f"{where}.runtime.{part} is {{ url, file, sha256 }}")
+            if not str(entry["url"]).startswith("https://"):
+                raise LaunchError(f"{where}.runtime.{part}.url is an https URL, not {entry['url']!r}")
+            if not isinstance(entry["file"], str) or "/" in entry["file"] or "\\" in entry["file"] or \
+                    not entry["file"].strip(". "):
+                raise LaunchError(f"{where}.runtime.{part}.file is a bare file name, not {entry['file']!r}")
+            if not isinstance(entry["sha256"], str) or not SHA256.match(entry["sha256"].lower()):
+                raise LaunchError(f"{where}.runtime.{part}.sha256 is 64 hex digits, not {entry['sha256']!r}")
+            files[part] = {"url": entry["url"], "file": entry["file"], "sha256": entry["sha256"].lower()}
+        return {**out, "files": files}
+    return out
+
+
+def runtime_document(declared: dict, platform: dict, thirds: dict, store: Path, where: str) -> dict:
+    """launch.json's ``runtime``: the kind and version, the platform's Java and its exact JDK build, and the
+    runtime's own files (``files``) as the launch, its third entry or the platform names them (``source``)."""
+    cleanroom = platform.get("cleanroom") or {}
+    java = platform.get("java")
+    version = declared.get("version") or cleanroom.get("version", "")
+    runtime = {"kind": declared["kind"], "version": version, "java": java,
+               "jdk": ((platform.get("jdk") or {}).get(str(java)) or {}).get("build", "")}
+    if declared.get("files"):
+        runtime.update(files=json.loads(json.dumps(declared["files"])), source="launch")
+    elif declared.get("third"):
+        name = declared["third"]
+        third = thirds.get(name)
+        if not isinstance(third, dict):
+            raise LaunchError(f"{where}: runtime.third names {name}, which the set has no third entry for (it has: "
+                              f"{', '.join(sorted(thirds)) or 'none'})")
+        kinds = third.get("files") or {}
+        missing = [part for part in RUNTIME_FILES if not kinds.get(part)]
+        if missing:
+            raise LaunchError(f"{where}: third entry {name} has no {', '.join(missing)} file (it has: "
+                              f"{', '.join(sorted(kinds)) or 'none'})")
+        files = {}
+        for part in RUNTIME_FILES:
+            try:
+                file_name, _ = _store_file(store, kinds[part], None)
+            except Exception as error:  # noqa: BLE001 - the Store's own error names the digest
+                raise LaunchError(f"{where}: runtime {part} of third entry {name}: {error}; the landing that "
+                                  "recorded it puts it there") from None
+            files[part] = {"file": file_name, "sha256": kinds[part],
+                           **({"url": third["urls"][part]} if isinstance(third.get("urls"), dict)
+                              and third["urls"].get(part) else {})}
+        runtime.update(files=files, source=f"third {name}")
+    elif version == cleanroom.get("version"):
+        # The runtime's own files as the platform names them (a landing of platform.cleanroom keeps each in the
+        # Store): lab.build makes an instance from these, so the launch file carries them.
+        files = {part: {key: cleanroom[part][key] for key in ("url", "file", "sha256") if key in cleanroom[part]}
+                 for part in RUNTIME_FILES if isinstance(cleanroom.get(part), dict)}
+        if files:
+            runtime.update(files=files, source="platform")
+    else:
+        raise LaunchError(f"{where}: runtime {declared['kind']} {version} is not the platform's "
+                          f"{cleanroom.get('version') or 'none'}, and the launch names none of its files: give its "
+                          "installer, universal and prism as { url, file, sha256 }, or third = '<entry>'")
+    return runtime
 
 
 def member_extras(project_toml: dict | None, where: str) -> dict:
@@ -521,10 +622,15 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
     members, owners = [], {}
     jvm = {"client": [], "server": []}
     collect, failures = [], []
+    declared = runtime_of(table, f"launch.{launch}")
     if parent is not None:
-        if table.get("runtime", "cleanroom") != parent["runtime"]["kind"]:
-            raise LaunchError(f"launch.{launch}: runtime {table.get('runtime', 'cleanroom')} is not its base "
-                              f"{link['name']}'s {parent['runtime']['kind']}")
+        inherited = parent["runtime"]
+        named = declared.get("version")
+        if declared["kind"] != inherited["kind"] or (named and (named != inherited.get("version") or (
+                declared.get("files") and declared["files"] != inherited.get("files")))):
+            raise LaunchError(f"launch.{launch}: runtime {declared['kind']} {named or ''}".rstrip() + " is not its "
+                              f"base {link['name']}'s {inherited['kind']} {inherited.get('version', '')}".rstrip()
+                              + ": a launch runs on the runtime of the launch it inherits")
         for member in parent["members"]:
             entry = {**member, "via": member.get("via") or link["name"]}
             members.append(entry)
@@ -640,17 +746,10 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
         _override_jvm(jvm, own_jvm)
     else:
         _add_jvm(jvm, own_jvm)
-    platform = set_doc.get("platform") or {}
-    java = platform.get("java")
-    cleanroom = platform.get("cleanroom") or {}
-    runtime = {"kind": table.get("runtime", "cleanroom"), "version": cleanroom.get("version", ""),
-               "java": java, "jdk": ((platform.get("jdk") or {}).get(str(java)) or {}).get("build", "")}
-    # The runtime's own files as the platform names them (a landing of platform.cleanroom keeps each in the Store):
-    # lab.build makes an instance from these, so the launch file carries them.
-    files = {part: {key: cleanroom[part][key] for key in ("url", "file", "sha256") if key in cleanroom[part]}
-             for part in RUNTIME_FILES if isinstance(cleanroom.get(part), dict)}
-    if files:
-        runtime["files"] = files
+    if parent is not None:
+        runtime = json.loads(json.dumps(parent["runtime"]))  # the inherited launch's runtime, as it resolved it
+    else:
+        runtime = runtime_document(declared, set_doc.get("platform") or {}, thirds, store, f"launch.{launch}")
     if parent is not None:
         defaults, types = _inherited_params(table, parent, f"launch.{launch}")
     else:

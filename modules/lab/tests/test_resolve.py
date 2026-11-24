@@ -619,6 +619,18 @@ class Inheritance(Base):
         with self.assertRaisesRegex(launch.LaunchError, r"the set names no project or third entry solo"):
             self.derive(table={"members": ["game:mod@both", "solo:mod@client"]}, follow=None)
 
+    def test_an_inheriting_launch_runs_on_its_bases_runtime_and_may_name_only_that(self):
+        self.host_launch["runtime"] = {"kind": "cleanroom", "version": "0.7.7-alpha", **runtime_files("0.7.7-alpha")}
+        doc = self.derive()
+        self.assertEqual((doc["runtime"]["version"], doc["runtime"]["source"]), ("0.7.7-alpha", "launch"))
+        self.assertEqual(doc["runtime"]["files"], runtime_files("0.7.7-alpha"))
+        same = {**self.derived, "runtime": dict(self.host_launch["runtime"])}
+        self.assertEqual(self.derive(table=same)["runtime"], doc["runtime"])
+        other = {**self.derived, "runtime": {"kind": "cleanroom", "version": "0.7.14-alpha"}}
+        with self.assertRaisesRegex(launch.LaunchError, "runtime cleanroom 0.7.14-alpha is not its base host:default's "
+                                                        "cleanroom 0.7.7-alpha"):
+            self.derive(table=other)
+
 
 class InheritedCommand(unittest.TestCase):
     """lab.resolve in real repositories: the base product with no line follows origin's branch, else the local one,
@@ -694,6 +706,79 @@ class InheritedCommand(unittest.TestCase):
         with self.assertRaisesRegex(ParamError, rf"run wb check in host at {local[:12]}") as caught:
             launch.resolve_command(self.ctx, str(self.product))
         self.assertEqual(caught.exception.__cause__.missing, ("host", local))
+
+
+
+def runtime_files(version: str) -> dict:
+    base = f"https://github.com/CleanroomMC/Cleanroom/releases/download/{version}/cleanroom-{version}"
+    return {"installer": {"url": base + "-installer.jar", "file": f"cleanroom-{version}-installer.jar",
+                          "sha256": "4" * 64},
+            "universal": {"url": base + "-universal.jar", "file": f"cleanroom-{version}-universal.jar",
+                          "sha256": "5" * 64},
+            "prism": {"url": base + ".zip", "file": f"cleanroom-{version}.zip", "sha256": "6" * 64}}
+
+
+class Runtimes(Base):
+    """A launch may run on another version of the runtime than the platform's, naming that version's files by SHA-256
+    in the launch or through a third entry; a launch that inherits another runs on that launch's runtime."""
+
+    def test_a_launch_names_its_own_cleanroom_version_and_files(self):
+        table = {**self.table, "runtime": {"kind": "cleanroom", "version": "0.7.7-alpha",
+                                           **runtime_files("0.7.7-alpha")}}
+        runtime = self.run_resolve(table=table)["runtime"]
+        self.assertEqual((runtime["kind"], runtime["version"], runtime["source"]), ("cleanroom", "0.7.7-alpha", "launch"))
+        self.assertEqual(runtime["files"], runtime_files("0.7.7-alpha"))
+        self.assertEqual((runtime["java"], runtime["jdk"]), (26, "26.0.2.1+1"))  # the platform's JDK still
+
+    def test_another_version_without_its_files_is_refused(self):
+        table = {**self.table, "runtime": {"kind": "cleanroom", "version": "0.7.7-alpha"}}
+        with self.assertRaisesRegex(launch.LaunchError, "0.7.7-alpha is not the platform's 0.7.14-alpha, and the "
+                                                        "launch names none of its files"):
+            self.run_resolve(table=table)
+        same = {**self.table, "runtime": {"kind": "cleanroom", "version": "0.7.14-alpha"}}
+        self.assertEqual(self.run_resolve(table=same)["runtime"]["version"], "0.7.14-alpha")  # the platform's own
+
+    def test_a_third_entry_names_the_runtimes_files_in_the_store(self):
+        names = {}
+        for part, name in (("installer", "cr-installer.jar"), ("universal", "cr-universal.jar"),
+                           ("prism", "cr.zip")):
+            source = self.base / name
+            source.write_bytes(part.encode() * 8)
+            names[part] = (artifacts.put(self.store, source).parent.name, name)
+        set_doc = json.loads(json.dumps(self.set_doc))
+        set_doc["third"]["cleanroom-077"] = {"module": "com.cleanroommc:cleanroom:0.7.7-alpha", "licence": "LGPL-2.1",
+                                             "files": {part: digest for part, (digest, _) in names.items()},
+                                             "urls": {"installer": "https://example.org/cr-installer.jar"}}
+        table = {**self.table, "runtime": {"kind": "cleanroom", "version": "0.7.7-alpha", "third": "cleanroom-077"}}
+        runtime = self.run_resolve(table=table, set_doc=set_doc)["runtime"]
+        self.assertEqual(runtime["source"], "third cleanroom-077")
+        self.assertEqual({part: (f["sha256"], f["file"]) for part, f in runtime["files"].items()}, names)
+        self.assertEqual(runtime["files"]["installer"]["url"], "https://example.org/cr-installer.jar")
+        self.assertNotIn("url", runtime["files"]["prism"])  # the Store holds it; lab.build needs no URL
+        del set_doc["third"]["cleanroom-077"]["files"]["prism"]
+        with self.assertRaisesRegex(launch.LaunchError, "third entry cleanroom-077 has no prism file"):
+            self.run_resolve(table=table, set_doc=set_doc)
+        with self.assertRaisesRegex(launch.LaunchError, "names cleanroom-0, which the set has no third entry for"):
+            self.run_resolve(table={**table, "runtime": {**table["runtime"], "third": "cleanroom-0"}},
+                             set_doc=set_doc)
+
+    def test_the_runtime_table_is_checked(self):
+        files = runtime_files("0.7.7-alpha")
+        for runtime, pattern in [
+                ({"kind": "forge", "version": "1"}, "runtime.kind is one of cleanroom"),
+                ({"version": "latest"}, "runtime.version is the runtime's version"),
+                ({"version": "0.7.7-alpha", "installer": files["installer"]}, "but not universal, prism"),
+                ({"version": "0.7.7-alpha", **files, "third": "x"}, "a third entry and files"),
+                ({"version": "0.7.7-alpha", **files, "installer": {**files["installer"], "url": "http://x/a.jar"}},
+                 "url is an https URL"),
+                ({"version": "0.7.7-alpha", **files, "prism": {**files["prism"], "file": "a/b.zip"}},
+                 "is a bare file name"),
+                ({"version": "0.7.7-alpha", **files, "universal": {**files["universal"], "sha256": "x"}},
+                 "is 64 hex digits"),
+                ({"version": "0.7.7-alpha", "java": 25}, "unknown key runtime.java"),
+                (["cleanroom"], "a kind \\(cleanroom\\) or a table")]:
+            with self.subTest(pattern=pattern), self.assertRaisesRegex(launch.LaunchError, pattern):
+                launch.definition({"launch": {"default": {"members": ["a:mod@both"], "runtime": runtime}}}, "default")
 
 
 if __name__ == "__main__":

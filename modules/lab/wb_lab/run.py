@@ -3,7 +3,8 @@
 Kinds:
 
 - ``open``: a person plays. The server starts, the client joins, and lines appended to the session's
-  ``commands.txt`` are sent to the server's console until the client is closed (or the limit).
+  ``commands.txt`` are sent to the server's console until the client is closed (or the limit); a line that starts
+  with ``client `` is a request to the client's fixture instead (the client channel, below).
 - ``tour``: the views of a tour file, each captured by the game, then filed as ``tour/NN-<label>.png``. How the game
   is driven through them is the launch's ``tour`` rules (from its ``[launch.<name>.tour]``): the server commands
   that set the world up, the client's JVM properties that turn its capture on, and the client console line that says
@@ -17,7 +18,16 @@ Kinds:
   receipt's ``{cache}`` paths are under by the name ``[lab] env`` gives ``cache``. Its command line may name
   ``{python}``, ``{root}`` (the project's tree it runs from: ``driver_root``, which wb play sets to the worktree the
   launch was resolved from), ``{instance}``, ``{instance_json}``, ``{session}`` (the folder), ``{session_id}`` and
-  ``{launch}``.
+  ``{launch}``, and ``{channel}``.
+
+Every session has a client channel, ``<session>/channel`` (``wb_lab.channel``): a launch's JVM arguments name it as
+``{channel}`` (and the session's folder as ``{session}``), filled in when the session starts the game, so a product's
+test-only fixture mod reads requests there and writes its answers beside them. An open session writes the requests of
+its ``client`` lines one at a time and records each answer in session.json; lab.send sends one from anywhere.
+
+``desktop=hidden`` (Windows) starts the client on a hidden desktop of its own (``wb_lab.desktop``): the game runs and
+draws there but never takes the input, focus, keyboard or mouse; session.json records the desktop, the window classes
+the client opened on it and that it never had the input. A desktop that cannot be made refuses the session.
 
 Before anything starts the session checks the instance against its receipt: every file under ``{cache}`` and
 ``{jdk:N}`` and every placed member by SHA-256. The JDK is found by the build the receipt names (the Store's, or the
@@ -51,6 +61,8 @@ from pathlib import Path
 
 from wb_core.module import Cancelled, Context, EnvironmentProblem, ParamError, sha256_file
 
+from . import channel as channels
+from . import desktop as desktops
 from . import instance as instances
 from . import machine as machines
 from . import process as processes
@@ -68,6 +80,7 @@ JOIN_TIMEOUT = 120.0
 STOP_GRACE = 180.0  # the least a server is given to stop by itself before its tree is killed
 TOUR_LIMIT = 90 * 60.0
 DEBUG_PORTS = {"client": 5005, "server": 5006}
+SESSION_VALUE = re.compile(r"\{(port|channel|session)\}")  # what a session fills in a receipt's command lines
 ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
 # Tried after the launch's own failure patterns, most telling first.
 FAILURES = (r"^Description: ", r"EXCEPTION_ACCESS_VIOLATION|# A fatal error has been detected",
@@ -77,7 +90,9 @@ TOUR_DEFAULTS = {"setup": [], "spawn": "setworldspawn {x} {y} {z}", "joined": "j
                  "leave": ["kick {player} Tour finished"], "leave_seconds": 12, "screenshots": "screenshots"}
 ENV = {"token": "WB_TURN_TOKEN", "lane": "WB_TURN_LANE", "lease": "WB_LEASE_FILE",
        "coordination": "WB_COORDINATION_DIR", "instance": "WB_INSTANCE", "session": "WB_SESSION",
-       "launch": "WB_LAUNCH"}
+       "launch": "WB_LAUNCH", "channel": "WB_CHANNEL"}
+DESKTOPS = ("", "hidden")
+OBSERVE = 5.0  # how often a session notes which desktop has the input
 
 
 class Failed(Exception):
@@ -313,6 +328,8 @@ class Session:
         self.record: dict = {}
         self.failure: Failed | None = None
         self.stopped = None
+        self.desktop: desktops.HiddenDesktop | None = None
+        self.relay: channels.Relay | None = None
 
     def mark(self, name: str):
         self.timings[name] = round(time.monotonic() - self.t0, 3)
@@ -360,11 +377,17 @@ class Session:
             if not p.get("driver") or p["driver"] not in drivers:
                 raise ParamError(f"driver: name one the launch declares ({', '.join(sorted(drivers)) or 'none'})")
             machines.require_trusted(ctx, str(launch.get("project") or ""), f"driver {p['driver']}")
+        if p.get("desktop") not in (None, *DESKTOPS):
+            raise ParamError(f"desktop: {p['desktop']!r} is none of hidden or empty (the person's own desktop)")
+        if p.get("desktop") == "hidden" and not desktops.available():
+            raise ParamError("desktop=hidden starts the client on a hidden Windows desktop; this is not Windows")
         self.id = p.get("session") or new_id()
         if not ID.match(self.id):
             raise ParamError(f"session: {self.id!r} is not an id like 20261124-101500-a1b2c3")
         self.folder = sessions_root(ctx) / self.id
         self.folder.mkdir(parents=True, exist_ok=False)
+        self.channel = self.folder / channels.FOLDER
+        (self.channel / channels.RESPONSES).mkdir(parents=True)
         if kind == "measure" and p.get("copy", True):
             folder = self._fresh_copy(root, folder, receipt)
             receipt = json.loads((folder / instances.RECEIPT).read_text(encoding="utf-8"))
@@ -478,8 +501,9 @@ class Session:
                        "window": self.window or None, "debug": self.p.get("debug") or None,
                        "fresh_world": bool(self.p.get("fresh_world")), "limit": self.p.get("limit"),
                        "tour": {k: self.tour[k] for k in ("file", "sha256")} if self.tour else None,
-                       "driver": self.p.get("driver") or None},
-            "debug": self.debug or None,
+                       "driver": self.p.get("driver") or None, "desktop": self.p.get("desktop") or None},
+            "debug": self.debug or None, "desktop": None,
+            "channel": {"folder": str(self.channel), "requests": []},
             "commands": {}, "timings": self.timings, "exit": {}, "failure": None, "tour": None, "kept": None,
         }
 
@@ -528,7 +552,8 @@ class Session:
     def argv(self, side: str) -> list[str]:
         roots = {name: str(path) for name, path in self.roots.items()}
         command = instances.expand(self.receipt[side]["command"], roots)
-        command = [token.replace("{port}", str(self.port)) for token in command]
+        values = {"port": str(self.port), "channel": str(self.channel), "session": str(self.folder)}
+        command = [SESSION_VALUE.sub(lambda m: values[m.group(1)], token) for token in command]
         at = self.receipt[side].get("jvm_at")
         if at is None:  # a receipt from before jvm_at: after the launch's own options when they lead
             launch_jvm = list((self.launch.get("jvm") or {}).get(side) or [])
@@ -558,7 +583,17 @@ class Session:
         argv = self.argv(side)
         cwd = Path(instances.expand([self.receipt[side]["cwd"]], {n: str(r) for n, r in self.roots.items()})[0])
         self.record["commands"][side] = argv
-        process = start(argv, cwd, self.env())
+        if side == "client" and self.p.get("desktop") == "hidden":
+            try:
+                if self.desktop is None:
+                    self.desktop = desktops.HiddenDesktop().__enter__()
+                process = self.desktop.start(argv, cwd=cwd, env=self.env())
+            except OSError as error:
+                raise EnvironmentProblem(f"the client could not be started on a hidden desktop: {error}; nothing "
+                                         "falls back to the person's desktop") from None
+            self.record["desktop"] = self.desktop.record()
+        else:
+            process = start(argv, cwd, self.env())
         started = time.monotonic()
         self.mark(f"{side}_jvm")
         console = processes.Console(process, self.folder / f"{side}-console.log")
@@ -614,15 +649,28 @@ class Session:
     def open_session(self):
         commands = self.folder / "commands.txt"
         commands.write_text("", encoding="utf-8")
-        self.ctx.log.info(f"open session: close the game to end it; console commands go in {commands}")
+        self.ctx.log.info(f"open session: close the game to end it; console commands go in {commands}, and lines "
+                          f"'client <action> [<JSON>]' to the client's fixture through {self.channel}")
+        self.relay = channels.Relay(self.channel, log=self.ctx.log.info)
         limit = float(self.p.get("limit") or 4 * 3600)
         deadline = time.monotonic() + limit
+        observed = time.monotonic()
         with commands.open(encoding="utf-8") as stream:
             while all(side.alive() for side in self.sides.values()):
                 self.ctx.check_cancel()
                 for line in stream:
-                    if line.strip():
-                        self.send(line.strip())
+                    line = line.strip()
+                    if line == "client" or line.startswith("client "):
+                        self.relay.add(line[len("client"):])
+                    elif line:
+                        self.send(line)
+                if self.relay.pump():
+                    self.record["channel"]["requests"] = list(self.relay.records)
+                    write_json(self.folder / SESSION, self.record)
+                if self.desktop is not None and time.monotonic() - observed >= OBSERVE:
+                    self.desktop.observe()
+                    self.record["desktop"] = self.desktop.record()
+                    observed = time.monotonic()
                 if time.monotonic() > deadline:
                     self.ctx.finding(f"the open session reached its limit ({processes.span(limit)}); stopped")
                     break
@@ -697,7 +745,7 @@ class Session:
         values = {"python": sys.executable, "instance": str(self.instance), "session": str(self.folder),
                   "session_id": self.id,
                   "launch": str(self.folder / "launch.json"), "instance_json": str(self.instance / instances.RECEIPT),
-                  "root": str(self.p.get("driver_root") or self.instance)}
+                  "root": str(self.p.get("driver_root") or self.instance), "channel": str(self.channel)}
         argv = [instances._fill_known(str(item), values) for item in command]
         env = {**self.env(), **self.driver_env()}
         cwd = Path(instances._fill_known(str(driver.get("cwd") or "{root}"), values))
@@ -717,7 +765,8 @@ class Session:
         values = {"token": os.environ.get("WB_TURN_TOKEN", ""), "lane": os.environ.get("WB_TURN_LANE", ""),
                   "lease": os.environ.get("WB_LEASE_FILE", ""), "coordination": os.environ.get("WB_COORDINATION_DIR", ""),
                   "instance": str(self.instance / instances.RECEIPT), "session": str(self.folder),
-                  "launch": str(self.folder / "launch.json"), "cache": str(self.roots["cache"])}
+                  "launch": str(self.folder / "launch.json"), "cache": str(self.roots["cache"]),
+                  "channel": str(self.channel)}
         out = {name: values[key] for key, name in ENV.items()}
         for name, key in (machines.lab(self.ctx)["env"] or {}).items():
             out[name] = values[key]
@@ -750,6 +799,11 @@ class Session:
             self.record["exit"]["client"] = client.process.returncode
         for side in self.sides.values():
             side.console.close()
+        if self.desktop is not None:
+            self.desktop.__exit__(None, None, None)
+            self.record["desktop"] = self.desktop.record()
+            if not self.record["desktop"]["never_input"]:
+                self.ctx.finding(f"the hidden desktop {self.desktop.name} had the input during the session")
         self.record["stop"] = record
         self.mark("stopped")
 
@@ -785,6 +839,11 @@ class Session:
 
     def close(self, outcome: str):
         self.record.update(state=outcome, ended=now(), timings=self.timings)
+        if self.relay is not None:
+            self.relay.pump(post_next=False)  # an answer the fixture wrote as the game ended (a quit's)
+            unanswered = ([self.relay.current["request"]] if self.relay.current else []) + self.relay.queue
+            self.record["channel"]["requests"] = list(self.relay.records) + [
+                {"id": r["id"], "action": r["action"], "state": "unanswered", "request": r} for r in unanswered]
         if self.failure is not None:
             self.record["failure"] = self.explain(self.failure)
         write_json(self.folder / SESSION, self.record)
@@ -800,7 +859,7 @@ def run(ctx: Context, instance: str, kind: str = "open", tour: str | None = None
         copy: bool = True, driver: str = "", driver_root: str | None = None, port: int = 0, jvm: list | None = None,
         view: dict | None = None, edits: list | None = None, window: str = "", debug: str = "",
         fresh_world: bool = False, limit: float = 4 * 3600, jdk: str | None = None, session: str = "",
-        no_rebuild: bool = False):
+        no_rebuild: bool = False, desktop: str = ""):
     params = {k: v for k, v in locals().items() if k != "ctx"}
     session_ = Session(ctx, params)
     session_.open()
@@ -876,3 +935,31 @@ def kept_roots(root: Path) -> dict[str, list[str]]:
         out["launches"].append(kept["launch"])
     # an imported session names no template, and may name no launch file
     return {key: sorted({value for value in values if value}) for key, values in out.items()}
+
+
+# --- the client channel, from outside the session --------------------------------------------------------------------
+
+
+def send(ctx: Context, session: str, action: str, values: dict | None = None, timeout: float = 45.0):
+    """One request to a running session's client fixture through the session's channel, and its answer."""
+    if not ID.match(session):
+        raise ParamError(f"session: {session!r} is not a session id")
+    folder = sessions_root(ctx) / session
+    path = folder / SESSION
+    if not path.is_file():
+        raise ParamError(f"no session {session} in {folder.parent}")
+    state = json.loads(path.read_text(encoding="utf-8")).get("state")
+    if state != "running":
+        raise ParamError(f"session {session} is {state}, not running: its client reads no requests")
+    try:
+        done = channels.send(folder / channels.FOLDER, action, values or {}, timeout=float(timeout),
+                             cancelled=ctx.cancelled)
+    except channels.ChannelError as error:
+        raise EnvironmentProblem(str(error)) from None
+    answer = done["answer"]
+    ok = bool(answer.get("ok"))
+    if ok:
+        ctx.summary(f"session {session}: {action} answered ({done['request']['id']})")
+    else:
+        ctx.finding(f"session {session}: {action} answered not ok: {answer.get('error')}")
+    return {"session": session, "id": done["request"]["id"], "ok": ok, "answer": answer, "file": done["file"]}
