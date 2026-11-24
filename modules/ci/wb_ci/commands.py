@@ -389,8 +389,9 @@ def _stand_ins(ctx: Context, work: Path, wanted: dict) -> list[str]:
 
 def _tools(ctx: Context, config, work: Path, revision: str) -> dict[str, str]:
     """Files a check reads from another project's tree (tools = ['<project>:<glob>']), exported at the commit the
-    run's set names for that project, into the folder beside the clone where its checkout would be, so the tools that
-    look for a sibling checkout find them there. Returns each project with the commit its files came from."""
+    run's set names for that project (a project with no line: its home checkout's HEAD), into the folder beside the
+    clone where its checkout would be, so the tools that look for a sibling checkout find them there. Returns each
+    project with the commit its files came from."""
     import fnmatch
     import io
     import tarfile
@@ -411,11 +412,14 @@ def _tools(ctx: Context, config, work: Path, revision: str) -> dict[str, str]:
     laid = {}
     for project, globs in sorted(wanted.items()):
         line = lines.get(project)
-        if not line:
-            raise EnvironmentProblem(f"a check reads {project}'s files (tools), but the set {revision[:12] or '(none)'} "
-                                     f"has no line for {project}")
         source = _project(ctx, project)["source"]
-        sha = _resolve(ctx, source, line["commit"])
+        if line:
+            sha = _resolve(ctx, source, line["commit"])
+        else:
+            # A project with no line (no remote, never landed) is read at its home checkout's HEAD, said aloud.
+            sha = _resolve(ctx, source, "HEAD")
+            ctx.log.info(f"tools: {project} has no line in the set {revision[:12] or '(none)'}; its home checkout's "
+                         f"HEAD {sha[:12]}")
         git_dir = str(_git_dir(ctx, source))
         names = _git(ctx, ["--git-dir", git_dir, "ls-tree", "-r", "--name-only", sha]).splitlines()
         chosen = sorted(n for n in names if any(fnmatch.fnmatchcase(n, g) for g in globs))

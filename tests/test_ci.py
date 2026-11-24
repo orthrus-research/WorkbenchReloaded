@@ -382,10 +382,10 @@ class Tools(unittest.TestCase):
         self.assertTrue((folder / "lab/run.properties").is_file())
         self.assertFalse((folder / "README").exists())
 
-    def test_a_project_the_set_has_no_line_for_is_refused(self):
-        from wb_core.module import EnvironmentProblem
-        with self.assertRaisesRegex(EnvironmentProblem, "has no line for other"):
-            self.lay_out(["other:tools/**"])
+    def test_a_project_with_no_line_is_read_at_its_home_head(self):
+        laid, folder = self.lay_out(["other:tools/**"])  # _project gives the same repository: no line for "other"
+        self.assertEqual(laid, {"other": git(self.cube, "rev-parse", "HEAD")})
+        self.assertEqual((folder / "tools/a.py").read_text(encoding="utf-8"), "a2")
 
     def test_no_tools_lays_out_nothing(self):
         self.assertEqual(self.lay_out([])[0], {})

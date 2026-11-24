@@ -109,7 +109,8 @@ is a job (steps are argument lists, or `{ name, run, cwd }` tables), `gate = [..
 each `[artifacts.<name>]` puts its `file` glob on the `check` that makes it. `gate` is a top-level key, so it goes
 above the first table. Unknown keys are refused, naming the file and the key; a check that runs on the host or the
 GPU cannot be in the gate. A check that reads another project's files declares them, `tools = ['<project>:<glob>']`:
-Workbench's `ci.run` exports the files that match at the commit the run's set names for that project, into the
+Workbench's `ci.run` exports the files that match at the commit the run's set names for that project (for a project
+with no line, its home checkout's HEAD, which the run prints), into the
 folder beside the clone where that project's checkout would be.
 
 A project.toml run that builds from a set is keyed on more than its tree. `ci.run` gives the engine the set's
