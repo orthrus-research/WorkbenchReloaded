@@ -226,6 +226,7 @@ Exercises the core: echo, sleep, fail, a zero-cost approval, and a call into ano
 | `selftest.copy` | container | Copy an input file to the output folder (path translation and input hashing). |
 | `selftest.sizes` | container | The byte sizes of several input files (a cached command over a list of paths). |
 | `selftest.checkout` | container | Name a checkout's HEAD commit (an input recorded by git, not by hashing its files). |
+| `selftest.count` | container | Count a folder's files itself (an input recorded by its path only, not hashed before the job). |
 | `selftest.chain` | container | Call selftest.echo through the daemon (as plans do). |
 | `selftest.host-echo` | host | Run on the Windows host under the GPU lease and report the turn token's presence. |
 | `selftest.quiet-echo` | container | Like echo, but a measurement: needs a quiet machine. |

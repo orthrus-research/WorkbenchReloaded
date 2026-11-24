@@ -195,7 +195,7 @@ summary = "Keep the old route's instances (folders with no instance.json, as the
 handler = "wb_lab.legacy:freeze"
 runs_on = ["host"]
 timeout = "6h"
-params.folder = { type = "path.in", summary = "a legacy instance, or the folder holding them (a checkout's .local/cubic-standalone)" }
+params.folder = { type = "path.in", digest = "none", summary = "a legacy instance, or the folder holding them (a checkout's .local/cubic-standalone); recorded by its path, since the freeze writes its own manifest of every file" }
 params.apply = { type = "bool", default = false, summary = "false: inventory only (counts, sizes, world keys, what would be imported), hashing nothing" }
 params.hash_limit = { type = "int", default = 256, min = 0, summary = "files larger than this many MiB are recorded by size and time only" }
 result.instances = { type = "list" }
@@ -209,7 +209,7 @@ summary = "Undo lab.freeze: clear the read-only mark from exactly the files a fr
 handler = "wb_lab.legacy:thaw"
 runs_on = ["host"]
 timeout = "1h"
-params.folder = { type = "path.in", summary = "a frozen legacy instance, or the folder holding them" }
+params.folder = { type = "path.in", digest = "none", summary = "a frozen legacy instance, or the folder holding them; recorded by its path, since the freeze's manifests say what was read" }
 result.instances = { type = "list" }
 
 [[command]]

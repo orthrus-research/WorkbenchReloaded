@@ -236,6 +236,7 @@ class Types(unittest.TestCase):
 
     def test_a_digest_is_how_a_path_input_is_recorded(self):
         self.assertEqual(types.normalise_spec("p", {"type": "path.in", "digest": "git"})["digest"], "git")
+        self.assertEqual(types.normalise_spec("p", {"type": "path.in", "digest": "none"})["digest"], "none")
         for bad in ({"type": "string", "digest": "git"}, {"type": "path.in", "digest": "mtime"}):
             with self.assertRaises(types.ValueError_):
                 types.normalise_spec("p", bad)
@@ -246,6 +247,9 @@ class Types(unittest.TestCase):
                             'deterministic = true\nparams.repo = { type = "path.in", digest = "git" }\n',
                             encoding="utf-8")
             with self.assertRaises(ManifestError):  # a cached command is cached by its inputs' content
+                parse(path, "m")
+            path.write_text(path.read_text(encoding="utf-8").replace('"git"', '"none"'), encoding="utf-8")
+            with self.assertRaises(ManifestError):
                 parse(path, "m")
 
 
@@ -587,6 +591,17 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(result.outcome, "ok", result.summary)
         self.assertEqual(result.data.head, head)
         self.assertEqual(result["inputs"][0]["head"], head)
+        self.assertNotIn("sha256", result["inputs"][0])
+
+    def test_an_undigested_input_is_recorded_by_its_path_only(self):
+        folder = self.d.data / "inventoried"
+        for name in ("a.txt", "b/c.txt"):
+            (folder / name).parent.mkdir(parents=True, exist_ok=True)
+            (folder / name).write_bytes(b"x")
+        result = self.c.submit("selftest.count", {"folder": str(folder)}).result(timeout=60)
+        self.assertEqual(result.outcome, "ok", result.summary)
+        self.assertEqual(result.data.files, 2)
+        self.assertEqual(result["inputs"][0]["digest"], "none")
         self.assertNotIn("sha256", result["inputs"][0])
 
     def test_chain_calls_through_the_api(self):

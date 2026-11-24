@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -72,6 +73,12 @@ def checkout(ctx: Context, repo: str):
     head = done.stdout.strip().splitlines()[-1]
     ctx.summary(f"HEAD is {head[:12]}")
     return {"head": head}
+
+
+def count(ctx: Context, folder: str):
+    files = sum(len(names) for _, _, names in os.walk(folder))
+    ctx.summary(f"{files} file(s)")
+    return {"files": files}
 
 
 def nest(ctx: Context, text: str, hold: float, inline: bool, sleep: float):

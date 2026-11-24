@@ -171,9 +171,9 @@ def parse(path: Path, package: str) -> Module:
         if not all(isinstance(a, str) and a.count(".") == 1 and all(a.split(".")) for a in aliases):
             raise ManifestError(f"{where}: aliases must be full names like module.command")
         params = _fields(f"{where}.params", raw.get("params"))
-        if raw.get("deterministic") and any(p.get("digest") == "git" for p in params.values()):
+        if raw.get("deterministic") and any(p.get("digest") in ("git", "none") for p in params.values()):
             raise ManifestError(f"{where}: a deterministic command is cached by its inputs' content, so none of its "
-                                "params may use digest = \"git\"")
+                                "params may use digest = \"git\" or \"none\"")
         module.commands.append(Command(
             module=name, name=raw["name"], summary=raw.get("summary", ""), handler=raw["handler"],
             version=str(raw.get("version", module.version)), deterministic=bool(raw.get("deterministic", False)),
