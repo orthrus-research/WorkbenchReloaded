@@ -38,6 +38,12 @@ JVM options (``jvm``), the window, view distances (``view``, the base's view key
 tour. Edited files are put back when the session ends. ``debug`` opens JDWP on loopback for the client, the server
 or both, writes an attach configuration (``attach/launch.json``, for VS Code) and marks the session as not evidence.
 
+The world is chosen by ``wb_lab.worlds``: by default the instance's own when its world key (seed, layout scale,
+definitions) and writer build are the session's, else the world store's settled world of that key and writer, else a
+fresh one; ``keep_world`` plays on a world set aside or written by another build, ``fresh_world`` on a fresh one
+(every world part removed link-first). An open or tour session whose server stopped by itself keeps its world in the
+store as the world of its key and writer; session.json's ``world`` says which world was played and what was kept.
+
 A stop sends the server ``stop`` and waits at least 180 s for its own exit before the tree is killed. On a failure
 the session names the decisive line (the launch's ``failures`` patterns first, then Workbench's), the crash report
 and the next command.
@@ -60,7 +66,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from wb_core import process as owned_processes
-from wb_core import retention
 from wb_core.module import Cancelled, Context, EnvironmentProblem, ParamError, sha256_file
 
 from . import channel as channels
@@ -68,6 +73,7 @@ from . import desktop as desktops
 from . import instance as instances
 from . import machine as machines
 from . import process as processes
+from . import worlds
 from .store import MARKER, Store
 
 SCHEMA = "wb.lab.session/1"
@@ -376,6 +382,8 @@ class Session:
             if not p.get("driver") or p["driver"] not in drivers:
                 raise ParamError(f"driver: name one the launch declares ({', '.join(sorted(drivers)) or 'none'})")
             machines.require_trusted(ctx, str(launch.get("project") or ""), f"driver {p['driver']}")
+        if p.get("fresh_world") and p.get("keep_world"):
+            raise ParamError("fresh_world and keep_world ask for two worlds: give one")
         if p.get("desktop") not in (None, *DESKTOPS):
             raise ParamError(f"desktop: {p['desktop']!r} is none of hidden or empty (the person's own desktop)")
         if p.get("desktop") == "hidden" and not desktops.available():
@@ -391,6 +399,7 @@ class Session:
             folder = self._fresh_copy(root, folder, receipt)
             receipt = json.loads((folder / instances.RECEIPT).read_text(encoding="utf-8"))
         self.instance, self.receipt, self.launch = folder, receipt, launch
+        self.worlds, self.world_id, self.world = worlds.store_of(root), worlds.identity(receipt, launch), None
         # The base's view keys and ready line as the receipt carries them (a receipt from before it did has none).
         self.base = receipt.get("session") or {}
         ctx.progress("session", msg=f"session {self.id}: {kind} on {folder.name}")
@@ -497,10 +506,11 @@ class Session:
             "inputs": {"port": self.port, "jvm": self.jvm, "view": dict(self.p.get("view") or {}),
                        "edits": [f"{side}/{file}:{key}={value}" for side, file, key, value in self.edits],
                        "window": self.window or None, "debug": self.p.get("debug") or None,
-                       "fresh_world": bool(self.p.get("fresh_world")), "limit": self.p.get("limit"),
+                       "fresh_world": bool(self.p.get("fresh_world")), "keep_world": bool(self.p.get("keep_world")),
+                       "limit": self.p.get("limit"),
                        "tour": {k: self.tour[k] for k in ("file", "sha256")} if self.tour else None,
                        "driver": self.p.get("driver") or None, "desktop": self.p.get("desktop") or None},
-            "debug": self.debug or None, "desktop": None,
+            "debug": self.debug or None, "desktop": None, "world": None,
             "channel": {"folder": str(self.channel), "requests": []},
             "commands": {}, "timings": self.timings, "exit": {}, "failure": None, "tour": None, "kept": None,
         }
@@ -529,12 +539,41 @@ class Session:
         for side, file, key, value in self.edits:
             path = folder / side / file
             self._edit(path, lambda text, k=key, v=value, n=path.name: set_key(text, k, v, n))
-        if self.p.get("fresh_world"):
-            world = folder / "server" / "world"
-            if world.exists() or retention.is_link(world):
-                retention.remove(world)  # unlink-first: a link in the world is removed, never what it points at
+        self.choose_world()
         for side in SIDES:
             (folder / side / "java-tmp").mkdir(parents=True, exist_ok=True)
+
+    # -- the world ----------------------------------------------------------------------------------------------------
+    def choose_world(self):
+        """The world this session plays, by its choice (wb_lab.worlds): the instance's own, the store's settled world
+        of its key and writer, or a fresh one (removed link-first)."""
+        choice = "fresh" if self.p.get("fresh_world") else "keep" if self.p.get("keep_world") else ""
+        self.world = worlds.choose(self.worlds, self.instance, self.world_id, choice, self.receipt.get("world"))
+        key = self.world["key"]
+        writer = self.world["writer"]
+        self.ctx.log.info(f"world     {self.world['from']}" + (f" {self.world['label']}" if self.world["label"] else "")
+                          + f" (seed {key['seed']}, scale {key['scale']}, definitions {key['definitions'][:12]}; "
+                          f"written by {writer['member'] or 'the members'} {writer['sha256'][:12]})")
+        if self.world["hint"]:
+            self.ctx.log.warning(f"world: {self.world['hint']}")
+        self.record["world"] = self.world
+        write_json(self.folder / SESSION, self.record)
+
+    def settle_world(self, outcome: str):
+        """After the stop: what the instance's world now is, kept in the store by an open or tour session whose server
+        stopped by itself."""
+        if self.world is None:
+            return
+        settled = outcome == "ended" and (self.record.get("stop") or {}).get("how") == "stop"
+        try:
+            self.world = worlds.after(self.worlds, self.instance, self.world_id, self.world, session=self.id,
+                                      settled=settled, keeps=self.p["kind"] in ("open", "tour"))
+        except OSError as error:
+            self.ctx.finding(f"the world of {self.instance.name} could not be kept: {error}")
+            return
+        if self.world.get("kept"):
+            self.ctx.log.info(f"world     kept as {self.world['kept']} for its key and writer")
+        self.record["world"] = self.world
 
     def put_back(self):
         for path, data in self.restore.items():
@@ -836,6 +875,7 @@ class Session:
                         + f"; then wb play --from {self.folder / 'launch.json'} --name {target} --debug=client"}
 
     def close(self, outcome: str):
+        self.settle_world(outcome)
         self.record.update(state=outcome, ended=now(), timings=self.timings)
         if self.relay is not None:
             self.relay.pump(post_next=False)  # an answer the fixture wrote as the game ended (a quit's)
@@ -856,8 +896,8 @@ def _position(view: dict) -> str:
 def run(ctx: Context, instance: str, kind: str = "open", tour: str | None = None, launch: str | None = None,
         copy: bool = True, driver: str = "", driver_root: str | None = None, port: int = 0, jvm: list | None = None,
         view: dict | None = None, edits: list | None = None, window: str = "", debug: str = "",
-        fresh_world: bool = False, limit: float = 4 * 3600, jdk: str | None = None, session: str = "",
-        no_rebuild: bool = False, desktop: str = ""):
+        fresh_world: bool = False, keep_world: bool = False, limit: float = 4 * 3600, jdk: str | None = None,
+        session: str = "", no_rebuild: bool = False, desktop: str = ""):
     params = {k: v for k, v in locals().items() if k != "ctx"}
     session_ = Session(ctx, params)
     session_.open()

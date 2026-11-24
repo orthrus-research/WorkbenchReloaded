@@ -25,6 +25,7 @@ from wb_lab import channel as channels  # noqa: E402
 from wb_lab import desktop as desktops  # noqa: E402
 from wb_lab import instance as instances  # noqa: E402
 from wb_lab import run as runs  # noqa: E402
+from wb_lab import worlds  # noqa: E402
 from wb_lab.store import Store  # noqa: E402
 
 BUILD = "26.0.2.1+1"
@@ -37,6 +38,10 @@ here = Path.cwd()
 (here / "argv.json").write_text(json.dumps(sys.argv))
 if side == "server":
     values = dict(l.split("=", 1) for l in Path("server.properties").read_text().splitlines() if "=" in l)
+    if os.environ.get("FAKE_WORLD"):  # the level the server loads, or generates: how many starts it has seen
+        level = here / "world" / "level.dat"
+        level.parent.mkdir(exist_ok=True)
+        level.write_text(str(int(level.read_text()) + 1 if level.exists() else 1))
     listener = socket.socket()
     listener.bind(("127.0.0.1", int(values["server-port"])))
     listener.listen(1)
@@ -110,7 +115,7 @@ class Sessions(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         os.environ["WB_TURN_TOKEN"] = "a-token"
         self.addCleanup(os.environ.pop, "WB_TURN_TOKEN", None)
-        for name in ("FAKE_CRASH", "FAKE_IGNORE_STOP", "FAKE_OPEN_SECONDS", "FAKE_FIXTURE"):
+        for name in ("FAKE_CRASH", "FAKE_IGNORE_STOP", "FAKE_OPEN_SECONDS", "FAKE_FIXTURE", "FAKE_WORLD"):
             self.addCleanup(os.environ.pop, name, None)
         self.system = "windows" if os.name == "nt" else "linux"
         self.store = self.root / "store"
@@ -456,10 +461,41 @@ class Sessions(unittest.TestCase):
         (world / "region" / "r.0.0.mca").write_bytes(b"region")
         os.chmod(world / "region" / "r.0.0.mca", 0o444)  # a read-only file is removed too
         make_link(world / "shared", outside)
-        ctx, _, _ = self.play(kind="tour", tour=str(self.tour), fresh_world=True)
+        ctx, _, record = self.play(kind="tour", tour=str(self.tour), fresh_world=True)
         self.assertEqual(ctx.outcome, "ok", ctx.findings)
         self.assertFalse(world.exists())
         self.assertEqual((outside / "kept.dat").read_bytes(), b"not the world's")
+        self.assertEqual((record["world"]["choice"], record["world"]["from"]), ("fresh", "generated"))
+        self.assertTrue(record["inputs"]["fresh_world"])
+
+    def level(self, instance: Path) -> str | None:
+        path = instance / "server" / "world" / "level.dat"
+        return path.read_text() if path.is_file() else None
+
+    def test_a_tours_settled_world_is_kept_and_a_measures_fresh_copy_starts_on_it(self):
+        os.environ["FAKE_WORLD"] = "1"
+        ctx, _, record = self.play(kind="tour", tour=str(self.tour))
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        world = record["world"]
+        self.assertEqual((world["choice"], world["from"]), ("default", "generated"))
+        self.assertEqual(world["kept"], worlds.label_of({"key": world["key"], "writer": world["writer"]}))
+        self.assertEqual(self.level(self.instance()), "1")
+        launch = self.root / "launch.json"
+        launch.write_bytes((self.instance() / "launch.json").read_bytes())
+        ctx, result, record = self.play(kind="measure", tour=str(self.tour), launch=str(launch), label="measure")
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        self.assertEqual((record["world"]["from"], record["world"]["label"]), ("restored", world["kept"]))
+        self.assertEqual(self.level(Path(result["instance"])), "2")  # the copy's server loaded the kept world
+        self.assertIsNone(record["world"]["kept"])  # a measure never writes the world store
+        # the instance plays on its own world; the store keeps the latest settled one
+        _, _, record = self.play(kind="tour", tour=str(self.tour), label="again")
+        self.assertEqual((record["world"]["from"], self.level(self.instance())), ("instance", "2"))
+        self.assertEqual(self.level(Path(self.play(kind="measure", tour=str(self.tour), launch=str(launch),
+                                                   label="measure-2")[1]["instance"])), "3")
+        _, _, record = self.play(kind="tour", tour=str(self.tour), fresh_world=True, label="fresh")
+        self.assertEqual((record["world"]["from"], self.level(self.instance())), ("generated", "1"))
+        with self.assertRaisesRegex(ParamError, "two worlds"):
+            self.play(kind="tour", tour=str(self.tour), fresh_world=True, keep_world=True, label="both")
 
     def test_a_driver_gets_the_token_lease_and_instance_under_the_configured_names(self):
         root = self.root / "project"

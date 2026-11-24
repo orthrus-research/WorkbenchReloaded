@@ -34,7 +34,9 @@ which reads the base's view keys and ready line from the receipt). A configure s
 ``[lab] trusted``; ``[lab] eula`` records the machine owner's acceptance of the Minecraft EULA. Instances are made
 from it by ``wb_lab.store``: read-only files (libraries, mods, natives) are hard links to one kept copy, everything
 the game writes is the instance's own, and each instance carries its ``instance.json``. A folder without one is never
-touched.
+touched. An instance of the same name built from another template is replaced only on request (``replace``, as wb
+play asks, or ``fresh``), and its played world is kept in the world store first (``wb_lab.worlds``), so the new
+instance can start on it when its world key and writer build are the same.
 """
 
 from __future__ import annotations
@@ -62,6 +64,7 @@ from . import assemble
 from . import machine as machines
 from . import process as processes
 from . import resolve as resolver
+from . import worlds
 from .store import MARKER, Layout, Store, StoreError, recipe_of, remove_tree
 
 SCHEMA = "wb.lab.instance/1"
@@ -72,8 +75,9 @@ RUNTIME_PARTS = ("installer", "universal", "prism")
 SIDES = ("server", "client")
 # Where the Cleanroom installer puts the universal JAR and its argument files, under the server folder.
 CLEANROOM_LIBRARY = "libraries/com/cleanroommc/cleanroom/{version}"
-# What the game only reads: shared by hard link between a template and its instances.
-LAYOUT = Layout(linkable_dirs=["server/libraries", "server/mods", "client/mods", "client/natives"],
+# What the game only reads: shared by hard link between a template and its instances; never a world's file.
+LAYOUT = Layout(world_parts=list(worlds.WORLD_PARTS),
+                linkable_dirs=["server/libraries", "server/mods", "client/mods", "client/natives"],
                 linkable_suffixes=[".jar"])
 PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 SPLICES = ("{jvm}", "{profile}", "{tweakers}")
@@ -641,9 +645,29 @@ def sourced(sources: Path, item: str, name: str | None = None) -> Path:
     return path
 
 
+def keep_world(ctx: Context, root: Path, instance: Path) -> str | None:
+    """Before an instance is replaced: its played world kept in the world store by the key and writer build its
+    marker records (wb_lab.worlds), so the instance that replaces it, or a fresh one, can be given it again."""
+    if not worlds.present(instance):
+        return None
+    world = worlds.marker(instance).get("world") or {}
+    if not world.get("played") or not world.get("key") or not (world.get("writer") or {}).get("sha256"):
+        ctx.log.warning(f"instance {instance.name}: its world names no world key or writer build, or was never "
+                        "played, so it goes with the instance")
+        return None
+    try:
+        kept = worlds.keep(worlds.store_of(root), instance, {"key": world["key"], "writer": world["writer"]},
+                           {"from": instance.name, "replaced": True, "session": world.get("session")})
+    except StoreError as error:
+        ctx.log.warning(f"instance {instance.name}: its world was not kept ({error})")
+        return None
+    ctx.log.info(f"instance {instance.name}: its world kept as {kept['label']} before it is replaced")
+    return kept["label"]
+
+
 def build(ctx: Context, launch: str, name: str, params: dict | None = None,
-          eula: bool = False, configure: str | None = None, fresh: bool = False, store: str = "",
-          sources: str = ""):
+          eula: bool = False, configure: str | None = None, fresh: bool = False, replace: bool = False,
+          store: str = "", sources: str = ""):
     if not NAME.match(name):
         raise ParamError(f"name: {name!r} is not a lowercase instance name (letters, digits, . _ -)")
     machine = Machine()
@@ -690,9 +714,10 @@ def build(ctx: Context, launch: str, name: str, params: dict | None = None,
             ctx.summary(f"instance {name} is already built from this launch (template {key}); fresh=true makes it "
                         "again")
             return {"instance": str(destination), "template": key, "reused": True, "built": False}
-        if not fresh:
+        if not (fresh or replace):
             raise ParamError(f"instance {name} was built from template {current}, not {key} (another launch or other "
-                             "parameters); fresh=true replaces it, or choose another name")
+                             "parameters); replace=true replaces it (its world kept), or choose another name")
+        keep_world(ctx, root, destination)
         store.remove(destination)
 
     built = False

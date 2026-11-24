@@ -1,6 +1,8 @@
 """wb play's own parts: the target it plays, the line that says which set revision it resolves at, and its
 key=value inputs. (The build and the session it runs are lab.build's and lab.run's, tested beside them.)"""
 
+import contextlib
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -34,6 +36,15 @@ class Play(unittest.TestCase):
             play.driver_root(doc, None, None)
         with self.assertRaisesRegex(ValueError, "bbbbbbbbbbbb checked out"):
             play.driver_root(doc, top, "b" * 40)
+
+    def test_the_world_flags_are_one_or_the_other(self):
+        from wb import cli
+        parser = cli.build_parser()
+        kept = parser.parse_args(["play", "riven", "--keep-world"])
+        self.assertEqual((kept.keep_world, kept.fresh_world), (True, False))
+        self.assertEqual(parser.parse_args(["play", "riven"]).keep_world, False)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            parser.parse_args(["play", "riven", "--keep-world", "--fresh-world"])
 
     def test_key_value_inputs_keep_their_types(self):
         self.assertEqual(play.pairs(["seed=42", "mode=fast", "on=true"], "--param"),

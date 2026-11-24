@@ -298,11 +298,30 @@ class Build(Fixture):
 
     def test_other_params_are_another_template_and_are_not_laid_over_an_instance(self):
         _, first = self.run_build("one")
-        with self.assertRaisesRegex(ParamError, "fresh=true replaces it"):
+        with self.assertRaisesRegex(ParamError, "replace=true replaces it"):
             self.run_build("one", params={"seed": 42})
         _, replaced = self.run_build("one", params={"seed": 42}, fresh=True)
         self.assertNotEqual(first["template"], replaced["template"])
         self.assertIn("level-seed=42", (self.root / "instances" / "one" / "server" / "server.properties").read_text())
+
+    def test_a_replaced_instances_played_world_is_kept_by_its_key_and_writer_first(self):
+        from wb_lab import worlds
+        self.run_build("one")
+        one = self.root / "instances" / "one"
+        (one / "server" / "world").mkdir()
+        (one / "server" / "world" / "level.dat").write_text("played", encoding="utf-8")
+        ident = worlds.identity(self.receipt(), self.launch_doc)
+        worlds.mark(one, {**ident, "played": True, "session": "s1"})
+        doc = json.loads(json.dumps(self.launch_doc))
+        doc["jvm"]["client"].append("-Ddraw.more=1")  # the same members and world, another launch file
+        _, replaced = self.run_build("one", launch=self.write_launch(doc, "changed.json"), replace=True)
+        self.assertFalse(replaced["reused"])
+        self.assertFalse(worlds.present(one))  # the new instance starts without it ...
+        found = worlds.kept(worlds.store_of(self.root / "instances"), ident["key"], ident["writer"]["sha256"])
+        self.assertEqual([r["label"] for r in found], [worlds.label_of(ident)])  # ... and the store has it
+        chosen = worlds.choose(worlds.store_of(self.root / "instances"), one,
+                               worlds.identity(self.receipt(), doc))
+        self.assertEqual((chosen["from"], (one / "server" / "world" / "level.dat").read_text()), ("restored", "played"))
 
     def test_the_eula_comes_from_the_machine(self):
         _, plain = self.run_build("plain")

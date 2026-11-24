@@ -140,7 +140,8 @@ params.name = { type = "string", pattern = "^[a-z0-9][a-z0-9._-]*$", summary = "
 params.params = { type = "object", default = {}, summary = "values over the launch's params (seed, and what the configure script reads), each of the type the launch declares for it; they are part of the template's key" }
 params.eula = { type = "bool", default = false, summary = "true writes eula.txt, recording that the requester accepts the Minecraft EULA for this instance; [lab] eula = true does so for every instance of the machine" }
 params.configure = { type = "path.in", optional = true, summary = "a Python file whose configure(instance, launch, params, placed) makes a launched product's own changes after the base, in place of the launch's configure script (launch/configure.py at the launch's commit); its bytes are part of the template's key; either is refused unless the launch's project is in [lab] trusted" }
-params.fresh = { type = "bool", default = false, summary = "make the instance again: replaces one of this name built from this or another template" }
+params.fresh = { type = "bool", default = false, summary = "make the instance again: replaces one of this name built from this or another template, its played world kept in the world store first" }
+params.replace = { type = "bool", default = false, summary = "replace an instance of this name built from another template (another launch file or other parameters), its played world kept in the world store first; false refuses it (wb play passes true)" }
 params.store = { type = "path.in", optional = true, summary = "a folder holding the launch's Store files (files/<sha256>/<name> and jdks/<build>/<system>) in place of the Store the launch file names, as a rental's bundle carries them; the launch file's bytes, and so the template's key, stay the same" }
 params.sources = { type = "path.in", optional = true, summary = "a folder holding the trees and blobs the launch file names by id (<id>/ for an overlay, <id>/<file> for a configure script), in place of exporting them from the projects' repositories, as a rental's bundle carries them" }
 result.instance = { type = "string" }
@@ -169,7 +170,8 @@ params.view = { type = "object", default = {}, summary = "view distances by the 
 params.edits = { type = "list", items = "string", default = [], summary = "the instance's own files changed for this session only: <server|client>/<file>:<key>=<value>" }
 params.window = { type = "string", default = "", summary = "the client's window, WIDTHxHEIGHT; empty: the base's" }
 params.debug = { type = "enum", values = ["", "client", "server", "both"], default = "", summary = "open JDWP on loopback for these sides, write attach/launch.json, and mark the session as not evidence" }
-params.fresh_world = { type = "bool", default = false, summary = "remove the instance's world before the server starts" }
+params.fresh_world = { type = "bool", default = false, summary = "play on a fresh world: every part of the instance's world is removed (link-first) before the server starts" }
+params.keep_world = { type = "bool", default = false, summary = "play on the world set aside, or the instance's own whatever build wrote it, or the world store's newest of the world key from any build; without it or fresh_world, the instance's world of the session's world key and writer build, else the store's, else a fresh one" }
 params.limit = { type = "duration", default = "4h", min = "10s", max = "12h", summary = "an open session or a driver is stopped after this" }
 params.jdk = { type = "path.in", optional = true, summary = "a JDK home to run on instead of the Store's; it must be the receipt's build" }
 params.session = { type = "string", default = "", summary = "the session's id; empty: a new one" }
