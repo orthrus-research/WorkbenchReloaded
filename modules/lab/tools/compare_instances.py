@@ -13,8 +13,9 @@ skipped). Nothing is started and neither instance is changed.
 Three comparisons, each printed with what differs and, for the differences this tool knows, why:
 
 - files: every file of both instance folders by relative path and SHA-256, a file found under another name with the
-  same bytes reported as renamed; and the client's libraries and client JAR by their path under the cache and their
-  SHA-1;
+  same bytes reported as renamed, and the server's properties compared again with the old route's fixed port written
+  where the new template has its default (a session writes its own port); and the client's libraries and client JAR by
+  their path under the cache and their SHA-1;
 - the server's and client's command lines token by token, after the old route's instance folder, runtime cache and
   JDK home are written as ``{instance}``, ``{cache}`` and ``{jdk:N}`` and path separators as ``/``; the class path is
   compared entry by entry, and where only its order differs, the JARs are searched for entries (classes, resources,
@@ -79,6 +80,23 @@ def compare_trees(old: dict[str, str], new: dict[str, str], same_folder: bool = 
             only_old.remove(path)
             only_new.remove(twins[0])
     return {"equal": equal, "differ": differ, "only_old": only_old, "only_new": only_new, "renamed": renamed}
+
+
+PROPERTIES = "server/server.properties"
+
+
+def same_but_port(old: Path, new: Path, files: dict, manifest: dict, receipt: dict) -> list[str]:
+    """The server's properties, when they differ only by the port: the old route fixed one per instance, the new
+    template has its default and a session writes its own. Such a file moves from ``differ`` to the returned list."""
+    if PROPERTIES not in files["differ"] or not manifest.get("port"):
+        return []
+    default = (receipt.get("session") or {}).get("default_port")
+    text = (new / PROPERTIES).read_bytes().replace(f"server-port={default}".encode(),
+                                                   f"server-port={manifest['port']}".encode(), 1)
+    if hashlib.sha256(text).hexdigest() != sha256(old / PROPERTIES):
+        return []
+    files["differ"].remove(PROPERTIES)
+    return [PROPERTIES]
 
 
 def old_commands(old: Path, manifest: dict, tools: Path) -> dict[str, list[str]]:
@@ -199,6 +217,7 @@ def main(argv=None) -> int:
     files = compare_trees(tree(args.old), tree(args.new))
     files["expected"] = {p: EXPECTED[p] for p in files["only_old"] + files["only_new"] + files["differ"]
                          if p in EXPECTED}
+    files["port"] = same_but_port(args.old, args.new, files, manifest, receipt)
     report["files"] = files
 
     # the client runtime in the caches: by path under the cache and SHA-1
@@ -242,13 +261,17 @@ def main(argv=None) -> int:
 
 def render(report: dict) -> str:
     files, cache = report["files"], report["cache"]
-    lines = [f"files: {len(files['equal'])} equal, {len(files['differ'])} differ, {len(files['renamed'])} renamed, "
+    lines = [f"files: {len(files['equal'])} equal, {len(files.get('port') or [])} equal but the port, "
+             f"{len(files['differ'])} differ, {len(files['renamed'])} renamed, "
              f"{len(files['only_old'])} only in the old instance, {len(files['only_new'])} only in the new one"]
     for key, label in (("differ", "differs"), ("only_old", "only old"), ("only_new", "only new")):
         for path in files[key]:
             lines.append(f"  {label}: {path}" + (f" -- {files['expected'][path]}" if path in files["expected"] else ""))
     for item in files["renamed"]:
         lines.append(f"  renamed: {item['old']} -> {item['new']} (same SHA-256 {item['sha256'][:12]})")
+    for path in files.get("port") or []:
+        lines.append(f"  equal with the old route's port written in: {path} (the template keeps its default port; a "
+                     "session writes its own)")
     lines.append(f"cache: {cache['equal']} client files equal by path and SHA-1, {len(cache['differ'])} differ, "
                  f"{len(cache['renamed'])} at another path, {len(cache['only_old'])} only old, "
                  f"{len(cache['only_new'])} only new")

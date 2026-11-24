@@ -83,13 +83,13 @@ class Base(unittest.TestCase):
     def tearDown(self):
         self.folder.cleanup()
 
-    def run_resolve(self, table=None, set_doc=None, index="found", extras=None):
+    def run_resolve(self, table=None, set_doc=None, index="found", extras=None, objects=None, warn=None):
         index = artifacts.find(self.store, "game", TREE) if index == "found" else index
         return launch.resolve(product="game", commit=COMMIT, tree=TREE, launch="default",
                               table=launch.definition({"launch": {"default": table or self.table}}, "default"),
                               set_doc=set_doc or self.set_doc, revision="9" * 40, store=self.store,
                               product_artifacts={"mod": {"check": "build", "file": "build/libs/game-*.jar"}},
-                              product_index=index, extras=extras)
+                              product_index=index, extras=extras, objects=objects, warn=warn)
 
 
 class Members(Base):
@@ -228,6 +228,133 @@ class Extras(Base):
             self.run_resolve(extras=lambda project, commit: {"launch": {"member": {"mods": []}}})
 
 
+class Keys(unittest.TestCase):
+    def test_the_new_keys_are_checked_and_unknown_ones_refused(self):
+        member = {"members": ["a:mod@both"]}
+        for extra, pattern in [({"base": "cubature"}, r"base is '<project>:<name>'"),
+                               ({"overlay": "../up"}, r"overlay is a folder under launch/"),
+                               ({"configure": "tools/configure.py"}, r"configure is a Python file under launch/"),
+                               ({"configure": "launch/../x.py"}, r"configure is a Python file under launch/"),
+                               ({"params": {"seed": [1]}}, r"a default is a bool, int, float or string"),
+                               ({"params": {"scale": {"type": "real"}}}, r"type is one of int, float, bool, string"),
+                               ({"params": {"scale": {"type": "float", "default": "x"}}}, r"param scale is float"),
+                               ({"params": {"scale": {"type": "float", "default": 9, "max": 8}}}, r"\.\.8, not 9"),
+                               ({"params": {"mode": {"type": "string", "choices": ["A"], "default": "B"}}},
+                                r"param mode is one of A, not 'B'"),
+                               ({"params": {"mode": {"type": "string", "units": "m"}}}, r"unknown key units"),
+                               ({"tour": {"captured": 1}}, r"tour.captured is str"),
+                               ({"tour": {"capture": "x"}}, r"unknown key tour.capture"),
+                               ({"tour": {"setup": "time set 6000"}}, r"tour.setup is a list of strings"),
+                               ({"drivers": {"pipeline": {"run": ["x"]}}}, r"unknown key drivers.pipeline.run"),
+                               ({"drivers": {"pipeline": {"command": []}}}, r"command is the driver's command line")]:
+            with self.subTest(extra=extra), self.assertRaisesRegex(launch.LaunchError, pattern):
+                launch.definition({"launch": {"default": {**member, **extra}}}, "default")
+        table = {**member, "base": "cube:standalone", "overlay": "default", "configure": "launch/configure.py",
+                 "params": {"seed": 1, "scale": {"type": "float", "default": 1, "min": 0.5, "max": 8},
+                            "threads": {"type": "int", "min": -1, "max": 16}},
+                 "tour": {"captured": "view captured", "spectator": True, "pause": 5},
+                 "drivers": {"pipeline": {"command": ["{python}", "{root}/tools/pipeline.py"], "cwd": "{root}"}}}
+        self.assertIs(launch.definition({"launch": {"default": table}}, "default"), table)
+        self.assertEqual(launch.params_of(table, "launch.default"),
+                         ({"seed": 1, "scale": 1.0}, {"seed": {"type": "int"},
+                                                      "scale": {"type": "float", "min": 0.5, "max": 8},
+                                                      "threads": {"type": "int", "min": -1, "max": 16}}))
+
+    def test_a_base_is_no_launch_and_its_keys_are_checked(self):
+        standalone = {"installer": ["{java}"], "server": ["{java}"], "client": ["{java}"], "overlay": "standalone"}
+        with self.assertRaisesRegex(launch.LaunchError,
+                                    r"\[launch.standalone\] is a base.*base = '<project>:standalone'"):
+            launch.definition({"launch": {"standalone": standalone}}, "standalone")
+        self.assertIs(launch.base_definition(standalone, "base"), standalone)
+        for extra, pattern in [({"members": ["a:mod@both"]}, "it is a launch, not a base"),
+                               ({"mods": []}, "unknown key mods"),
+                               ({"server": "java"}, "server is a command line"),
+                               ({"views": {"vertical": ["cubicchunks.cfg:I:x"]}}, "views is a table"),
+                               ({"jvm_profile": {"heap": 8}}, "jvm_profile is a table"),
+                               ({"files": {"world": {}}}, "files is a table of both, server and client"),
+                               ({"overlay": "/abs"}, "overlay is a folder under launch/")]:
+            with self.subTest(extra=extra), self.assertRaisesRegex(launch.LaunchError, pattern):
+                launch.base_definition({**standalone, **extra}, "base")
+
+    def test_the_interim_base_is_a_base_and_the_tour_keys_are_lab_runs(self):
+        from wb_lab import bases, run
+        for name, table in bases.INTERIM_BASES.items():
+            launch.base_definition(table, name)
+        self.assertEqual(set(launch.TOUR_KEYS), set(run.TOUR_DEFAULTS))
+
+
+class Bases(Base):
+    """The base comes from the base project's project.toml at the commit the set names for it, with its overlay's
+    tree id; the product's launch/ tree, overlay and configure script at its own commit."""
+
+    def objects(self, found):
+        seen = []
+
+        def objects(project, commit, path):
+            seen.append((project, commit, path))
+            return found.get((project, path))
+        return objects, seen
+
+    def test_the_base_is_read_at_the_line_with_its_overlay_tree(self):
+        standalone = {"installer": ["{java}"], "server": ["{java}"], "client": ["{java}"], "player": "Lab",
+                      "overlay": "standalone", "views": {"horizontal": ["server/server.properties:view-distance"]}}
+        read = []
+
+        def extras(project, commit):
+            read.append((project, commit))
+            return {"launch": {"standalone": standalone, "member": {"failures": ["cube refused: .*"]}}} \
+                if project == "cube" else None
+
+        objects, seen = self.objects({("cube", "launch/standalone"): ("tree", "1" * 40),
+                                      ("game", "launch"): ("tree", "2" * 40),
+                                      ("game", "launch/configure.py"): ("blob", "3" * 40)})
+        table = {**self.table, "base": "cube:standalone", "configure": "launch/configure.py"}
+        doc = self.run_resolve(table=table, extras=extras, objects=objects)
+        self.assertEqual(doc["base"], {"name": "cube:standalone", "project": "cube", "commit": "c" * 40,
+                                       "source": "project.toml", "definition": standalone,
+                                       "overlay": {"path": "launch/standalone", "tree": "1" * 40}})
+        self.assertIn(("cube", "c" * 40, "launch/standalone"), seen)
+        self.assertEqual(doc["definition"], {"commit": COMMIT, "launch_tree": "2" * 40})
+        self.assertEqual(doc["configure"], {"project": "game", "commit": COMMIT, "path": "launch/configure.py",
+                                            "blob": "3" * 40})
+        self.assertEqual(doc["failures"], ["cube refused: .*"])  # the base project's [launch.member] still joins
+
+    def test_a_hold_for_the_product_moves_the_base_with_it(self):
+        set_doc = json.loads(json.dumps(self.set_doc))
+        set_doc["holds"]["cube@game"] = {"commit": "7" * 40, "reason": "an older world"}
+        standalone = {"installer": ["x"], "server": ["x"], "client": ["x"]}
+        doc = self.run_resolve(table={**self.table, "base": "cube:standalone"}, set_doc=set_doc,
+                               extras=lambda project, commit: {"launch": {"standalone": standalone}},
+                               objects=lambda *a: None)
+        self.assertEqual((doc["base"]["commit"], doc["base"]["overlay"]), ("7" * 40, None))
+
+    def test_a_base_project_without_the_table_falls_back_to_the_interim_copy_with_a_warning(self):
+        from wb_lab import bases
+        bases.INTERIM_BASES["cube:standalone"] = {"installer": ["x"], "server": ["x"], "client": ["x"]}
+        self.addCleanup(bases.INTERIM_BASES.pop, "cube:standalone", None)
+        warned = []
+        doc = self.run_resolve(table={**self.table, "base": "cube:standalone"}, extras=lambda p, c: None,
+                               objects=lambda *a: None, warn=warned.append)
+        self.assertEqual((doc["base"]["source"], doc["base"]["commit"]), ("interim", "c" * 40))
+        self.assertEqual(doc["base"]["definition"], bases.INTERIM_BASES["cube:standalone"])
+        self.assertRegex(warned[0], r"^INTERIM BASE: cube at cccccccccccc has no \[launch.standalone\]")
+        with self.assertRaisesRegex(launch.LaunchError, r"cube at cccccccccccc has no \[launch.other\]"):
+            self.run_resolve(table={**self.table, "base": "cube:other"}, extras=lambda p, c: None,
+                             objects=lambda *a: None)
+
+    def test_a_missing_overlay_or_script_is_refused(self):
+        standalone = {"installer": ["x"], "server": ["x"], "client": ["x"], "overlay": "standalone"}
+        with self.assertRaisesRegex(launch.LaunchError, r"cube has no folder launch/standalone at cccccccccccc"):
+            self.run_resolve(table={**self.table, "base": "cube:standalone"},
+                             extras=lambda p, c: {"launch": {"standalone": standalone}}, objects=lambda *a: None)
+        with self.assertRaisesRegex(launch.LaunchError, r"game has no file launch/configure.py"):
+            self.run_resolve(table={**self.table, "configure": "launch/configure.py"}, objects=lambda *a: None)
+        with self.assertRaisesRegex(launch.LaunchError, r"\[launch.nope\]\): unknown key mods"):
+            self.run_resolve(table={**self.table, "base": "cube:nope"},
+                             extras=lambda p, c: {"launch": {"nope": {**standalone, "mods": []}}},
+                             objects=lambda *a: ("tree", "1" * 40))
+
+
 class FakeWorkspace:
     def __init__(self, store, home, projects):
         self._store, self._home, self._projects = store, home, projects
@@ -307,6 +434,40 @@ class Command(Base):
     def test_an_unknown_launch_name_is_refused(self):
         with self.assertRaisesRegex(ParamError, r"no \[launch.capture\]"):
             launch.resolve_command(self.ctx, str(self.product), launch="capture")
+
+    def test_the_base_and_the_products_launch_folder_are_read_from_the_repositories(self):
+        cube = self.workspace.projects()["cube"].repo
+        (cube / "project.toml").write_text(
+            'schema = 1\n\n[project]\nname = "cube"\n\n[launch.standalone]\ninstaller = ["{java}"]\n'
+            'server = ["{java}"]\nclient = ["{java}"]\noverlay = "standalone"\n', encoding="utf-8")
+        (cube / "launch" / "standalone" / "server").mkdir(parents=True)
+        (cube / "launch" / "standalone" / "server" / "server.properties").write_text("level-seed={seed}\n",
+                                                                                     encoding="utf-8")
+        git(cube, "add", "-A")
+        git(cube, "commit", "-q", "-m", "standalone")
+        self.set_doc["projects"]["cube"]["commit"] = git(cube, "rev-parse", "HEAD")
+        (self.home / "set.json").write_text(json.dumps(self.set_doc), encoding="utf-8")
+        git(self.home, "commit", "-q", "-am", "cube's standalone")
+        self.revision = git(self.home, "rev-parse", "HEAD")
+        text = (self.product / "project.toml").read_text(encoding="utf-8")
+        (self.product / "project.toml").write_text(
+            text + 'base = "cube:standalone"\nconfigure = "launch/configure.py"\n', encoding="utf-8")
+        (self.product / "launch").mkdir()
+        (self.product / "launch" / "configure.py").write_text("def configure(**_):\n    pass\n", encoding="utf-8")
+        git(self.product, "add", "-A")
+        git(self.product, "commit", "-q", "-m", "launch folder")
+        commit, tree = git(self.product, "rev-parse", "HEAD"), git(self.product, "rev-parse", "HEAD^{tree}")
+        artifacts.record(self.store, "game", tree, commit, {"game-1.0.jar": {
+            "sha256": self.digests["game-1.0.jar"], "job": "build", "run": "r", "from": "build/libs/game-1.0.jar"}})
+        result = launch.resolve_command(self.ctx, str(self.product))
+        doc = json.loads(Path(result["launch"]).read_text(encoding="utf-8"))
+        line = self.set_doc["projects"]["cube"]["commit"]
+        self.assertEqual((doc["base"]["commit"], doc["base"]["source"]), (line, "project.toml"))
+        self.assertEqual(doc["base"]["overlay"]["tree"], git(cube, "rev-parse", f"{line}:launch/standalone"))
+        self.assertEqual(doc["definition"], {"commit": commit, "launch_tree": git(self.product, "rev-parse",
+                                                                                   "HEAD:launch")})
+        self.assertEqual(doc["configure"]["blob"], git(self.product, "rev-parse", "HEAD:launch/configure.py"))
+        self.assertEqual(result["base"], {"name": "cube:standalone", "commit": line, "source": "project.toml"})
 
 
 if __name__ == "__main__":

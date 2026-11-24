@@ -1,14 +1,18 @@
-"""The bases a launch builds on, kept here as data until the projects that own them carry them.
+"""Workbench's interim copy of Cubature's standalone base: the fallback for a set whose Cubature line has no
+``[launch.standalone]`` yet.
 
 A base is what every instance of a runtime starts from before its members are placed: how the server is installed,
 the files the server and client folders get, the JVM profile, the player, and the command lines that start each side.
-``lab.build`` takes one by name (its ``base``) and fills it in; a launched product's own changes are never a base's,
-they are the configure hook its launch names.
+A launch names one with ``base = '<project>:<name>'``, and lab.resolve reads that project's ``[launch.<name>]`` (with
+its ``launch/`` overlay folder) at the commit the set names for it, into launch.json. A launched product's own changes
+are never a base's: they are its configure script.
 
-The one base here, ``cubature:standalone``, is an interim copy of what Cubature's standalone world writes today
-(``tools/cubic_standalone.py``, with the JVM profile and client options of ``tools/lab_profiles.py`` and the command
-lines of ``tools/lab_process.py``). It moves into Cubature's ``project.toml`` as ``[launch.standalone]``, where a
-launch names it with ``base = 'cubature:standalone'``; these values go with it and this table is then deleted.
+The one base here, ``cubature:standalone``, is what Cubature's standalone world writes (``tools/cubic_standalone.py``,
+with the JVM profile and client options of ``tools/lab_profiles.py`` and the command lines of ``tools/lab_process.py``),
+which Cubature's project.toml now carries as ``[launch.standalone]``. lab.resolve takes it from here only when the
+base project's commit has no such table, and says so as a warning; this table is deleted once every set line in use
+carries it. Its keys are a base's (``wb_lab.resolve.BASE_KEYS``), with the files as data where Cubature's are an
+overlay folder.
 
 Placeholders, filled by the builder:
 

@@ -13,7 +13,9 @@ Kinds:
   launch file the request names.
 - ``driver``: the launch's declared driver (``drivers.<name>`` in the launch file), a trusted project's program
   that starts its own JVMs from the instance; it gets the turn token, the lease, the instance.json path, the session
-  folder and the launch file in the variables ``[lab] env`` adds to Workbench's own.
+  folder and the launch file in the variables ``[lab] env`` adds to Workbench's own. Its command line may name
+  ``{python}``, ``{root}``, ``{instance}``, ``{instance_json}``, ``{session}`` (the folder), ``{session_id}`` and
+  ``{launch}``.
 
 Before anything starts the session checks the instance against its receipt: every file under ``{cache}`` and
 ``{jdk:N}`` and every placed member by SHA-256. The JDK is found by the build the receipt names (the Store's, or the
@@ -352,7 +354,9 @@ class Session:
             folder = self._fresh_copy(root, folder, receipt)
             receipt = json.loads((folder / instances.RECEIPT).read_text(encoding="utf-8"))
         self.instance, self.receipt, self.launch = folder, receipt, launch
-        self.base = INTERIM_BASES.get(receipt.get("base") or "", {})
+        # The base's view keys and ready line as the receipt carries them; a receipt from before it did, the interim's.
+        session_part = receipt.get("session") or {}
+        self.base = session_part if "views" in session_part else INTERIM_BASES.get(receipt.get("base") or "", {})
         ctx.progress("session", msg=f"session {self.id}: {kind} on {folder.name}")
         ctx.log.info(f"session {self.id}  kind {kind}")
         ctx.log.info(f"launch    {launch.get('project')}:{launch.get('launch')} at {str(launch.get('commit'))[:12]} "
@@ -676,6 +680,7 @@ class Session:
         if not isinstance(command, list) or not command:
             raise ParamError(f"driver {self.p['driver']}: the launch gives it no command (a list)")
         values = {"python": sys.executable, "instance": str(self.instance), "session": str(self.folder),
+                  "session_id": self.id,
                   "launch": str(self.folder / "launch.json"), "instance_json": str(self.instance / instances.RECEIPT),
                   "root": str(self.p.get("driver_root") or self.instance)}
         argv = [instances._fill_known(str(item), values) for item in command]

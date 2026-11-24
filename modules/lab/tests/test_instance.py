@@ -8,11 +8,13 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
@@ -62,7 +64,7 @@ OBJECT = b"a texture"
 INDEX = json.dumps({"objects": {"textures/a.png": {"hash": sha1(OBJECT), "size": len(OBJECT)}}}).encode()
 
 
-class Build(unittest.TestCase):
+class Fixture(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="wb-build-"))
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
@@ -157,6 +159,8 @@ class Build(unittest.TestCase):
     def receipt(self, name: str = "one") -> dict:
         return json.loads((self.root / "instances" / name / "instance.json").read_text(encoding="utf-8"))
 
+
+class Build(Fixture):
     # -- content ------------------------------------------------------------------------------------------------------
 
     def test_members_are_placed_by_side_under_their_place_or_file(self):
@@ -341,6 +345,113 @@ class Build(unittest.TestCase):
         doc["runtime"]["jdk"] = "26.0.9+9"
         with self.assertRaisesRegex(EnvironmentProblem, "wb run store.platform"):
             self.run_build(launch=self.write_launch(doc, "jdk.json"))
+
+
+def git(cwd, *args):
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c",
+                           "core.autocrlf=false", *args], cwd=cwd, check=True, capture_output=True,
+                          text=True).stdout.strip()
+
+
+class ProjectBase(Fixture):
+    """A launch whose base is a project's [launch.<name>] with an overlay folder, and whose product names its own
+    configure script: both exported from the repositories by the ids the launch file names."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = Path(tempfile.mkdtemp(prefix="wb-base-repo-"))
+        self.addCleanup(shutil.rmtree, self.repo, ignore_errors=True)
+        git(self.repo, "init", "-q", "-b", "main")
+        overlay = self.repo / "launch" / "standalone"
+        for relative, text in (("both/config/cubicchunks.cfg", "general {\n    I:defaultMinHeight=-128\n}\n"),
+                               ("server/server.properties",
+                                "server-port={port}\nlevel-seed={seed}\nview-distance=12\n"),
+                               ("server/ops.json", '[{"uuid": "{player_uuid}", "name": "{player}"}]\n'),
+                               ("client/options.txt", "renderDistance:12\n")):
+            (overlay / relative).parent.mkdir(parents=True, exist_ok=True)
+            (overlay / relative).write_bytes(text.encode("utf-8"))
+        (overlay / "client" / "icon.bin").write_bytes(b"\xff\xfe\x00raw")
+        (self.repo / "launch" / "configure.py").write_bytes(
+            b"def configure(instance, launch, params, placed):\n"
+            b"    path = instance / 'server' / 'server.properties'\n"
+            b"    path.write_text(path.read_text() + 'level-type=game\\n')\n"
+            b"    return {'scale': params['scale']}\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "standalone")
+        self.commit = git(self.repo, "rev-parse", "HEAD")
+        definition = {k: v for k, v in json.loads(json.dumps(bases.INTERIM_BASES["test:standalone"])).items()
+                      if k != "files"}
+        definition.update(overlay="standalone", player="Lab", ready="Ready now")
+        self.launch_doc["base"] = {"name": "game:standalone", "project": "game", "commit": self.commit,
+                                   "source": "project.toml", "definition": definition,
+                                   "overlay": {"path": "launch/standalone",
+                                               "tree": git(self.repo, "rev-parse", "HEAD:launch/standalone")}}
+        self.launch_doc["configure"] = {"project": "game", "commit": self.commit, "path": "launch/configure.py",
+                                        "blob": git(self.repo, "rev-parse", "HEAD:launch/configure.py")}
+        self.launch_doc["params"] = {"seed": 8675309, "scale": 1.0}
+        self.launch_doc["param_types"] = {"seed": {"type": "int"}, "scale": {"type": "float", "min": 0.5, "max": 8}}
+        self.launch = self.write_launch(self.launch_doc, "based.json")
+        patch = mock.patch.object(instance.Machine, "repository", lambda machine, project: self.repo)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def run_build(self, name: str = "one", launch: Path | None = None, **params):
+        params.setdefault("base", "")
+        return super().run_build(name, launch, **params)
+
+    def test_the_base_and_its_overlay_come_from_the_launch_file(self):
+        ctx, result = self.run_build()
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        folder = Path(result["instance"])
+        server = (folder / "server" / "server.properties").read_bytes()
+        newline = os.linesep.encode()
+        self.assertEqual(server, b"server-port=25565" + newline + b"level-seed=8675309" + newline + b"view-distance=12"
+                         + newline + b"level-type=game" + newline)  # filled, the platform's line ends, then configured
+        self.assertIn(instance.offline_uuid("Lab"), (folder / "server" / "ops.json").read_text())
+        for side in ("server", "client"):  # both/ goes to each side
+            self.assertTrue((folder / side / "config" / "cubicchunks.cfg").is_file())
+        self.assertFalse((folder / "server" / "options.txt").exists())
+        self.assertEqual((folder / "client" / "icon.bin").read_bytes(), b"\xff\xfe\x00raw")  # not text: as it is
+        receipt = self.receipt()
+        self.assertEqual(receipt["base"], "game:standalone")
+        self.assertEqual(receipt["base_source"], {"name": "game:standalone", "project": "game", "commit": self.commit,
+                                                  "source": "project.toml",
+                                                  "overlay": self.launch_doc["base"]["overlay"]["tree"]})
+        self.assertEqual((receipt["session"]["views"], receipt["session"]["ready"]),
+                         (self.launch_doc["base"]["definition"]["views"], "Ready now"))
+        self.assertEqual(receipt["player"]["name"], "Lab")
+        self.assertEqual(receipt["configure"]["path"], "launch/configure.py")
+        self.assertEqual(receipt["configure"]["record"], {"scale": 1.0})
+
+    def test_the_launchs_configure_script_needs_a_trusted_project(self):
+        self.lab["trusted"] = []
+        with self.assertRaisesRegex(ParamError, r"configure script launch/configure.py is game's code"):
+            self.run_build()
+        self.assertFalse((self.root / "instances").exists())
+
+    def test_params_are_checked_against_the_launchs_types(self):
+        with self.assertRaisesRegex(ParamError, r"the launch declares no param seeds \(it declares: scale, seed\)"):
+            self.run_build(params={"seeds": 1})
+        with self.assertRaisesRegex(ParamError, r"param seed is int, not 'x'"):
+            self.run_build(params={"seed": "x"})
+        with self.assertRaisesRegex(ParamError, r"param scale is 0.5..8, not 9.0"):
+            self.run_build(params={"scale": 9})
+        ctx, _ = self.run_build(params={"scale": 2})  # an int is a float too
+        self.assertEqual(self.receipt()["configure"]["record"], {"scale": 2.0})
+
+    def test_a_launch_file_without_a_base_takes_the_interim_copy_and_says_so(self):
+        doc = json.loads(json.dumps(self.launch_doc))
+        for key in ("base", "configure", "param_types"):
+            del doc[key]
+        events = []
+        ctx = Context({"job": "direct", "command": "lab.build", "module": "lab", "work": str(self.root / "work"),
+                       "out": str(self.root / "out" / "old"), "module_config": self.config, "lab": self.lab},
+                      events.append)
+        with mock.patch.dict(bases.INTERIM_BASES, {"cubature:standalone": bases.INTERIM_BASES["test:standalone"]}):
+            instance.build(ctx, str(self.write_launch(doc, "old.json")), "old")
+        warnings = [e["msg"] for e in events if e.get("kind") == "log" and e.get("level") == "WARNING"]
+        self.assertTrue(any(w.startswith("INTERIM BASE: the launch file names no base") for w in warnings), warnings)
+        self.assertEqual(self.receipt("old")["base_source"], {"name": "cubature:standalone", "source": "interim"})
 
 
 if __name__ == "__main__":

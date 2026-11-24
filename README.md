@@ -206,24 +206,29 @@ projects pin different commits of what they share (the profile's `agree`) is rep
 `lab.ensure`.
 
 A project that is launched defines its launches in its own `project.toml` (`[launch.<name>]`: members as
-`project:artifact@side` or `third@side`, the runtime, params, JVM arguments and, where a file's name matters, the
-name a member is placed under), and a member may add its own
-switches (`[launch.member]`). `lab.resolve folder=<worktree>` resolves one once into `launch.json`: every member by
-SHA-256 from the worktree's set revision (a line, a hold or a third entry), the project itself from the Store by the
-tree CI built, with the mod ids each declares. A member the set or the Store lacks, or two builds of one mod id, is
+`project:artifact@side` or `third@side`, the runtime, typed params, JVM arguments, where a file's name matters the
+name a member is placed under, the base it starts from, its configure script under `launch/`, the tour rules and its
+drivers), and a member may add its own switches (`[launch.member]`). A base is another project's table without members
+(`base = "cubature:standalone"` names Cubature's `[launch.standalone]`: the installer, the command lines, the player,
+the JVM profile, the view keys and an overlay folder under `launch/`). `lab.resolve folder=<worktree>` resolves one
+once into `launch.json`: every member by SHA-256 from the worktree's set revision (a line, a hold or a third entry),
+the project itself from the Store by the tree CI built, with the mod ids each declares; the base's table at the
+commit the set names for its project with its overlay folder's tree id, and the product's configure script and
+`launch/` tree at its own commit. A base project whose commit has no such table yet gets Workbench's interim copy
+(`wb_lab/bases.py`), with a warning. A member the set or the Store lacks, or two builds of one mod id, is
 refused before anything is written. Once the set's platform names the runtime's own files
 (`platform.cleanroom.{installer,universal,prism}`), the launch file carries them too, in `runtime.files`.
 
 `lab.build launch=<launch.json> name=<name>` builds an instance from that file and nothing else: the server by the
 runtime's installer on the launch's exact JDK from the Store, the client from the runtime's launcher instance (as
 `lab.assemble` does), each runtime file by SHA-256 from the Store, a candidate folder or an allowed host; every member's
-Store file hashed again and placed by side; the base's files and JVM profile (`base`, for now the interim
-`cubature:standalone` in `wb_lab/bases.py`), then the configure hook the request names for the product's own changes
-(`examples/launch/configure_riven.py` shows one). Its `instance.json` names every file by SHA-256 relative to
+Store file hashed again and placed by side; the base's files, JVM profile and overlay folder (exported from the
+base project's repository by the tree id the launch file names), then the product's configure script for its own
+changes. Its `instance.json` names every file by SHA-256 relative to
 `{instance}`, `{cache}` and `{jdk:N}`, with the launch file's SHA-256 and the server's and client's command lines. One
 template is built per launch file, base and parameters, and each further instance is hard-linked from it in under a
 second. `modules/lab/tools/compare_instances.py` compares such an instance with one the old route prepared, file by
-file and command line by command line. A configure hook runs only for a project the machine's `[lab] trusted` names,
+file and command line by command line. A configure script runs only for a project the machine's `[lab] trusted` names,
 and `eula.txt` is written only where `[lab] eula = true` (or the request) accepts the Minecraft EULA. The server's
 port is not part of a template: `{port}` stays in the client's command line for the session to fill.
 

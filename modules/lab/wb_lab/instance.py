@@ -13,30 +13,40 @@ resolves nothing again. It builds in stages:
    assets by SHA-1 into the shared ``runtime_cache``, natives unpacked into the client folder.
 2. content: each member's Store file is hashed again and refused unless it is the launch's bytes, then placed in
    ``server/mods`` and/or ``client/mods`` (by its side) under its ``place`` or its file name.
-3. base: the files, JVM profile, player and command lines of the base the request names (``wb_lab.bases``), then the
-   configure hook the request names, if any: a Python file whose ``configure(instance, launch, params, placed)`` makes
-   a launched product's own changes. Workbench names no product; the hook is the product's.
+3. base: the files, JVM profile, player and command lines of the launch's base (launch.json ``base``: the base
+   project's ``[launch.<name>]`` as lab.resolve read it), its overlay folder exported from the base project's
+   repository by the tree id the launch names (``git archive``), then the product's own overlay folder, then the
+   product's configure script (launch.json ``configure``, exported by its blob id) or the hook the request names: a
+   Python file whose ``configure(instance, launch, params, placed)`` makes a launched product's own changes. An
+   overlay's text files are written with the platform's line ends and ``{port}``, ``{seed}``, ``{player}`` and
+   ``{player_uuid}`` filled in. A launch file that names no base, or a request naming one of ``wb_lab.bases``, takes
+   Workbench's interim copy, with a warning. Workbench names no product; the script is the product's.
 4. receipt: ``instance.json`` names every file by SHA-256 with its path relative to ``{instance}``, ``{cache}`` (the
    runtime cache) or ``{jdk:N}`` (the JDK of major N), the launch file's SHA-256, the builder's schema, and the
    server's and client's command lines and working folders with those placeholders.
 
-One template is built per key: the launch file's bytes, the builder schema, the base, the configure hook's bytes and
-the build's own parameters. What a session chooses is never part of it: the server's port is the session's
-(``{port}`` stays in the client's command line, and the session writes ``server-port``), as are its JVM options,
-window and views (``wb_lab.run``). A configure hook runs only for a project in ``[lab] trusted``; ``[lab] eula``
-records the machine owner's acceptance of the Minecraft EULA. Instances are made from it by ``wb_lab.store``: read-only files (libraries, mods,
-natives) are hard links to one kept copy, everything the game writes is the instance's own, and each instance carries
-its ``instance.json``. A folder without one is never touched.
+One template is built per key: the launch file's bytes, the builder schema, the base and its overlay trees, the
+configure script's bytes and the build's own parameters, each checked against the type the launch declares for it.
+What a session chooses is never part of it: the server's port is the session's (``{port}`` stays in the client's
+command line, and the session writes ``server-port``), as are its JVM options, window and views (``wb_lab.run``,
+which reads the base's view keys and ready line from the receipt). A configure script runs only for a project in
+``[lab] trusted``; ``[lab] eula`` records the machine owner's acceptance of the Minecraft EULA. Instances are made
+from it by ``wb_lab.store``: read-only files (libraries, mods, natives) are hard links to one kept copy, everything
+the game writes is the instance's own, and each instance carries its ``instance.json``. A folder without one is never
+touched.
 """
 
 from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
 import shutil
+import subprocess
+import tarfile
 import tempfile
 import traceback
 import urllib.parse
@@ -50,6 +60,7 @@ from wb_core.module import Context, EnvironmentProblem, ParamError, sha256_file
 from . import assemble
 from . import machine as machines
 from . import process as processes
+from . import resolve as resolver
 from .bases import INTERIM_BASES
 from .profile import Layout
 from .store import MARKER, Store, StoreError, recipe_of, remove_tree
@@ -98,6 +109,14 @@ class Machine:
 
     def store_hosts(self) -> list[str]:
         return [str(h) for h in (self.workspace.ci.get("store_hosts") or [])] if self.workspace else []
+
+    def repository(self, project: str) -> Path:
+        """The registered repository of ``project``, which holds the trees a launch file names."""
+        entry = self.workspace.projects().get(project) if self.workspace else None
+        if entry is None or not Path(entry.repo).is_dir():
+            raise EnvironmentProblem(f"project {project} is not registered on this machine ([modules.ci.projects]), "
+                                     "so the launch/ folder its launch file names cannot be exported")
+        return Path(entry.repo)
 
 
 def _lab_root(ctx: Context, machine: Machine) -> Path:
@@ -305,13 +324,65 @@ def place_members(members: list[dict], instance: Path) -> dict[str, dict[str, Pa
     return placed
 
 
-def write_base(base: dict, instance: Path, values: dict[str, str], eula: bool):
+def _git_bytes(repo: Path, *args: str) -> bytes:
+    done = subprocess.run(["git", "-C", str(repo), "-c", "core.autocrlf=false", *args], capture_output=True)
+    if done.returncode != 0:
+        raise EnvironmentProblem(f"git {' '.join(args[:2])} in {repo} failed: "
+                                 f"{done.stderr.decode('utf-8', 'replace').strip()[:200]} (fetch the commit the "
+                                 "launch file names, or resolve the launch again)")
+    return done.stdout
+
+
+def export_tree(repo: Path, tree: str, target: Path) -> Path:
+    """The tree ``tree`` of ``repo`` as files in ``target`` (git archive): exactly the bytes the launch file names."""
+    if target.is_dir():
+        return target
+    scratch = target.with_name(target.name + f".{os.getpid()}.tmp")
+    if scratch.exists():
+        remove_tree(scratch)
+    scratch.mkdir(parents=True)
+    with tarfile.open(fileobj=io.BytesIO(_git_bytes(repo, "archive", "--format=tar", tree))) as archive:
+        archive.extractall(scratch, filter="data")
+    os.replace(scratch, target)
+    return target
+
+
+def export_blob(repo: Path, blob: str, target: Path) -> Path:
+    if not target.is_file():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(_git_bytes(repo, "cat-file", "blob", blob))
+    return target
+
+
+def write_overlay(folder: Path, instance: Path, values: dict[str, str]):
+    """An overlay folder's ``both/``, ``server/`` and ``client/`` files laid into the instance's sides: a text file
+    with the platform's line ends (as the game writes its own) and the known placeholders filled, other files as
+    they are."""
+    for part in ("both", *SIDES):
+        source = folder / part
+        for path in sorted(p for p in source.rglob("*") if p.is_file()) if source.is_dir() else []:
+            relative = path.relative_to(source)
+            data = path.read_bytes()
+            for side in (SIDES if part == "both" else (part,)):
+                target = instance / side / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    text = data.decode("utf-8")
+                except UnicodeDecodeError:
+                    target.write_bytes(data)
+                    continue
+                target.write_text(_fill_known(text.replace("\r\n", "\n"), values), encoding="utf-8")
+
+
+def write_base(base: dict, instance: Path, values: dict[str, str], eula: bool, overlays: list[Path] = ()):
     files = base.get("files") or {}
     for side in SIDES:
         for relative, text in {**(files.get("both") or {}), **(files.get(side) or {})}.items():
             target = instance / side / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(_fill_known(text, values), encoding="utf-8")  # the platform's line ends, as the game's
+    for folder in overlays:
+        write_overlay(folder, instance, values)
     profile = base.get("jvm_profile") or {}
     (instance / "server" / "user_jvm_args.txt").write_text(
         str(base.get("jvm_args_file") or "") + "\n".join(profile.get("arguments") or []) + "\n", encoding="utf-8")
@@ -383,14 +454,17 @@ def _tree(root: Path, skip: set[str]) -> dict[str, dict]:
 
 
 def template_inputs(launch_sha: str, base_name: str, base: dict, configure_sha: str | None, params: dict,
-                    eula: bool, system: str, arch: str) -> dict:
+                    eula: bool, system: str, arch: str, overlays: list[str] = ()) -> dict:
     base_sha = hashlib.sha256(json.dumps(base, sort_keys=True).encode("utf-8")).hexdigest()
     return {"builder": SCHEMA, "launch": launch_sha, "base": base_name, "base_sha256": base_sha,
-            "configure": configure_sha, "params": params, "eula": bool(eula), "system": system, "arch": arch}
+            "overlays": list(overlays), "configure": configure_sha, "params": params, "eula": bool(eula),
+            "system": system, "arch": arch}
 
 
 def build_template(ctx: Context, staging: Path, *, data: bytes, doc: dict, base_name: str, base: dict,
-                   configure: Path | None, params: dict, eula: bool, key: str, machine: Machine) -> dict:
+                   configure: Path | None, params: dict, eula: bool, key: str, machine: Machine,
+                   overlays: list[Path] = (), base_source: dict | None = None, configure_from: dict | None = None
+                   ) -> dict:
     """Builds the template for ``key`` in ``staging`` (which becomes ``{instance}``) and returns its receipt."""
     system, arch = assemble.host_system()
     runtime = doc["runtime"]
@@ -434,10 +508,10 @@ def build_template(ctx: Context, staging: Path, *, data: bytes, doc: dict, base_
     player = str(base.get("player") or "Player")
     values = {"port": str(DEFAULT_PORT), "seed": str(params.get("seed", "")), "player": player,
               "player_uuid": offline_uuid(player)}
-    write_base(base, staging, values, eula)
+    write_base(base, staging, values, eula, overlays)
     configured = None
     if configure is not None:
-        configured = {"file": configure.name, "sha256": sha256_file(configure),
+        configured = {"file": configure.name, "sha256": sha256_file(configure), **(configure_from or {}),
                       "record": run_configure(ctx, configure, staging, doc, params, placed)}
     (staging / LAUNCH_COPY).write_bytes(data)
 
@@ -487,10 +561,13 @@ def build_template(ctx: Context, staging: Path, *, data: bytes, doc: dict, base_
                    **{k: doc.get(k) for k in ("project", "launch", "commit", "tree", "set")},
                    "members": {m["member"]: m["sha256"] for m in members}},
         "base": base_name,
+        "base_source": base_source,
         "configure": configured,
         "params": params,
+        # What a session reads of the base (wb_lab.run): the view keys and the server's ready line.
         "session": {"placeholders": list(SESSION_PLACEHOLDERS), "server_properties": "{instance}/server/server.properties",
-                    "default_port": DEFAULT_PORT},
+                    "default_port": DEFAULT_PORT, "views": dict(base.get("views") or {}),
+                    "ready": str(base.get("ready") or "")},
         "eula": bool(eula),
         "system": system,
         "arch": arch,
@@ -515,27 +592,87 @@ def build_template(ctx: Context, staging: Path, *, data: bytes, doc: dict, base_
     }
 
 
-def build(ctx: Context, launch: str, name: str, base: str = "cubature:standalone", params: dict | None = None,
+INTERIM_DEFAULT = "cubature:standalone"  # the base of a launch file resolved before launches named one
+
+
+def base_of(ctx: Context, doc: dict, requested: str) -> tuple[str, dict, list[dict], dict]:
+    """(name, table, overlays, source) of the base an instance starts from: the launch file's, or the interim copy a
+    request names (``wb_lab.bases``); a launch file without one takes the interim copy, with a warning. ``overlays`` are
+    the base's folder and then the product's, each {project, tree, path}."""
+    launched = doc.get("base")
+    own = doc.get("overlay")
+    overlays = [own] if own else []
+    if requested:
+        if requested not in INTERIM_BASES:
+            raise ParamError(f"base: {requested!r} is no interim base (known: {', '.join(sorted(INTERIM_BASES))}); "
+                             "leave it empty to build from the launch's base")
+        if launched:
+            ctx.log.warning(f"INTERIM BASE: base={requested} replaces the launch's base {launched['name']} with "
+                            "Workbench's interim copy")
+        return requested, INTERIM_BASES[requested], overlays, {"name": requested, "source": "interim"}
+    if not launched:
+        ctx.log.warning(f"INTERIM BASE: the launch file names no base (it was resolved before launches named one), so "
+                        f"the instance starts from Workbench's interim copy of {INTERIM_DEFAULT}; resolve it again")
+        return INTERIM_DEFAULT, INTERIM_BASES[INTERIM_DEFAULT], overlays, {"name": INTERIM_DEFAULT,
+                                                                             "source": "interim"}
+    if launched.get("source") == "interim":
+        ctx.log.warning(f"INTERIM BASE: {launched['project']} at {str(launched['commit'])[:12]} has no "
+                        f"[launch.{launched['name'].split(':', 1)[1]}], so base {launched['name']} is Workbench's "
+                        "interim copy (wb_lab/bases.py)")
+    if launched.get("overlay"):
+        overlays.insert(0, {"project": launched["project"], **launched["overlay"]})
+    source = {k: launched.get(k) for k in ("name", "project", "commit", "source")}
+    source["overlay"] = (launched.get("overlay") or {}).get("tree")
+    return launched["name"], launched["definition"], overlays, source
+
+
+def checked_params(doc: dict, params: dict | None) -> dict:
+    """The launch's params with the request's over them, each checked against the type the launch declares; a launch
+    file resolved before params were typed takes them as they are."""
+    types = doc.get("param_types")
+    merged = dict(doc.get("params") or {})
+    for name, value in (params or {}).items():
+        if types is not None:
+            if name not in types:
+                raise ParamError(f"params: the launch declares no param {name} (it declares: "
+                                 f"{', '.join(sorted(types)) or 'none'})")
+            try:
+                value = resolver.param_value(name, value, types[name], "params")
+            except resolver.LaunchError as error:
+                raise ParamError(str(error)) from None
+        merged[name] = value
+    return merged
+
+
+def build(ctx: Context, launch: str, name: str, base: str = "", params: dict | None = None,
           eula: bool = False, configure: str | None = None, fresh: bool = False):
     if not NAME.match(name):
         raise ParamError(f"name: {name!r} is not a lowercase instance name (letters, digits, . _ -)")
-    if base not in INTERIM_BASES:
-        raise ParamError(f"base: no base {base!r} (known: {', '.join(sorted(INTERIM_BASES))})")
-    base_doc = INTERIM_BASES[base]
     machine = Machine()
     data, doc = read_launch(Path(launch))
     runtime_files(doc)  # refused with the fix before anything is made
-    hook = Path(configure) if configure else None
+    base, base_doc, overlays, base_source = base_of(ctx, doc, base)
+    project = str(doc.get("project") or "")
+    exports = ctx.work / "exports"
+    hook, configure_from = (Path(configure) if configure else None), None
     if hook is not None and not hook.is_file():
         raise ParamError(f"configure: {configure} is not a file")
-    if hook is not None:  # before anything is made: the hook is the launched project's own code
-        machines.require_trusted(ctx, str(doc.get("project") or ""), f"configure hook {hook.name}")
+    if hook is not None and doc.get("configure"):
+        ctx.log.warning(f"configure: {hook.name} replaces the launch's {doc['configure']['path']}")
+    if hook is not None or doc.get("configure"):  # before anything is made: the script is the launched project's
+        what = f"configure hook {hook.name}" if hook else f"configure script {doc['configure']['path']}"
+        machines.require_trusted(ctx, project, what)
+    if hook is None and doc.get("configure"):
+        script = doc["configure"]
+        hook = export_blob(machine.repository(script["project"]), script["blob"],
+                           exports / script["blob"] / Path(script["path"]).name)
+        configure_from = {k: script[k] for k in ("project", "commit", "path", "blob")}
     eula = bool(eula) or bool(machines.lab(ctx)["eula"])
-    merged = {**(doc.get("params") or {}), **(params or {})}
+    merged = checked_params(doc, params)
     system, arch = assemble.host_system()
     launch_sha = hashlib.sha256(data).hexdigest()
     inputs = template_inputs(launch_sha, base, base_doc, sha256_file(hook) if hook else None, merged, eula,
-                             system, arch)
+                             system, arch, [o["tree"] for o in overlays])
     key = recipe_of(inputs)
     root = _lab_root(ctx, machine)
     store = Store(root / ".store", LAYOUT)
@@ -562,8 +699,11 @@ def build(ctx: Context, launch: str, name: str, base: str = "cubature:standalone
             remove_tree(staging)
         staging.mkdir(parents=True)
         try:
+            folders = [export_tree(machine.repository(o["project"]), o["tree"], exports / o["tree"])
+                       for o in overlays]
             receipt = build_template(ctx, staging, data=data, doc=doc, base_name=base, base=base_doc,
-                                     configure=hook, params=merged, eula=eula, key=key, machine=machine)
+                                     configure=hook, params=merged, eula=eula, key=key, machine=machine,
+                                     overlays=folders, base_source=base_source, configure_from=configure_from)
             (staging / RECEIPT).write_text(json.dumps(receipt, indent=1) + "\n", encoding="utf-8")
             try:
                 store.adopt_template(staging, key, inputs)
