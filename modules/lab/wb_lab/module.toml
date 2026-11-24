@@ -142,6 +142,8 @@ params.params = { type = "object", default = {}, summary = "values over the laun
 params.eula = { type = "bool", default = false, summary = "true writes eula.txt, recording that the requester accepts the Minecraft EULA for this instance; [lab] eula = true does so for every instance of the machine" }
 params.configure = { type = "path.in", optional = true, summary = "a Python file whose configure(instance, launch, params, placed) makes a launched product's own changes after the base, in place of the launch's configure script (launch/configure.py at the launch's commit); its bytes are part of the template's key; either is refused unless the launch's project is in [lab] trusted" }
 params.fresh = { type = "bool", default = false, summary = "make the instance again: replaces one of this name built from this or another template" }
+params.store = { type = "path.in", optional = true, summary = "a folder holding the launch's Store files (files/<sha256>/<name> and jdks/<build>/<system>) in place of the Store the launch file names, as a rental's bundle carries them; the launch file's bytes, and so the template's key, stay the same" }
+params.sources = { type = "path.in", optional = true, summary = "a folder holding the trees and blobs the launch file names by id (<id>/ for an overlay, <id>/<file> for a configure script), in place of exporting them from the projects' repositories, as a rental's bundle carries them" }
 result.instance = { type = "string" }
 result.template = { type = "string" }
 result.reused = { type = "bool" }

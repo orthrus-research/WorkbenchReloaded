@@ -449,6 +449,33 @@ class ProjectBase(Fixture):
         self.assertTrue((server / "host.txt").is_file())
         self.assertTrue((server / "ops.json").is_file())  # the base table's overlay is still laid first
 
+    def test_a_bundle_carries_the_store_and_the_trees_by_id(self):
+        carried = self.root / "bundle"
+        shutil.copytree(self.store, carried / "store")
+        sources = carried / "sources"
+        overlay = self.launch_doc["base"]["overlay"]["tree"]
+        shutil.copytree(self.repo / "launch" / "standalone", sources / overlay)
+        script = self.launch_doc["configure"]["blob"]
+        (sources / script).mkdir()
+        shutil.copyfile(self.repo / "launch" / "configure.py", sources / script / "configure.py")
+        doc = json.loads(json.dumps(self.launch_doc))
+        doc["store"] = str(self.root / "a-store-this-machine-does-not-have")
+        launch = self.write_launch(doc, "carried.json")
+
+        def no_repository(machine, project):
+            raise AssertionError(f"a bundle's build read {project}'s repository")
+
+        with mock.patch.object(instance.Machine, "repository", no_repository):
+            ctx, result = self.run_build(launch=launch, store=str(carried / "store"), sources=str(sources))
+            self.assertEqual(ctx.outcome, "ok", ctx.findings)
+            folder = Path(result["instance"])
+            self.assertIn(b"level-type=game", (folder / "server" / "server.properties").read_bytes())
+            receipt = self.receipt()
+            self.assertEqual(receipt["launch"]["sha256"], hashlib.sha256(launch.read_bytes()).hexdigest())
+            shutil.rmtree(sources / script)
+            with self.assertRaisesRegex(ParamError, rf"sources: .* has no {script[:12]}/configure.py"):
+                self.run_build("two", launch=launch, store=str(carried / "store"), sources=str(sources))
+
     def test_the_launchs_configure_script_needs_a_trusted_project(self):
         self.lab["trusted"] = []
         with self.assertRaisesRegex(ParamError, r"configure script launch/configure.py is game's code"):

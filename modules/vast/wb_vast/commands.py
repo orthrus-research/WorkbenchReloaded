@@ -231,6 +231,15 @@ def _bundle(ctx: Context, path: str) -> bundles.Bundle:
     return bundles.load(Path(path), resolve)
 
 
+def _launch_ready(b: bundles.Bundle):
+    """A launch bundle a rental could not play is refused before anything is quoted: one without an acceptance of the
+    Minecraft EULA would build its instance and stop at the server's start."""
+    if b.launch is not None and not b.launch.get("eula"):
+        raise ParamError(f"launch bundle {b.name} records no acceptance of the Minecraft EULA, so its server would stop "
+                         "at start; the machine's owner sets [lab] eula = true (or makes the bundle with eula=true), "
+                         "then makes it again. Nothing was quoted")
+
+
 def _check_offer(ctx: Context, offer: dict | None, offer_id: str, max_dph: float, min_cores: float):
     if offer is None:
         raise EnvironmentProblem(f"offer {offer_id} is gone or above ${max_dph}/h; nothing rented")
@@ -268,6 +277,7 @@ def _quote_for(ctx: Context, offer: dict, cap: float, disk: int, upload_bytes: i
 @_guard
 def quote_rent(ctx: Context, offer: str, bundle: str, max_dph: float, cap: float, min_cores=None, disk=None):
     b = _bundle(ctx, bundle)
+    _launch_ready(b)
     vast = client(ctx)
     min_cores = ctx.config.get("min_cores", 8) if min_cores is None else min_cores
     found = market.find(vast, offer, cards(ctx), max_dph,
@@ -308,6 +318,7 @@ def rent(ctx: Context, offer: str, bundle: str, max_dph: float, cap: float, min_
     if str(quote.get("offer")) != str(offer):
         raise EnvironmentProblem("the approved quote is for another offer")
     b = _bundle(ctx, bundle)
+    _launch_ready(b)
     vast = client(ctx)
     min_cores = ctx.config.get("min_cores", 8) if min_cores is None else min_cores
     ctx.progress("find", msg=f"looking up offer {offer} again")
@@ -492,7 +503,9 @@ def bootstrap_script(b: bundles.Bundle) -> str:
     spec = importlib.util.spec_from_file_location("wb_image_pins", path)
     pins = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(pins)
-    return pins.bootstrap(pins.load(REPO_ROOT / "image" / "pins.toml"), b.jdks or ["26"], b.gpu)
+    # A bundle that carries its JDK (a launch bundle: the platform's Linux archive) gets none from the image's pins.
+    jdks = b.jdks or ([] if b.own_jdk else ["26"])
+    return pins.bootstrap(pins.load(REPO_ROOT / "image" / "pins.toml"), jdks, b.gpu)
 
 
 # ----------------------------------------------------------------------------------------------
@@ -566,10 +579,28 @@ def probe(ctx: Context, offer: str, max_dph: float):
 # bundles
 def bundle_check(ctx: Context, bundle: str):
     b = _bundle(ctx, bundle)
-    ctx.summary(f"bundle {b.name}: {len(b.uploads)} upload(s), {b.upload_bytes() / 1e6:.0f} MB, needs JDK "
-                f"{', '.join(b.jdks) or '26'}{' and the GPU' if b.gpu else ''}")
+    jdk = (f"its own JDK {b.launch['jdk']['build']}" if b.launch else "JDK " + (", ".join(b.jdks) or
+                                                                                ("none" if b.own_jdk else "26")))
+    launch = ""
+    if b.launch:
+        made = b.launch["launch"]
+        launch = (f"; launch {made['project']}:{made['launch']} at {str(made['commit'])[:12]} with "
+                  f"{len(b.launch['members'])} members by SHA-256, as made"
+                  + ("" if b.launch.get("eula") else "; no EULA acceptance, so vast.rent refuses it"))
+    ctx.summary(f"bundle {b.name}: {len(b.uploads)} upload(s), {b.upload_bytes() / 1e6:.0f} MB, needs {jdk}"
+                f"{' and the GPU' if b.gpu else ''}{launch}")
     return {"name": b.name, "uploads": len(b.uploads), "bytes": b.upload_bytes(), "jdks": b.jdks, "gpu": b.gpu,
-            "bootstrap": bootstrap_script(b)}
+            "bootstrap": bootstrap_script(b),
+            **({"launch": {"members": len(b.launch["members"]), "jdk": b.launch["jdk"]["build"],
+                           "eula": bool(b.launch.get("eula")), **b.launch["launch"]}} if b.launch else {})}
+
+
+def bundle_launch(ctx: Context, launch: str, tour: str, name=None, window: str = "1920x1080", gpu: bool = True,
+                  eula: bool = False, params: dict | None = None, limit: float = 5400, disk: int = 32,
+                  purpose: str = "calibration"):
+    from . import launch_bundle
+    return launch_bundle.make(ctx, launch, tour, name, window, gpu, eula, params or {}, limit, disk, purpose,
+                              lambda value: _readable(ctx, value))
 
 
 # ----------------------------------------------------------------------------------------------

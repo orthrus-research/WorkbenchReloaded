@@ -102,6 +102,27 @@ handler = "wb_vast.commands:bundle_check"
 params.bundle = { type = "path.in" }
 
 [[command]]
+name = "bundle-launch"
+summary = "Make a rental bundle from a launch file alone: every member and runtime file by SHA-256 from the Store, the platform's Linux archive of the launch's JDK, the overlays and trusted configure script by id, Workbench's own lab.build and lab.run code and a run script that builds the instance and plays one tour session headless, writing session.json. Checked against the launch file, with a manifest of every file's SHA-256. Rents nothing."
+handler = "wb_vast.commands:bundle_launch"
+runs_on = ["host"]
+requires = { binary = ["git"] }
+resources = { cpu = 0.5 }
+timeout = "30m"
+params.launch = { type = "path.in", summary = "the launch file (lab.resolve's launch.json)" }
+params.tour = { type = "path.in", summary = "the tour the rental plays: a list of {label, x, y, z, yaw, pitch} or {viewDistance, views}" }
+params.name = { type = "string", optional = true, summary = "the bundle's name; default: <project>-<launch>-<the launch file's SHA-256, 12 digits>" }
+params.window = { type = "string", default = "1920x1080", pattern = "^[0-9]+x[0-9]+$", summary = "the client's window on the rental" }
+params.gpu = { type = "bool", default = true, summary = "draw through VirtualGL on the rented GPU; false: software OpenGL" }
+params.eula = { type = "bool", default = false, summary = "true records that the requester accepts the Minecraft EULA for the rental's instance; [lab] eula = true does so for every bundle of the machine. Without it vast.rent refuses the bundle" }
+params.params = { type = "object", default = {}, summary = "values over the launch's params for the rental's instance, as lab.build takes them" }
+params.limit = { type = "duration", default = "90m", min = "5m", max = "8h", summary = "the session's limit on the rental" }
+params.disk = { type = "int", default = 32, min = 16, max = 500, summary = "the rental's disk in GB" }
+params.purpose = { type = "string", default = "calibration", summary = "recorded with the rental" }
+result.bundle = { type = "string" }
+result.problems = { type = "list" }
+
+[[command]]
 name = "bundle"
 summary = "Make a rental bundle from a template in config, filled with a plan's game steps and the template's input archives; checked, with a manifest of every file's SHA-256. Rents nothing."
 handler = "wb_vast.commands:bundle"

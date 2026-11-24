@@ -75,6 +75,12 @@
   build per mod id across both; a cycle or a chain more than four launches deep is refused, and launch.json's
   `inherits` names each launch with its commit and how it was chosen. A member of a project with no line follows
   that project's branch the same way. `lab.build` trusts an inherited configure script by its own project.
+- `vast.bundle-launch`: a rental bundle from a launch file alone: every member and runtime file by SHA-256 from
+  the Store, the platform's Linux archive of the launch's JDK, the overlays and a trusted configure script by id,
+  Workbench's own lab code, and a run script that builds the instance with `lab.build`'s code and plays one tour
+  session headless, writing `session.json`. Every load of such a bundle (`vast.bundle-check`, the quote,
+  `vast.rent`) refuses one whose member or JDK archive is missing or other bytes, and the quote refuses one
+  without the EULA's acceptance. `lab.build` takes `store` and `sources`, the copies a bundle carries.
 - `wb gpu`: the lease's holder, its waiters in the order they are served and stuck lanes; `wb gpu run` gives any
   command a turn in a lane of its own, with a note, a limit, `--detach` (outlives the shell) and `--quiet`; a
   waiter started again keeps its place; `wb gpu leave` withdraws a lane. The old lock path and variable names stay

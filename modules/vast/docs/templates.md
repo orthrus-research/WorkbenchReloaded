@@ -167,3 +167,27 @@ window = "1280x720"           # any other key is {values.<key>} for the steps fi
 
 The game steps run first, together, in one bundle written before any step runs, so their parameters read plan
 inputs, never a step's results; later host steps read the game steps' outputs.
+
+## Bundles from a launch file
+
+A rental that plays a launch needs no template: `vast.bundle-launch launch=<launch.json> tour=<file> --out <folder>`
+makes the bundle from the launch file alone (`wb_vast/launch_bundle.py`). Its `files/` holds the launch file's exact
+bytes and the tour; every member and the runtime's installer and launcher instance under `store/files/<sha256>/`,
+copied from the Store and hashed as they are copied; the Linux archive of the launch's JDK build under `jdk/`, by
+the SHA-256 the launch's set gives it in `platform.jdk`; the overlay folders and the configure script the launch
+file names, by id under `sources/` (a configure script only for a project in the machine's `[lab] trusted`);
+Workbench's own `wb_core`, `wb` and `wb_lab` packages under `runner/` with `launch_run.py`; `run.sh`;
+`checksums.sha256`; and `bundle-launch.json` (`wb.bundle-launch.v1`), what the bundle carries and the Workbench
+commit it was made by. `bundle.toml` names `needs.own_jdk = true`, so the bootstrap installs no JDK of its own.
+
+On the rental `run.sh` checks every file against `checksums.sha256`, unpacks the JDK into `store/jdks/<build>/linux`,
+builds the instance with `wb_lab.instance.build` (the bundle's Store and trees in place of this machine's, the
+libraries and assets fetched by SHA-1 into `/root/lab/cache`, the receipt copied to `results/instance.json`), starts
+Xvfb (with VirtualGL when `gpu = true`) and plays one tour session with `wb_lab.run.run`, writing `session.json`
+into `results/`; `results.tar` packs it all. `run.sh /root/bundle build` stops once the instance is built, which
+proves a bundle on any Linux machine without a GPU.
+
+Every load of a launch bundle (`vast.bundle-check`, the quote and `vast.rent`) checks it against its launch file
+first: a member, a runtime file or the JDK archive that is missing or other bytes is refused, naming it, before
+anything is quoted. A bundle that records no acceptance of the Minecraft EULA (`[lab] eula`, or `eula=true` on the
+request) passes `vast.bundle-check` and is refused by the quote, since its server would stop at start.

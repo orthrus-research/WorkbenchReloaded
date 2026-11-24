@@ -645,12 +645,26 @@ def checked_params(doc: dict, params: dict | None) -> dict:
     return merged
 
 
+def sourced(sources: Path, item: str, name: str | None = None) -> Path:
+    """A tree or blob a launch file names, as a bundle carries it: ``<sources>/<id>/`` (a tree's files) or
+    ``<sources>/<id>/<name>`` (a blob)."""
+    path = sources / item / name if name else sources / item
+    if not (path.is_file() if name else path.is_dir()):
+        raise ParamError(f"sources: {sources} has no {item[:12]}" + (f"/{name}" if name else "/") + " (the launch "
+                         "file names it; make the bundle again)")
+    return path
+
+
 def build(ctx: Context, launch: str, name: str, base: str = "", params: dict | None = None,
-          eula: bool = False, configure: str | None = None, fresh: bool = False):
+          eula: bool = False, configure: str | None = None, fresh: bool = False, store: str = "",
+          sources: str = ""):
     if not NAME.match(name):
         raise ParamError(f"name: {name!r} is not a lowercase instance name (letters, digits, . _ -)")
     machine = Machine()
     data, doc = read_launch(Path(launch))
+    if store:  # a copy of the launch's Store files elsewhere (a rental's bundle); the launch file's bytes are kept
+        doc = {**doc, "store": str(Path(store))}
+    carried = Path(sources) if sources else None
     runtime_files(doc)  # refused with the fix before anything is made
     base, base_doc, overlays, base_source = base_of(ctx, doc, base)
     project = str(doc.get("project") or "")
@@ -667,8 +681,8 @@ def build(ctx: Context, launch: str, name: str, base: str = "", params: dict | N
         machines.require_trusted(ctx, owner, what)
     if hook is None and doc.get("configure"):
         script = doc["configure"]
-        hook = export_blob(machine.repository(script["project"]), script["blob"],
-                           exports / script["blob"] / Path(script["path"]).name)
+        hook = sourced(carried, script["blob"], Path(script["path"]).name) if carried else export_blob(
+            machine.repository(script["project"]), script["blob"], exports / script["blob"] / Path(script["path"]).name)
         configure_from = {k: script[k] for k in ("project", "commit", "path", "blob")}
     eula = bool(eula) or bool(machines.lab(ctx)["eula"])
     merged = checked_params(doc, params)
@@ -702,8 +716,8 @@ def build(ctx: Context, launch: str, name: str, base: str = "", params: dict | N
             remove_tree(staging)
         staging.mkdir(parents=True)
         try:
-            folders = [export_tree(machine.repository(o["project"]), o["tree"], exports / o["tree"])
-                       for o in overlays]
+            folders = [sourced(carried, o["tree"]) if carried else
+                       export_tree(machine.repository(o["project"]), o["tree"], exports / o["tree"]) for o in overlays]
             receipt = build_template(ctx, staging, data=data, doc=doc, base_name=base, base=base_doc,
                                      configure=hook, params=merged, eula=eula, key=key, machine=machine,
                                      overlays=folders, base_source=base_source, configure_from=configure_from)
