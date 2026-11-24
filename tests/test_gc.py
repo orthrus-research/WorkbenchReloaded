@@ -1,6 +1,7 @@
 """wb gc: a dry list is exactly what --yes <digest> removes; a list that changed is refused and removes nothing; the
 roots (a pass record, a kept session and the bytes its launch file names, a byte a set revision names, seeded and
-indexed files, a legacy instance) are never listed; a removal never follows a link; lab-home items wait for the GPU
+indexed files, a legacy instance not frozen, or frozen and changed since, or the only copy of its world or of
+bytes a root names) are never listed; a frozen legacy instance as its manifest recorded it is; a removal never follows a link; lab-home items wait for the GPU
 lease and the nightly run never touches them; the daemon's classes come over the API."""
 
 import hashlib
@@ -85,7 +86,8 @@ class Machine:
         self.stand_in_cached = write(project / "stand-ins" / "s2" / "summary.json", {"jobs": {}}).parent
         # A kept session: its folder and the bytes and the instance its files name.
         self.session = write(out / "sessions" / "s1" / "kept.json", {"reason": "baseline"}).parent
-        write(self.session / "launch.json", {"members": [{"sha256": self.blob["kept"]}]})
+        write(self.session / "launch.json", {"members": [{"sha256": self.blob["kept"]},
+                                                         {"sha256": sha(b"the only copy")}]})
         write(self.session / "session.json", {"instance": "kept-instance"})
         # The lab home: instances lab.build made, a legacy one, templates and blobs.
         instances = self.lab / "instances"
@@ -98,6 +100,15 @@ class Machine:
         self.unused_template = write(templates / "t-unused" / "template.json", {"links": {}}).parent
         write(instances / ".store" / "blobs" / "11" / ("1" * 64), b"named")
         self.orphan_blob = write(instances / ".store" / "blobs" / "22" / ("2" * 64), b"orphan")
+        # Old-route instances lab.freeze froze (manifests written below, after the ageing): one as recorded, one
+        # changed since, one whose world was not imported, one holding the only copy of bytes a kept session names.
+        old_route = self.lab / "cubic-standalone"
+        self.frozen = write(old_route / "frozen" / "server" / "options.txt", b"frozen").parent.parent
+        write(self.frozen / "client" / "mods" / "Old-1.0.jar", b"bytes of indexed")
+        self.changed = write(old_route / "changed" / "server" / "options.txt", b"before").parent.parent
+        self.unimported = write(old_route / "unimported" / "server" / "world" / "level.dat", b"w").parent.parent.parent
+        self.only_copy = write(old_route / "only-copy" / "client" / "mods" / "Only.jar", b"the only copy"
+                               ).parent.parent.parent
         # Releases: three, the newest in service, the one before it kept.
         for index, name in enumerate(("aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc")):
             write(self.releases / name / "RELEASE.json", {"made_at": 1000 + index})
@@ -107,6 +118,29 @@ class Machine:
         age(self.fresh, 1)
         os.utime(self.store / "files" / self.blob["fresh-orphan"], None)
         os.utime(self.store / "files" / self.blob["fresh-orphan"] / "fresh-orphan.jar", None)
+        for instance in (self.frozen, self.changed, self.unimported, self.only_copy):
+            world = ({"path": str(instance / "server" / "world"), "label": None, "why": "no world store"}
+                     if instance == self.unimported else {"path": None, "label": None, "why": "no world"})
+            self.freeze(instance, world)
+        write(self.changed / "server" / "options.txt", b"after the freeze")
+        for directory, _, names in os.walk(self.frozen):  # lab.freeze marks every file read-only
+            for name in names:
+                os.chmod(Path(directory) / name, 0o444)
+
+    def freeze(self, instance: Path, world: dict):
+        """The manifest lab.freeze writes: every file by size, time and SHA-256, its world and kept session."""
+        files = {}
+        for directory, _, names in os.walk(instance):
+            for name in names:
+                path = Path(directory) / name
+                st = path.stat()
+                files[path.relative_to(instance).as_posix()] = {
+                    "size": st.st_size, "mtime_ns": st.st_mtime_ns, "read_only": False, "marked": True,
+                    "sha256": sha(path.read_bytes())}
+        write(self.lab / "legacy" / instance.name / "frozen.json",
+              {"schema": "wb.lab.frozen/1", "id": instance.name, "instance": str(instance), "name": instance.name,
+               "state": "frozen", "frozen": "2026-11-24T06:00:00", "files": files, "links": [],
+               "world": world, "session": {"session": f"legacy-{instance.name}", "kept": True}})
 
     def places(self, **changes) -> gc.Places:
         values = dict(store=self.store, records=self.records, sets=self.sets, out=self.store.parent,
@@ -138,7 +172,7 @@ class Gc(unittest.TestCase):
             str(m.store / "files" / m.blob["orphan"]): "store.files",
             str(m.releases / "aaaaaaaaaaaa"): "releases",
             str(m.old_instance): "lab.instances", str(m.unused_template): "lab.templates",
-            str(m.orphan_blob): "lab.blobs"})
+            str(m.orphan_blob): "lab.blobs", str(m.frozen): "lab.legacy"})
 
     def test_a_dry_list_is_exactly_what_yes_removes(self):
         m = self.machine
@@ -171,7 +205,8 @@ class Gc(unittest.TestCase):
         for path in (m.pass_run, m.pass_run / "summary.json"):  # its artifact copies may go, never the record
             self.assertFalse(any(p == str(path) or str(path).startswith(p + os.sep) for p in listed), path)
         protected = [m.cached, m.fresh, m.session, m.kept_instance, m.stand_in_cache, m.stand_in_cached,
-                     m.legacy, m.used_template, m.sets / ("c" * 40),
+                     m.legacy, m.changed, m.unimported, m.only_copy, m.lab / "legacy",
+                     m.used_template, m.sets / ("c" * 40),
                      m.releases / "bbbbbbbbbbbb", m.releases / "cccccccccccc"]
         protected += [m.store / "files" / m.blob[n] for n in ("indexed", "set-named", "seeded", "kept", "landed",
                                                               "fresh-orphan", "held")]

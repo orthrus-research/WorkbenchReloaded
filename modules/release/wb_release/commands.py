@@ -15,6 +15,12 @@ there. Every publish, a stopped one too, leaves a receipt (the output ``receipt`
 ``receipt-<channel>-<version>.json``): the channel, the ids and URLs the channel returned, every file's digests and
 whether the channel's own digests agree.
 
+With ``set=<project>@<revision>`` instead of files, a publish takes exactly the bytes the set names for that
+project's line: each artifact from the Store by its SHA-256, published under the name the line gives it, and refused
+when the Store's copy no longer hashes to it. The plan records the set revision and the line's commit, and a github
+release's tag is made at that commit unless ``commit`` is given: the release is the last stage of the pipeline, not
+a rebuild.
+
 ``release.status`` reads what a channel holds for a version, compared with local files when given.
 """
 
@@ -121,30 +127,31 @@ def check(ctx: Context, files: list, version: str | None = None, channel: str | 
 # ---------------------------------------------------------------------------------------------
 # release.publish: the quote is the plan
 
-def quote_publish(ctx: Context, channel: str, version: str, files: list, notes: str | None = None,
+def quote_publish(ctx: Context, channel: str, version: str, files: list | None = None, notes: str | None = None,
                   release_type=None, visibility=None, name=None, tag=None, commit=None, game_versions=None,
-                  loaders=None, dependencies=None):
+                  loaders=None, dependencies=None, set=None, artifacts=None):
     chan = channels.load(ctx.config, channel)
     _mounted(ctx, chan)
     given = {"release_type": release_type, "visibility": visibility, "name": name, "tag": tag, "commit": commit,
              "game_versions": game_versions, "loaders": loaders, "dependencies": dependencies}
-    plan = _plan(ctx, chan, version, _sources(ctx, files), _notes(ctx, notes), given)
+    sources, origin = _chosen(ctx, files, set, artifacts)
+    plan = _plan(ctx, chan, version, sources, _notes(ctx, notes), _at_line(chan, given, origin), origin)
     return _quote(plan)
 
 
-def publish(ctx: Context, channel: str, version: str, files: list, notes: str | None = None,
+def publish(ctx: Context, channel: str, version: str, files: list | None = None, notes: str | None = None,
             release_type=None, visibility=None, name=None, tag=None, commit=None, game_versions=None,
-            loaders=None, dependencies=None):
+            loaders=None, dependencies=None, set=None, artifacts=None):
     approved = ctx.quote or {}
     if not isinstance(approved.get("plan"), dict):
         raise EnvironmentProblem("there is no approved plan; a publish runs only after a yes on its quote")
     chan = channels.load(ctx.config, channel)
     given = {"release_type": release_type, "visibility": visibility, "name": name, "tag": tag, "commit": commit,
              "game_versions": game_versions, "loaders": loaders, "dependencies": dependencies}
-    ctx.progress("stage", msg=f"copying {len(files)} file(s) into the job and hashing the copies")
-    sources = _sources(ctx, files, stage=True)
+    ctx.progress("stage", msg="copying the files into the job and hashing the copies")
+    sources, origin = _chosen(ctx, files, set, artifacts, stage=True)
     note = _notes(ctx, notes)
-    plan = _plan(ctx, chan, version, sources, note, given)
+    plan = _plan(ctx, chan, version, sources, note, _at_line(chan, given, origin), origin)
     changes = _changes(approved["plan"], plan)
     if changes:
         ctx.log.warning("the plan differs from the approved one: " + "; ".join(changes))
@@ -194,7 +201,7 @@ def publish(ctx: Context, channel: str, version: str, files: list, notes: str | 
 
 
 def _plan(ctx: Context, chan: channels.Channel, version: str, sources: list[Source], note: Notes | None,
-          given: dict) -> dict:
+          given: dict, origin: dict | None = None) -> dict:
     """The publication plan: everything the yes covers, from the files as read now."""
     settings = channels.resolve(chan, given, version)
     if chan.kind == "maven":
@@ -215,6 +222,8 @@ def _plan(ctx: Context, chan: channels.Channel, version: str, sources: list[Sour
             "notes": note.plan() if note else None,
             "rules": {"name": applied.name, "sha256": applied.digest(), "java": applied.java},
             "precheck": channels.precheck(chan)}
+    if origin is not None:
+        plan["set"] = origin
     if chan.kind == "github":
         plan["upload_endpoint"] = chan.settings.get("upload_url") or chan.base_url
     elif chan.kind == "curseforge":
@@ -234,6 +243,10 @@ def _quote(plan: dict) -> dict:
     how = " ".join(x for x in (plan.get("visibility"), plan.get("release_type")) if x)
     where = f"{plan['kind']} channel {plan['channel']} ({plan['project']} at {plan['endpoint']})"
     notes = plan.get("notes")
+    line = plan.get("set")
+    if line:
+        where += (f", the bytes set {line['revision'][:12]} names for {line['project']} at "
+                  f"{line['commit'][:12]}")
     question = (f"Publish version {plan['version']} to {where} as {how}, "
                 f"{'with notes ' + notes['sha256'][:12] if notes else 'without notes'}: {listing}?")
     return {"summary": f"publish {plan['version']} to {plan['kind']} channel {plan['channel']}: {len(files)} file(s), "
@@ -321,6 +334,108 @@ def status(ctx: Context, channel: str, version: str, files: list | None = None, 
 
 # ---------------------------------------------------------------------------------------------
 # shared
+
+def _chosen(ctx: Context, files: list | None, spec: str | None, artifacts: list | None, *,
+            stage: bool = False) -> tuple[list[Source], dict | None]:
+    """The files a publish sends, and the set line they come from: the files given, or with ``set`` the Store's
+    bytes the line names. Exactly one of the two."""
+    if spec and files:
+        raise ParamError("give files or set, not both: with set the files are the ones the set names")
+    if spec:
+        return _set_sources(ctx, spec, artifacts, stage=stage)
+    if artifacts:
+        raise ParamError("artifacts picks from a set line: give set=<project>@<set revision> with it")
+    return _sources(ctx, files or [], stage=stage), None
+
+
+def _set_sources(ctx: Context, spec: str, artifacts: list | None, *,
+                 stage: bool = False) -> tuple[list[Source], dict]:
+    """The Store's bytes a set line names, checked against the line's SHA-256 and named as the line names them."""
+    from wb_core import setfile
+    project, _, wanted = spec.partition("@")
+    configured = str(ctx.config.get("store") or "")
+    root = Path(configured)
+    if not configured or not root.is_dir():
+        where = f" at {ctx.host_path(configured)}" if configured else ""
+        raise EnvironmentProblem(f"no Store to publish from{where}: [paths] out names it (<out>/store)")
+    sets = root.parent / "sets"
+    revision = _revision(sets, wanted)
+    try:
+        doc = setfile.read_export(sets, revision)
+    except setfile.SetError as error:
+        raise EnvironmentProblem(f"{error}: wb work sync exports it") from None
+    line = (doc.get("projects") or {}).get(project)
+    if not line:
+        raise ParamError(f"set {revision[:12]} has no line for {project}; its lines: "
+                         f"{', '.join(sorted(doc.get('projects') or {})) or 'none'}")
+    named = line.get("artifacts") or {}
+    keys = list(named)
+    order = list(artifacts) if artifacts else sorted(keys, key=lambda key: (key != "mod", keys.index(key)))
+    missing = [key for key in order if key not in named]
+    if missing:
+        raise ParamError(f"{project}'s line in set {revision[:12]} has no artifact {', '.join(missing)}; it has "
+                         f"{', '.join(keys) or 'none'}")
+    folder = None
+    if stage:
+        folder = ctx.work / "staged"
+        shutil.rmtree(folder, ignore_errors=True)
+        folder.mkdir(parents=True)
+    out = []
+    for index, key in enumerate(order):
+        entry = named[key]
+        digest, name = str(entry.get("sha256") or ""), str(entry.get("file") or "")
+        if not SAFE_NAME.match(name):
+            raise ParamError(f"{project}:{key}: the line names the file {name!r}, which is not a name a channel takes")
+        kept = _kept(root, digest, name, f"{project}:{key}")
+        copy = folder / f"{index:02d}-{name}" if folder else None
+        source = Source.measure(kept, ctx.host_path(str(kept)), copy)
+        if source.sha256 != digest:
+            raise EnvironmentProblem(f"{project}:{key}: the copy of {name} hashes to {source.sha256[:12]}, and set "
+                                     f"{revision[:12]} names {digest[:12]}; nothing was published")
+        source.name = source.local_name = name
+        out.append(source)
+    origin = {"revision": revision, "project": project, "commit": str(line.get("commit") or ""), "artifacts": order}
+    return out, origin
+
+
+def _kept(root: Path, digest: str, name: str, what: str) -> Path:
+    """The Store's file for ``digest``, re-hashed: under the line's name, else the one file the Store keeps for it."""
+    from wb_core import artifacts as store_files
+    folder = root / "files" / digest
+    try:
+        if (folder / name).is_file():
+            return store_files.path_of(root, digest, name)
+        names = sorted(p.name for p in folder.iterdir()) if folder.is_dir() else []
+        if len(names) != 1:
+            raise store_files.StoreError(f"the Store has no file with SHA-256 {digest}")
+        return store_files.path_of(root, digest, names[0])
+    except store_files.StoreError as error:
+        raise EnvironmentProblem(f"{what}: {error}; nothing was published") from None
+
+
+def _revision(sets: Path, wanted: str) -> str:
+    """A set revision as its export folder names it: the head, a full revision, or a prefix of exactly one."""
+    from wb_core import setfile
+    if wanted == "head":
+        head = setfile.read_head(sets)
+        if not head:
+            raise EnvironmentProblem(f"no set head at {sets}: wb work sync exports one")
+        return head
+    found = sorted(p.name for p in sets.iterdir() if p.is_dir() and p.name.startswith(wanted)) if sets.is_dir() else []
+    if len(found) != 1:
+        what = "no export" if not found else f"{len(found)} exports"
+        raise ParamError(f"set revision {wanted}: {what} under {sets} match it"
+                         + ("; wb work sync exports the head" if not found else ""))
+    return found[0]
+
+
+def _at_line(chan: channels.Channel, given: dict, origin: dict | None) -> dict:
+    """With a set line, a github tag is made at the commit the line names, unless a commit is given; the other
+    kinds take no commit."""
+    if origin is None or given.get("commit") or "commit" not in channels.SETTINGS[chan.kind]:
+        return given
+    return {**given, "commit": origin["commit"]}
+
 
 def _sources(ctx: Context, files: list, *, stage: bool = False) -> list[Source]:
     if not files:

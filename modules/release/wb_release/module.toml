@@ -8,6 +8,7 @@ channels = { type = "object", default = {}, summary = "publishing channels by na
 rules = { type = "object", default = {}, summary = "publication allow-lists by name: java, production, extras, dev_classifiers, dependencies, manifest, versions (see wb_release/rules.py); \"default\" applies when nothing names one" }
 user_agent = { type = "string", default = "workbench-release", summary = "the User-Agent of every request; a service may ask for one that names the publisher" }
 timeout = { type = "duration", default = "120s", min = "1s", max = "1h", summary = "how long a request waits for a channel to answer" }
+store = { type = "string", default = "", summary = "the Store a publish with set reads its files from: <out>/store, given by the daemon from [paths] out" }
 
 [[command]]
 name = "check"
@@ -35,7 +36,9 @@ timeout = "2h"
 resources = { cpu = 0.5 }
 params.channel = { type = "string", summary = "a name under [modules.release.channels]" }
 params.version = { type = "string", pattern = "^[0-9A-Za-z][0-9A-Za-z.+_-]{0,99}$" }
-params.files = { type = "list", items = "path.in", summary = "exactly the files to publish; the first production JAR is the primary file" }
+params.files = { type = "list", items = "path.in", default = [], summary = "exactly the files to publish; the first production JAR is the primary file. Empty with set" }
+params.set = { type = "string", optional = true, pattern = "^[a-z0-9][a-z0-9._-]*@([0-9a-f]{7,40}|head)$", summary = "<project>@<set revision> (or @head): publish the Store bytes the set names for that project's line, under the names the line gives them, instead of files; a github release's tag is made at the line's commit unless commit is given" }
+params.artifacts = { type = "list", items = "string", optional = true, summary = "with set: the line's artifacts to publish, in this order (the first production JAR is the primary file); default: every artifact of the line, mod first" }
 params.notes = { type = "path.in", optional = true, summary = "the release notes: a UTF-8 text or Markdown file" }
 params.release_type = { type = "enum", values = ["release", "beta", "alpha"], optional = true, summary = "github, modrinth, curseforge; default: the channel's, else release" }
 params.visibility = { type = "enum", values = ["public", "unlisted", "draft"], optional = true, summary = "github public or draft; modrinth public, unlisted or draft; curseforge and maven public; default: the channel's, else public" }

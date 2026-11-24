@@ -264,9 +264,10 @@ def resolve(config: wbconfig.Config, module_schemas: dict[str, dict] | None = No
 
 
 def _out_folders(config: wbconfig.Config, roots: list[Root], modules: dict[str, dict]) -> None:
-    """The folders under [paths] out given to the modules that keep them, as this machine names them: CI's Store,
-    records and pin cache, and toolchain's pin cache, which is CI's (one folder, named once). An old key that is
-    set still wins for this release, with a warning (``wbconfig.deprecations``)."""
+    """The folders under [paths] out given to the modules that keep or read them, as this machine names them: CI's
+    Store, records and pin cache, and the same folder to every other module whose config has that key empty
+    (toolchain's pin cache, release's Store): one folder, named once. An old key that is set still wins for this
+    release, with a warning (``wbconfig.deprecations``)."""
     out = next((root for root in roots if root.name == wbconfig.OUT_ROOT), None)
     ci = modules.get("ci")
     if ci is not None and out is not None and config.get("paths.out"):
@@ -274,9 +275,14 @@ def _out_folders(config: wbconfig.Config, roots: list[Root], modules: dict[str, 
             if key in ci and not ci[key]:
                 # In the container the mount's spelling; run natively, the host's own.
                 ci[key] = "/".join([out.container.rstrip("/"), *parts]) if in_container()                     else os.path.join(out.container, *parts)
-    toolchain = modules.get("toolchain")
-    if toolchain is not None and "pin_cache" in toolchain and not toolchain["pin_cache"] and ci and ci.get("pin_cache"):
-        toolchain["pin_cache"] = ci["pin_cache"]
+    if not ci:
+        return
+    for name, values in modules.items():
+        if name == "ci" or values is None:
+            continue
+        for key in wbconfig.OUT_FOLDERS:
+            if key in values and not values[key] and ci.get(key):
+                values[key] = ci[key]
 
 
 def check_lab(values, config: wbconfig.Config | None = None) -> dict:
