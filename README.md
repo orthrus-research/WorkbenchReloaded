@@ -56,7 +56,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 |---|---|---|
 | `assets` | Assets and resource packs: content JSON generated from one manifest, reference blockstates copied from the client JAR into a pack complete but for its textures, and texture readability metrics. | `generate`, `blockstates`, `texture-metrics` |
 | `build` | Builds with receipts and reproducible archives. | `receipt`, `archive` |
-| `ci` | Run a project's jobs, gate pushes on them, and keep commits clean. | `run`, `host-run`, `gate`, `status`, `hook`, `actions`, `scrub`, `matrix`, `store-verify`, `store-export`, `store-import`, `land`, `store-platform` |
+| `ci` | Run a project's jobs, gate pushes on them, and keep commits clean. | `run`, `host-run`, `gate`, `status`, `hook`, `actions`, `scrub`, `matrix`, `store-verify`, `store-export`, `store-import`, `land`, `reach`, `store-platform` |
 | `content` | Content and data: modpack scripts, recipes and placement data, read without running the game. | `scripts`, `recipe-graph`, `placement` |
 | `drive` | Workload drivers: what a game session is made to do and see. Tours checked before a session plays them, camera paths made from keyframes and checked against the frames captured along them, and block galleries laid out for review. | `tour-lint`, `path`, `path-check`, `gallery`, `send` |
 | `frames` | Score captured frames: pass or fail against references, capture noise, wrong-view checks, and PSNR/SSIM quality (from Quadrature's frames.py). | `compare`, `measure`, `check`, `quality` |

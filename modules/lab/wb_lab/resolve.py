@@ -140,6 +140,16 @@ def mod_ids(path: Path) -> list[str]:
     return sorted({str(e["modid"]) for e in entries if isinstance(e, dict) and e.get("modid")})
 
 
+def doubled(owners: dict[str, list[str]]) -> str | None:
+    """Why a launch whose members declare these mod ids ({mod id: [member, ...]}) may not start: it would load two
+    builds of one mod id. None when every mod id has one member. The Set gate asks the same of every launch."""
+    found = {mod_id: specs for mod_id, specs in owners.items() if len(specs) > 1}
+    if not found:
+        return None
+    return ("the launch would load two builds of one mod id: "
+            + "; ".join(f"{mod_id} from {', '.join(specs)}" for mod_id, specs in sorted(found.items())))
+
+
 def _jvm(table, where: str) -> dict[str, list[str]]:
     table = table or {}
     if not isinstance(table, dict) or set(table) - {"client", "server", "both"}:
@@ -737,10 +747,9 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
             collect += [c for c in own["collect"] if c not in collect]
             failures += [f for f in own["failures"] if f not in failures]
         members.append(entry)
-    doubled = {mod_id: specs for mod_id, specs in owners.items() if len(specs) > 1}
-    if doubled:
-        raise LaunchError("the launch would load two builds of one mod id: "
-                          + "; ".join(f"{mod_id} from {', '.join(specs)}" for mod_id, specs in sorted(doubled.items())))
+    refusal = doubled(owners)
+    if refusal:
+        raise LaunchError(refusal)
     own_jvm = _jvm(table.get("jvm"), f"launch.{launch}")
     if parent is not None:
         _override_jvm(jvm, own_jvm)

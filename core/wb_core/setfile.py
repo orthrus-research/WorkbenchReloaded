@@ -52,6 +52,69 @@ def check(data) -> list[str]:
     return found
 
 
+LOCAL_PATH = re.compile(r"^([A-Za-z]:[\\/]|[\\/]|\.\.?[\\/]|~)")
+SCP_LIKE = re.compile(r"^(?P<user>[A-Za-z0-9._-]+)@(?P<host>[A-Za-z0-9.-]+):(?!//)")  # git@host:org/repo.git
+
+
+def _private_host(host: str) -> bool:
+    import ipaddress
+    host = host.strip("[]").lower()
+    if host in ("localhost", "") or host.endswith((".localhost", ".local", ".internal", ".lan", ".home")):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return "." not in host  # a bare machine name resolves only on some network
+    return not address.is_global
+
+
+def url_problem(url) -> str | None:
+    """Why ``url`` is not one a public set may carry, or None. A public set names repositories anyone can fetch:
+    https:// (or ssh, or git@host:path) on a public host, with no credentials. Refused: file: URLs, local paths,
+    http:// and git:// (nothing proves who answered), a user and password or token in the URL, and hosts that
+    resolve only on a private network."""
+    from urllib.parse import urlsplit
+    text = str(url or "").strip()
+    if not text:
+        return None
+    if text.lower().startswith("file:"):
+        return "a file: URL names a folder on one machine"
+    if LOCAL_PATH.match(text):
+        return "a local path names a folder on one machine"
+    scp = SCP_LIKE.match(text)
+    if scp:
+        if scp.group("user") != "git":
+            return "an ssh address with a personal user name; a public one is git@<host>:<path>"
+        return "a host on a private network" if _private_host(scp.group("host")) else None
+    parts = urlsplit(text)
+    scheme = parts.scheme.lower()
+    if scheme in ("http", "git"):
+        return f"{scheme}:// is not encrypted; use https://"
+    if scheme not in ("https", "ssh", "git+ssh"):
+        return f"{scheme or 'no'} scheme; a public set names https:// URLs"
+    if parts.password is not None or (parts.username and (scheme == "https" or parts.username != "git")):
+        return "credentials in the URL; a public set names none"
+    if _private_host(parts.hostname or ""):
+        return "a host on a private network"
+    return None
+
+
+def private_urls(data: dict) -> list[str]:
+    """Each URL in the set's lines and third entries that a public set may not carry: where it is and why (never the
+    URL itself, which may hold a credential)."""
+    found = []
+    for name, line in sorted((data.get("projects") or {}).items()):
+        problem = url_problem((line or {}).get("url"))
+        if problem:
+            found.append(f"projects.{name}.url: {problem}")
+    for name, entry in sorted((data.get("third") or {}).items()):
+        for key in ("url", "repository"):
+            problem = url_problem((entry or {}).get(key))
+            if problem:
+                found.append(f"third.{name}.{key}: {problem}")
+    return found
+
+
 def dump(data: dict) -> str:
     """The canonical text: one way to write a set, so equal sets have equal blobs."""
     ordered = dict(data)

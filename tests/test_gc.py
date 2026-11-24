@@ -164,6 +164,23 @@ class Gc(unittest.TestCase):
     def listed(self, **kw) -> dict[str, str]:
         return {i.path: i.cls for i in gc.listing(self.machine.places(), **kw).items}
 
+    def test_pass_and_gate_records_keep_what_they_name(self):
+        from wb_core import passes
+        m = self.machine
+        before = self.listed()
+        self.assertIn(str(m.store / "files" / m.blob["orphan"]), before)
+        self.assertIn(str(m.failed), before)
+        # A pass record names the orphan's bytes and the failed run's folder (its job id); a gate record stands too.
+        passes.write(m.store, "riven", "d" * 40, "build", "e" * 64,
+                     {"run": m.failed.name, "artifacts": {"orphan.jar": {"sha256": m.blob["orphan"]}}})
+        passes.write_gate(m.store, "riven", "d" * 40, {"checks": {"build": "e" * 64}})
+        age(m.store / "passes", 400)
+        after = self.listed()
+        self.assertNotIn(str(m.store / "files" / m.blob["orphan"]), after)
+        self.assertNotIn(str(m.failed), after)
+        self.assertFalse([path for path in after if "passes" in Path(path).parts or "gate" in Path(path).parts])
+        self.assertEqual(set(before) - set(after), {str(m.store / "files" / m.blob["orphan"]), str(m.failed)})
+
     def test_every_class_lists_its_candidates_and_nothing_else(self):
         m = self.machine
         self.assertEqual(self.listed(), {

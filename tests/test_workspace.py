@@ -121,6 +121,77 @@ class Gate(unittest.TestCase):
         self.assertEqual((answer["gated"], answer["refused"]), (False, []))
 
 
+class GateRecord(unittest.TestCase):
+    """The pre-push hook reads the Store's gate record of a project.toml commit's tree; without one it falls back to
+    CI's run summaries for this release, with a note. It reads files and git only, so a game holding the GPU lease
+    holds no push up: one push is taken and another refused while the lease is held."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        root = Path(self.folder.name)
+        self.root = root
+        self.repo = root / "Demo"
+        self.repo.mkdir()
+        git(self.repo, "init", "-q", "-b", "main")
+        (self.repo / "project.toml").write_text('schema = 1\ngate = ["check"]\n\n[project]\nname = "demo"\n\n'
+                                                '[checks.check]\nsteps = [["{python}", "-c", "pass"]]\n',
+                                                encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "checks")
+        self.passed = git(self.repo, "rev-parse", "HEAD")
+        (self.repo / "more.txt").write_text("more\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "more")
+        self.unchecked = git(self.repo, "rev-parse", "HEAD")
+        self.store = root / "out" / "store"
+        from wb_core import passes
+        tree = git(self.repo, "rev-parse", f"{self.passed}^{{tree}}")
+        passes.write_gate(self.store, "demo", tree, {"commit": self.passed, "checks": {"check": "k"}})
+        values = {"modules": {"ci": {"projects_root": str(root), "records": str(root / "records"),
+                                     "store": str(self.store), "projects": {"demo": {"repo": "Demo"}}}}}
+        self.workspace = Workspace(Config(values, root / "config"))
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def line(self, sha):
+        return f"refs/heads/topic {sha} refs/heads/topic {'0' * 40}"
+
+    def test_the_gate_record_decides_and_a_tree_without_one_falls_back_with_a_note(self):
+        answer = self.workspace.gate(self.workspace.find(self.repo), [self.line(self.passed)])
+        self.assertEqual((answer["refused"], answer["notes"]), ([], []))
+        answer = self.workspace.gate(self.workspace.find(self.repo), [self.line(self.unchecked)])
+        self.assertEqual(len(answer["refused"]), 1, answer)
+        self.assertIn("has not passed check", answer["refused"][0]["reason"])
+        self.assertIn("no gate record in the Store", answer["notes"][0])
+
+    def test_with_a_game_holding_the_lease_one_push_is_taken_and_another_refused(self):
+        import contextlib
+        import io
+        import time
+        from unittest import mock
+        from wb_host import lease as leases
+        game = leases.Lease(self.root / "Lab" / "lease" / "gpu.lock", {"lane": "play", "pid": os.getpid(),
+                                                                         "note": "an open game session"})
+        saved = Path.cwd()
+        try:
+            self.assertTrue(leases.occupied(self.root / "Lab" / "lease" / "gpu.lock"))
+            os.chdir(self.repo)
+            verdicts, said = {}, io.StringIO()
+            started = time.monotonic()
+            with mock.patch.object(hooks, "Workspace", lambda: self.workspace), contextlib.redirect_stderr(said):
+                for name, sha in (("passed", self.passed), ("unchecked", self.unchecked)):
+                    verdicts[name] = hooks.run("pre-push", ["origin", "url"], stdin=self.line(sha) + "\n")
+            self.assertLess(time.monotonic() - started, 30)  # answered from files and git, never waiting on the lease
+            self.assertTrue(leases.occupied(self.root / "Lab" / "lease" / "gpu.lock"))  # the game kept its lease
+        finally:
+            os.chdir(saved)
+            game.close()
+        self.assertEqual(verdicts, {"passed": 0, "unchecked": 1}, said.getvalue())
+        self.assertIn("has not passed check", said.getvalue())
+        self.assertIn("wb check", said.getvalue())
+
+
 class PushEnvironment(unittest.TestCase):
     def test_the_pre_push_gate_reads_other_folders_although_git_set_git_dir(self):
         with tempfile.TemporaryDirectory() as folder:

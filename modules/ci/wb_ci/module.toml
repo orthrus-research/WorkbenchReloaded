@@ -172,7 +172,7 @@ params.source = { type = "path.in", summary = "the folder store-export wrote" }
 
 [[command]]
 name = "land"
-summary = "One landing under lock set: each commit descends from its line and has passed its gate checks, its files are found in the Store, the new set.json and commit body are composed and scrubbed, and the lock is held while wb land publishes with the caller's git."
+summary = "One landing under lock set: each commit descends from its line, it and every consumer it reaches have pass records under their keys in the new set, its files are found in the Store, the Set gate holds (no private URL, no launch with two builds of one mod id), the new set.json and commit body are composed and scrubbed, and the lock is held while wb land publishes with the caller's git."
 handler = "wb_ci.land:land"
 aliases = ["set.land"]
 requires = { binary = ["git"] }
@@ -187,7 +187,25 @@ params.holds = { type = "object", default = {}, summary = "{<project>:<artifact>
 params.drop_holds = { type = "list", items = "string", default = [], summary = "holds to remove" }
 params.platform = { type = "object", default = {}, summary = "{key: value}: platform values to land (jdk.<major>=<build>, gradle=<version>, cleanroom=<version>, java, cleanroomgradle, cleanroom.lwjgl); every file a value names is fetched from an allowed host and kept" }
 params.third = { type = "object", default = {}, summary = "{name: {module, repository, files: {kind: {sha256, classifier?}}, licence, mod_id}}: third-party files, fetched, checked and kept; without module and repository, {source, licence, mod_id, sha256?}: the one JAR in <out>/third/<name>/, seeded into the Store" }
+params.tag = { type = "string", default = "", summary = "a tag the publish puts on each landed project's commit on its remote (scrubbed with the other ref names)" }
 result.state = { type = "string" }
+
+[[command]]
+name = "reach"
+summary = "What a landing would reach, without the lock: the would-be set exported as a candidate (for set=<candidate>), the Set gate's verdict on it, and each consumer whose [uses], tools, third entries or {gradle} checks the landing moves, with whether its pass records stand under their new keys."
+handler = "wb_ci.land:reach"
+aliases = ["set.reach"]
+requires = { binary = ["git"] }
+resources = { cpu = 1, mem_gb = 0.5 }
+timeout = "1h"
+params.base = { type = "string", pattern = "^[0-9a-f]{40}$", summary = "the Set revision to compose from (exported by wb land)" }
+params.projects = { type = "object", default = {}, summary = "{name: {commit, branch?, url?}}: what would land" }
+params.holds = { type = "object", default = {}, summary = "as for set.land" }
+params.drop_holds = { type = "list", items = "string", default = [], summary = "as for set.land" }
+params.platform = { type = "object", default = {}, summary = "as for set.land" }
+params.third = { type = "object", default = {}, summary = "as for set.land" }
+result.candidate = { type = "string" }
+result.reached = { type = "object" }
 
 [[command]]
 name = "store-platform"

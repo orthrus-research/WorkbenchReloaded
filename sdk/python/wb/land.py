@@ -3,6 +3,8 @@
     wb land                          HEAD of the worktree you stand in (or of every member of your Work)
     wb land cubature=<ref> ...       named projects at refs of their own repositories
     wb land --add cubature=<url>     a project's first line, with the url a public repository carries
+    wb land ... --tag v1.2           also tag each landed commit on its remote, as part of the publish
+    wb land a=<ref> b=<ref> --only a land only a of what was asked
     wb land --dry                    validate and compose only: nothing is published
 
 What happens, in order:
@@ -11,12 +13,18 @@ What happens, in order:
    cleaned up (it stopped before the Set moved: its landing refs are deleted).
 2. Each project's remote is fetched; a commit that does not descend from its line is refused with the git command
    that fixes it. The head of the Set is exported for the job.
-3. Each commit's gate checks run with ci.run (a pass already recorded stands), outside the lock.
-4. set.land takes lock set, checks again at the head, composes set.json and its commit body, scrubs them with every
-   ref name, and writes the landing record.
-5. Here, with the caller's own git: each commit is pushed to refs/landed/<id> on its remote; the Set commit is made
+3. Each commit's gate checks run with ci.run (a pass already recorded stands), outside the lock, producers first: a
+   project that uses another one landing with it runs against the would-be set holding that one's new line.
+4. set.reach composes the would-be set and names every consumer the landing reaches (its [uses] names a project
+   whose files changed, its tools read a moved project's tree, it uses a moved third entry, or it builds with
+   {gradle} and the platform moved); each one with no pass under its new key runs its gate checks against that set.
+5. set.land takes lock set, checks every pass again at the head, applies the Set gate (no private URL, no launch with
+   two builds of one mod id), composes set.json and its commit body, scrubs them with every ref name, and writes the
+   landing record.
+6. Here, with the caller's own git: each commit is pushed to refs/landed/<id> on its remote; the Set commit is made
    with plumbing in the Set's bare home and becomes the head (pushed fast-forward to the Set's remote when it has
-   one; this is the commit point); each set-named branch is fast-forwarded; the landing refs are deleted.
+   one; this is the commit point); each set-named branch is fast-forwarded and tagged when --tag names a tag; the
+   landing refs are deleted.
 
 A failure before the Set moves leaves every branch as it was. A failure after it leaves 'landed, branch behind',
 which the next wb land (or wb work sync) finishes from the record."""
@@ -148,8 +156,27 @@ class Lander:
     # -- landing ------------------------------------------------------------------------------------------------
     def land(self, targets: dict[str, str], *, urls: dict[str, str] | None = None, branch: str | None = None,
              deadline: float = 600, dry: bool = False, stop_after: str | None = None, holds: dict | None = None,
-             drop_holds: list | None = None, third: dict | None = None, platform: dict | None = None) -> dict:
+             drop_holds: list | None = None, third: dict | None = None, platform: dict | None = None,
+             tag: str | None = None, only: list[str] | None = None) -> dict:
         from wb_core import setfile
+        if only:
+            unknown = sorted(set(only) - set(targets))
+            if unknown:
+                raise WorkspaceError(f"--only {', '.join(unknown)}: not in this landing (it lands "
+                                     f"{', '.join(sorted(targets)) or 'no project'})")
+            left = sorted(set(targets) - set(only))
+            if left:
+                self.say(f"--only: {', '.join(left)} left out")
+            targets = {name: ref for name, ref in targets.items() if name in only}
+        for name, url in (urls or {}).items():
+            problem = setfile.url_problem(url)
+            if problem:
+                raise WorkspaceError(f"--add {name}: not a URL a public set may carry ({problem}); a repository that "
+                                     "is not public lands with no url and is found by name under the workspace root")
+        if tag:
+            checked = subprocess.run(["git", "check-ref-format", f"refs/tags/{tag}"], capture_output=True)
+            if checked.returncode != 0 or tag.startswith("-"):
+                raise WorkspaceError(f"--tag {tag!r} is not a tag name git takes")
         self.fetch()
         self.reconcile()
         revision, text = self.head()
@@ -179,6 +206,12 @@ class Lander:
                 raise WorkspaceError(f"{name} {commit[:12]} does not descend from its line {line['commit'][:12]}: "
                                      f"git rebase {line['commit'][:12]} (or git revert <range> for a rollback), "
                                      "then wb land")
+            if tag:  # a tag the remote already has on another commit would leave the publish unfinishable
+                there = git(repo, "ls-remote", "origin", f"refs/tags/{tag}", check=False).split()
+                if there and there[0] != commit and git(repo, "rev-parse", "--verify", "-q", f"{there[0]}^{{commit}}",
+                                                       check=False) != commit:
+                    raise WorkspaceError(f"{name}'s remote has tag {tag} on {there[0][:12]} already, not on "
+                                         f"{commit[:12]}: choose another --tag")
             item = {"commit": commit, "branch": branch or (line or {}).get("branch") or self._default_branch(repo)}
             if urls and name in urls:
                 item["url"] = urls[name]
@@ -188,26 +221,114 @@ class Lander:
         if not wanted and not holds and not drop_holds and not third and not platform:
             self.say(f"nothing moves: {', '.join(skipped) or 'no project'} already at its line")
             return {"state": "unchanged", "revision": revision}
+        if tag and not [n for n in wanted if n != SET]:
+            raise WorkspaceError("--tag tags the landed commit of a project, and this landing moves no project's line")
         for name, hold in holds.items():
             hold["artifacts"] = self._seed(name, hold)
-        for name, item in wanted.items():
-            self.say(f"checking {name} at {item['commit'][:12]} (its gate checks; a recorded pass stands)")
-            envelope = self.client.submit("ci.run", {"project": name, "commit": item["commit"]}).wait(None)
-            if envelope.get("outcome") != "ok":
-                raise WorkspaceError(f"{name} {item['commit'][:12]} did not pass its gate checks "
-                                     f"({envelope.get('summary')}); nothing was landed: wb show {envelope.get('job')}")
+        values = {"base": revision, "holds": holds, "drop_holds": drop_holds, "third": third, "platform": platform}
+        # Producers first: the Set's own change against the head; then each wave of landed projects, a project that
+        # uses (or reads the files of) another one landing here running after it, against a would-be set that holds
+        # the waves before it (and any hold, third entry or platform value this landing moves).
+        if SET in wanted:
+            self._check(SET, wanted[SET]["commit"], "", "its gate checks against the head")
+        moves_set = bool(holds or drop_holds or third or platform or SET in wanted)
+        built = {SET: wanted[SET]} if SET in wanted else {}
+        for index, wave in enumerate(self._waves({n: i for n, i in wanted.items() if n != SET})):
+            candidate = self._reach(built, values)["candidate"] if index or moves_set else ""
+            for name in wave:
+                self._check(name, wanted[name]["commit"], candidate,
+                            "its gate checks" + (f" against the would-be set {candidate}" if candidate else ""))
+                built[name] = wanted[name]
+        reach = self._reach(wanted, values)
+        reached = reach.get("reached") or {}
+        for note in reach.get("notes") or []:
+            self.say(note)
+        for warning in reach.get("warnings") or []:
+            self.say(f"warning: {warning}")
+        self._check_reached(reached, reach["candidate"])
         landing = time.strftime("l%Y%m%d%H%M%S") + secrets.token_hex(2)
         job = self.client.submit("set.land", {"landing": landing, "base": revision, "projects": wanted,
                                              "deadline": deadline, "caller": os.environ.get("WB_CALLER", ""),
                                              "holds": holds, "drop_holds": drop_holds, "third": third,
-                                             "platform": platform})
+                                             "platform": platform, "tag": tag or ""})
         self.say(f"{job.id}  set.land {landing}  (wb show {job.id})")
         record = self._prepared(job, landing)
         if dry:  # nothing was pushed, so nothing is deleted from any remote either
             from wb_core import landing as landings
             landings.move(self.store, landing, "abandoned", why="a dry landing publishes nothing", refs_dropped=True)
-            return {"state": "dry", "landing": landing, "set_json": record["set_json"], "message": record["message"]}
-        return self.publish(record, stop_after=stop_after)
+            return {"state": "dry", "landing": landing, "set_json": record["set_json"], "message": record["message"],
+                    "reached": self._reached(record, reached)}
+        result = self.publish(record, stop_after=stop_after)
+        return {**result, "reached": self._reached(record, reached)}
+
+    @staticmethod
+    def _reached(record: dict, asked: dict) -> dict:
+        """What the landing reached, as set.land judged it under the lock, with whether each pass stood beforehand."""
+        return {name: {**item, **({"stands": asked[name]["stands"]} if name in asked else {})}
+                for name, item in (record.get("reached") or {}).items()}
+
+    def _check(self, name: str, commit: str, candidate: str, what: str):
+        self.say(f"checking {name} at {commit[:12]} ({what}; a recorded pass stands)")
+        envelope = self.client.submit("ci.run", {"project": name, "commit": commit,
+                                                 **({"set": candidate} if candidate else {})}).wait(None)
+        if envelope.get("outcome") != "ok":
+            raise WorkspaceError(f"{name} {commit[:12]} did not pass its gate checks "
+                                 f"({envelope.get('summary')}); nothing was landed: wb show {envelope.get('job')}")
+
+    def _reach(self, projects: dict, values: dict) -> dict:
+        """set.reach for these projects and values: the would-be set's candidate name and what it reaches."""
+        envelope = self.client.submit("set.reach", {**values, "projects": projects}).wait(None)
+        if envelope.get("outcome") != "ok":
+            raise WorkspaceError(f"the landing cannot be composed: {envelope.get('summary')}; nothing was landed: "
+                                 f"wb show {envelope.get('job')}")
+        return dict(envelope.get("data") or {})
+
+    def _check_reached(self, reached: dict, candidate: str):
+        """Runs the gate checks of every reached consumer with no pass under its new key, against the would-be set,
+        all submitted at once; a consumer whose pass stands is not run again."""
+        if not reached:
+            return
+        jobs = {}
+        for name, item in sorted(reached.items()):
+            why = ", ".join(item.get("why") or [])
+            if item.get("stands"):
+                self.say(f"reached {name} at {item['commit'][:12]} ({why}): its pass stands")
+                continue
+            self.say(f"reached {name} at {item['commit'][:12]} ({why}): checking it against the would-be set")
+            jobs[name] = self.client.submit("ci.run", {"project": name, "commit": item["commit"], "set": candidate})
+        failed = []
+        for name, job in jobs.items():
+            envelope = job.wait(None)
+            if envelope.get("outcome") != "ok":
+                failed.append(f"{name} {reached[name]['commit'][:12]} ({', '.join(reached[name].get('why') or [])}): "
+                              f"{envelope.get('summary')} (wb show {job.id})")
+        if failed:
+            raise WorkspaceError("the landing would break what it reaches, so nothing was landed: " + "; ".join(failed))
+
+    def _waves(self, wanted: dict) -> list[list[str]]:
+        """The landed projects in the order they build: a project whose [uses] names, or whose checks' tools read,
+        another one landing here comes after it. A cycle is refused."""
+        import tomllib
+        edges = {}
+        for name, item in wanted.items():
+            text = git(self._repo(name), "show", f"{item['commit']}:project.toml", check=False)
+            try:
+                data = tomllib.loads(text) if text else {}
+            except tomllib.TOMLDecodeError:
+                data = {}
+            needs = set(data.get("uses") or {})
+            for check in (data.get("checks") or {}).values():
+                needs |= {str(t).split(":")[0] for t in (check or {}).get("tools") or []}
+            edges[name] = (needs & set(wanted)) - {name}
+        waves, done = [], set()
+        while len(done) < len(edges):
+            wave = sorted(n for n, needs in edges.items() if n not in done and needs <= done)
+            if not wave:
+                raise WorkspaceError("these projects use each other, so none of them can build first: "
+                                     + ", ".join(sorted(set(edges) - done)))
+            waves.append(wave)
+            done |= set(wave)
+        return waves
 
     def _seed(self, name: str, hold: dict) -> dict:
         """Seeds a hold's file into the Store with its source and reason; returns its artifacts entry."""
@@ -325,9 +446,11 @@ class Lander:
         return made.stdout.strip()
 
     def finish(self, record: dict) -> dict:
-        """Fast-forwards each set-named branch to its line and deletes the landing refs."""
+        """Fast-forwards each set-named branch to its line, puts the landing's tag (when it has one) on each landed
+        commit, and deletes the landing refs."""
         from wb_core import landing as landings
         landing = record["id"]
+        tag = record.get("tag")
         behind = []
         for name, member in record["projects"].items():
             repo = self._repo(name)
@@ -337,6 +460,12 @@ class Lander:
             if pushed.returncode != 0:
                 behind.append(f"{name} {member['branch']}: {(pushed.stderr or pushed.stdout).strip()[-300:]}")
                 continue
+            if tag:  # a tag already there on this commit is fine; on another commit the push is refused
+                pushed = subprocess.run(["git", "push", "--quiet", "origin", f"{member['commit']}:refs/tags/{tag}"],
+                                        cwd=repo, capture_output=True, text=True, env={**os.environ, **GIT_ENV})
+                if pushed.returncode != 0:
+                    behind.append(f"{name} tag {tag}: {(pushed.stderr or pushed.stdout).strip()[-300:]}")
+                    continue
             subprocess.run(["git", "push", "--quiet", "origin", f":refs/landed/{landing}"], cwd=repo,
                            capture_output=True, env={**os.environ, **GIT_ENV})
         if behind:
@@ -420,7 +549,12 @@ def main(args) -> int:
         for name in urls:
             targets.setdefault(name, "HEAD")
         result = lander.land(targets, urls=urls, branch=args.branch, dry=args.dry, holds=holds,
-                             drop_holds=list(args.drop_hold or []), third=third, platform=platform)
+                             drop_holds=list(args.drop_hold or []), third=third, platform=platform,
+                             tag=args.tag, only=list(args.only or []))
+        reached = result.get("reached") or {}
+        if result.get("state") in ("landed", "dry", "set-pushed"):
+            _say("reached: " + (", ".join(f"{n} at {i['commit'][:12]} ({', '.join(i.get('why') or [])})"
+                                          for n, i in sorted(reached.items())) or "no other project"))
         if result.get("state") == "landed" and not args.targets:
             from . import setwork  # a landing from this folder moves this folder's .set
             found = setwork.find(Path.cwd())
