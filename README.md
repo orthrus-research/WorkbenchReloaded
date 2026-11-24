@@ -44,7 +44,7 @@ In development: version 0.1.0 is unreleased, and there are no releases yet;
   [--note T] [--limit D] [--detach] [--quiet] -- <command>` gives any command a turn in a lane of its own (one that
   was waiting keeps its place when started again, and a detached one outlives its shell); `wb gpu leave <lane>`
   withdraws one.
-- **SDKs** (`sdk/`) for Python (with the `wb` CLI), Node/TypeScript, Java with a Gradle plugin, and PowerShell,
+- **SDKs** (`sdk/`) for Python (with the `wb` CLI), Node/TypeScript, Java and PowerShell,
   their envelope types generated from `schema/envelope.schema.json`.
 
 Modules follow a taxonomy of what a command does in Minecraft modding, one module per kind of operation, so a
@@ -64,7 +64,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 | `lab` | Game sessions: native client sessions on the host through wb-host (instances, the GPU lease, the lab home), and headless dedicated-server sessions in the container. | `gpu`, `prepare`, `play`, `resolve`, `turn`, `install-server`, `pack`, `assemble`, `build`, `run`, `send`, `keep`, `freeze`, `thaw`, `server` |
 | `ledger` | Formal results, costs and market prices in one queryable database. | `query`, `runs`, `findings`, `show`, `costs`, `calls`, `add-run`, `add-finding`, `supersede`, `link-run`, `add-machine`, `prune`, `import`, `import-ci`, `import-results`, `import-json`, `parse-log` |
 | `mixin` | Mixin and patches: verifying Mixin and patch application without the game. | `remap-proof`, `apply`, `doctor` |
-| `plan` | Declarative turns and campaigns: pinned inputs, a declared protocol, steps that are Workbench commands; checked first, then run on the host or a rented GPU. | `check`, `run` |
+| `plan` | Declarative turns and campaigns: pinned inputs, a declared protocol, steps that are Workbench commands; checked first, then run on the host. | `check`, `run` |
 | `probe` | Probes and harnesses: JVM runs without the game. Small Java programs compiled against an artifact and run in throwaway JVMs on known JDKs. | `jdk-matrix`, `api-consumer` |
 | `profile` | Profiling and diagnostics of Java game processes and the GPU they run on: JFR recordings over time windows, cost charged to the code that incurred it, native memory by owner, the JFR settings that feed them, and whole-device GPU telemetry sampled beside a run and read by window. | `jfr`, `attribute`, `memory`, `settings`, `gpu-sample`, `gpu-report` |
 | `release` | Publish built mod artifacts to GitHub releases, Modrinth, CurseForge, Maven repositories, Maven Central and our own Maven mirror: checked against the publication allow-list, quoted as a plan, sent only after an explicit yes. | `check`, `publish`, `status` |
@@ -74,7 +74,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 | `source` | Formatting, lint and determinism of source code. | `format`, `strict-math` |
 | `toolchain` | JDKs, pinned inputs, dependency repair and the rescue repository. | `jdk`, `pins`, `patch`, `repo-add`, `repo-list`, `repo-verify`, `repo-init`, `gradle-home` |
 | `tools` | The engine of the former standalone tools. Its tools are commands of the taxonomy's modules: toolchain, build, jar, source, runs and ci. | none (aliases only) |
-| `vast` | Rent GPU machines on Vast.ai, run bundles on them, and record market prices and charges. | `offers`, `market`, `charges`, `instances`, `destroy`, `keys`, `rent`, `probe`, `bundle-check`, `bundle-launch`, `bundle`, `lab-inputs` |
+| `vast` | Rent GPU machines on Vast.ai, run bundles on them, and record market prices and charges. | `offers`, `market`, `charges`, `instances`, `destroy`, `keys`, `rent`, `probe`, `bundle-check`, `bundle-launch` |
 | `world` | Worlds on disk and as generated: what a stopped save holds, how two worlds differ (save by save or by digest), and a generator's windows against golden digests, sampled without the game. | `read`, `diff`, `digest-diff`, `light-diff`, `golden`, `preview` |
 <!-- end generated modules -->
 
@@ -90,6 +90,9 @@ file names checked out at the commit the project pins. The checkouts are only re
 (below), and the Python environments the project names, built once per set of requirements. The run records stay in Workbench, where `ci.gate` reads them:
 `ci.hook project=NAME` installs a pre-push hook that refuses a commit whose tree has not passed. `commit=worktree`
 runs the checkout's working tree as it would be committed. Projects are declared in `[modules.ci.projects]`.
+A run's summary keeps each check's and step's time and peak memory (`peakRssBytes`: the most resident memory the
+step's process tree held at once, sampled every half second while it ran; a Gradle daemon counts, the step's own or
+one it reuses), and `wb show` prints them under the job.
 
 Host checks (`on = "host"`, `gpu = true` in project.toml) run only when named and only for a project in the machine's
 `[lab] trusted`: `wb check gl` sends them to `ci.host-run`, which runs them natively from a clean clone on the host,
@@ -179,28 +182,6 @@ a launch file (below): `wb play`, `lab.build` and `lab.run`.
 
 The drive agent (`mods/drive-agent`) is a small client mod a session adds: it captures views once they settle and
 answers requests on the game's own thread (status, screenshot, chat, keys, clicks), which `drive.send` writes.
-
-## The Gradle plugin
-
-`sdk/gradle` is a Gradle plugin, `cc.orthrus.wb`, with two task types. `WbTask` runs a Workbench command and fails
-the build on the outcomes in `failOn`, keeping the settled envelope. `WbRun` runs an entry point on a class path the
-build prepares, a mod build's remapped configurations included, with no game client or server: it refuses to start
-when a `pin(file, sha256)` no longer matches or a class in `singleProvider` comes from none or several class path
-entries, and keeps a receipt (`build/wb/<task>.run.json`) of the main class, arguments, JVM, every class path entry
-with its SHA-256, and the exit code. `sdk/gradle/sample` uses both.
-
-A build applies it from an included build, `pluginManagement { includeBuild('<checkout>/sdk/gradle') }`, or by id
-and version from the rescue repository. Its JAR is the same bytes from the same sources and JDK on every machine, so
-it goes in like any other file:
-
-```
-gradle -p sdk/gradle jar
-wb run toolchain.repo-add coordinates=cc.orthrus:wb-gradle-plugin:0.1.0 plugins=cc.orthrus.wb \
-  file=sdk/gradle/build/libs/wb-gradle-plugin-0.1.0.jar sha256=<its SHA-256> reason="the Workbench Gradle plugin, built from this checkout"
-```
-
-Then `plugins { id 'cc.orthrus.wb' version '0.1.0' }` works in every build that reads the repository: those
-`ci.run` runs, and builds on the host once `toolchain.repo-init gradle_home=...` has written its init script.
 
 ## Config layers
 

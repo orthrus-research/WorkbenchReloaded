@@ -117,7 +117,7 @@ class Engine(unittest.TestCase):
             log = Path(folder) / "step.log"
             started = time.monotonic()
             # The grandchild outlives the step here (no job owns it), so it must not sit in the folder removed below.
-            code, seconds, _ = actions.run_step([sys.executable, "-c", HOLDS_PIPE], log, Path(__file__).parent, {})
+            code, seconds, _, _ = actions.run_step([sys.executable, "-c", HOLDS_PIPE], log, Path(__file__).parent, {})
             self.assertEqual(code, 0)
             self.assertLess(time.monotonic() - started, actions.PIPE_GRACE + 2)
             self.assertIn("started", log.read_text(encoding="utf-8"))

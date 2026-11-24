@@ -121,6 +121,9 @@ class Ci(unittest.TestCase):
         first = self.c.submit("ci.run", {"project": "demo"}).result(timeout=600)
         self.assertEqual(first.outcome, "ok", first.summary)
         self.assertEqual(sorted(first.data.passed), ["hello", "pinned"])
+        hello = first.data.engine["jobs"]["hello"]
+        self.assertGreater(hello["steps"][0]["peakRssBytes"], 2**20)  # the step's process tree, sampled as it ran
+        self.assertEqual(hello["peakRssBytes"], hello["steps"][0]["peakRssBytes"])
         self.assertEqual(first.data.pinned["lib"], self.lib_v1)  # the pinned commit, not the lib's HEAD
         self.assertEqual(first.data.trees["demo"], git(self.demo, "rev-parse", "HEAD^{tree}"))  # the commit's own tree
         self.assertFalse((self.demo / ".local").exists())          # the checkout was only read

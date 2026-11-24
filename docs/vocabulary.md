@@ -44,7 +44,7 @@ because the thing it names is still there; each goes with the release that remov
 | Retired | Say instead | Kept in |
 |---|---|---|
 | `pin chain`, `chained pin` | the Set: one line per project | |
-| `pin cache` | the Store | `vast.lab-inputs` (goes with the lab's input archives) |
+| `pin cache` | the Store | |
 | `pins` | the projects' lines in the Set, or a project's uses | `wb status` (`--doctor` reports the pins that remain), `ci.run` (clones pinned repositories until the last `actions.toml` is converted) |
 | `workflow`, `workflows` | a check, or the gate list | `wb check` (an `actions.toml` still names its workflow) |
 | `launch set` | a launch | |

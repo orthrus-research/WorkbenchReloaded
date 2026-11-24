@@ -1,7 +1,7 @@
 [module]
 name = "plan"
 version = "0.1.0"
-summary = "Declarative turns and campaigns: pinned inputs, a declared protocol, steps that are Workbench commands; checked first, then run on the host or a rented GPU."
+summary = "Declarative turns and campaigns: pinned inputs, a declared protocol, steps that are Workbench commands; checked first, then run on the host."
 
 [[command]]
 name = "check"
@@ -9,7 +9,6 @@ summary = "Check a plan without running anything: commands active, parameters kn
 handler = "wb_plan.commands:check"
 resources = { cpu = 0.2 }
 params.plan = { type = "path.in", summary = "a plan TOML file" }
-params.machine = { type = "enum", values = ["host", "rental"], optional = true }
 result.problems = { type = "list" }
 result.warnings = { type = "list" }
 
@@ -21,5 +20,4 @@ resources = { cpu = 0.2 }
 timeout = "12h"
 cancel_grace = "4m"
 params.plan = { type = "path.in" }
-params.machine = { type = "enum", values = ["host", "rental"], optional = true, summary = "overrides plan.machine" }
 result.ran = { type = "list" }

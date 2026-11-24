@@ -105,6 +105,10 @@
   session headless, writing `session.json`. Every load of such a bundle (`vast.bundle-check`, the quote,
   `vast.rent`) refuses one whose member or JDK archive is missing or other bytes, and the quote refuses one
   without the EULA's acceptance. `lab.build` takes `store` and `sources`, the copies a bundle carries.
+- The template rental route is retired: `vast.bundle` (a bundle from a template in config) and `vast.lab-inputs`
+  (its input archives) answer `vast.bundle-launch` for one release, and a plan with `machine = "rental"` or a
+  `[rental]` table is refused with the same pointer; `plan.check` and `plan.run` lose `machine`. `[modules.vast]
+  templates` and `root` are read by nothing and accepted until the machine's config drops them.
 - `wb gpu`: the lease's holder, its waiters in the order they are served and stuck lanes; `wb gpu run` gives any
   command a turn in a lane of its own, with a note, a limit, `--detach` (outlives the shell) and `--quiet`; a
   waiter started again keeps its place; `wb gpu leave` withdraws a lane. The old lock path and variable names stay
@@ -122,6 +126,11 @@
   of starting the engine as a process and reading its JSON from the output. Steps still run as processes of their
   own under the project's interpreter, and cancelling the job kills them; the `actions` command line still reads the
   identities from WB_SET_IDENTITY, WB_JDK_IDENTITY and WB_TOOLS_ROOTS.
+- Each check's and step's peak memory in the run summary (`peakRssBytes`): the most resident memory the step's
+  process tree held at once, sampled while it ran from `/proc` (the step's descendants and its session, so a Gradle
+  daemon counts) or, on Windows, a Job Object the step is put in, and a JVM the step reuses over a local TCP
+  connection (an earlier step's Gradle daemon); `wb show` prints it per check and step, and `timing.md` has a
+  column for it.
 - `[paths]` names each folder once, as the host names it: `out` (the read-write root, mounted at `/mnt/out`, holding
   the Store, the run records and the one pin cache as `store`, `ci/records` and `cache/pins`), `releases`, `backup`
   and `[paths.roots]` for the rest, each mounted at `/mnt/<name>`. The old spellings, `[paths.roots.out]`, a root's
@@ -143,8 +152,8 @@
   launch was resolved from, and `[lab] env` can name the runtime cache (`cache`) for drivers.
 - The Windows host runner, sharing the GPU lease and lanes with gpu_queue.py; host routines that need no GPU run
   beside the lease holder.
-- SDKs: Python with the `wb` CLI, Node/TypeScript, Java with a Gradle plugin (the same JAR bytes on every machine,
-  and `WbRun` tasks that keep a receipt), PowerShell.
+- SDKs: Python with the `wb` CLI, Node/TypeScript, Java, PowerShell. The Gradle plugin (`sdk/gradle`,
+  `cc.orthrus.wb`) is removed: no project applies it.
 - The image: Ubuntu 26.04 by digest, apt from a pinned snapshot, Temurin 8, 17, 25, 26, 27 and 28 EA by SHA-256;
   optional toolchains (Node, Zig), each pinned by SHA-256 and built in only for a machine that names them.
   The entrypoint gives Workbench's user the pin caches and records folder configured inside an rw root

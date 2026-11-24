@@ -13,6 +13,8 @@ Jobs and workflows live in ``actions.toml`` at the project root (``[actions] con
 orthrus.toml names another file). Jobs run concurrently within a core and memory budget, each
 after the jobs it ``needs``; a job's steps run in order and each step's output goes to
 ``.local/actions/<run>/<job>/<NN-step>.log``. Every run ends with a ``summary.json`` that
+keeps each job's and step's time and peak memory (``peakRssBytes``: the most resident memory
+the step's process tree held at once, sampled while it ran; a job's is its largest step's) and
 records the Git trees it tested, for the project and any other ``[repositories]``: the trees
 their working trees would commit, so a pass before a commit names that commit's tree. The push
 gate reads those records. A job that lists ``inputs`` is a pure check: when those files, its
@@ -47,6 +49,7 @@ from typing import Any
 from . import cli
 from .cli import FINDING, OK, USAGE, Output, ToolError
 from .config import project_root, tool_settings
+from .processes.tree import TreeMemory
 
 SUMMARY_SCHEMA = "orthrus.actions.summary.v1"
 DEFAULT_CONFIG = "actions.toml"
@@ -783,11 +786,13 @@ def run_step(
     *,
     base: Any = None,
     stop: threading.Event | None = None,
-) -> tuple[int, float, list[Any]]:
-    """(exit code, seconds, timing records). A step may print ``timing {json}`` lines, which the
-    summary keeps and ``actions report`` tabulates. A command that cannot start exits 127. The step's
-    environment is ``base`` (None: this process's) with ``env`` over it. When ``stop`` is set while the step
-    runs, the step and what it started are killed."""
+) -> tuple[int, float, list[Any], int | None]:
+    """(exit code, seconds, timing records, peak RSS in bytes). A step may print ``timing {json}``
+    lines, which the summary keeps and ``actions report`` tabulates. A command that cannot start
+    exits 127. The step's environment is ``base`` (None: this process's) with ``env`` over it.
+    When ``stop`` is set while the step runs, the step and what it started are killed. The peak is
+    the most resident memory the step's process tree held at once while it ran
+    (``processes.tree``); None where it could not be read."""
     started = time.monotonic()
     timings: list[Any] = []
     with log.open("w", encoding="utf-8", errors="replace") as stream:
@@ -809,7 +814,8 @@ def run_step(
             )
         except OSError as error:
             stream.write(f"cannot start {command[0]}: {error}\n")
-            return 127, time.monotonic() - started, timings
+            return 127, time.monotonic() - started, timings, None
+        memory = TreeMemory(process)  # sampled until the step exits, a daemon it started included
         assert process.stdout is not None
         lock = threading.Lock()
 
@@ -837,6 +843,7 @@ def run_step(
             with lock:
                 stream.write("\n(stopped: the run was stopped)\n")
             code = process.wait()
+        peak = memory.stop()
         reader.join(PIPE_GRACE)
         with lock:
             if reader.is_alive():
@@ -844,7 +851,7 @@ def run_step(
             stream.flush()
         if not reader.is_alive():
             process.stdout.close()  # the engine may live on in its caller's process: no pipe is left behind
-    return code, time.monotonic() - started, timings
+    return code, time.monotonic() - started, timings, peak
 
 
 def _wait(process: subprocess.Popen[str], stop: threading.Event | None) -> int | None:
@@ -872,6 +879,10 @@ def _kill_tree(process: subprocess.Popen[str]) -> None:
         process.kill()
     except OSError:
         pass
+
+
+def mebibytes(value: int | None) -> int | None:
+    return None if value is None else round(value / 2**20)
 
 
 def tail(log: Path, lines: int = 15) -> str:
@@ -903,8 +914,8 @@ def run_job(
         def echo(line: str) -> None:
             out.line(f"    [{name}] {line}")
 
-        code, seconds, timings = run_step(command, log, cwd, env, echo if verbose else None, base=config.env,
-                                          stop=config.stop)
+        code, seconds, timings, peak = run_step(command, log, cwd, env, echo if verbose else None,
+                                                base=config.env, stop=config.stop)
         entry: dict[str, Any] = {
             "name": step["name"],
             "exitCode": code,
@@ -913,16 +924,22 @@ def run_job(
             if log.is_relative_to(config.root)
             else str(log),
         }
+        if peak is not None:
+            entry["peakRssBytes"] = peak
         if timings:
             entry["timing"] = timings
         steps.append(entry)
         ok = code == 0
-        out.line(f"  {'ok  ' if ok else 'FAIL'} {name} / {step['name']:<22} {seconds:7.1f} s")
+        out.line(f"  {'ok  ' if ok else 'FAIL'} {name} / {step['name']:<22} {seconds:7.1f} s"
+                 + (f"  peak {mebibytes(peak)} MiB" if peak is not None else ""))
         if not ok:
             out.line(tail(log))
             status = "failed"
             break
     result: dict[str, Any] = {"status": status, "steps": steps}
+    peaks = [s["peakRssBytes"] for s in steps if s.get("peakRssBytes") is not None]
+    if peaks:
+        result["peakRssBytes"] = max(peaks)  # its steps run one after another
     if status == "passed" and job.get("artifacts"):
         try:
             result["artifacts"] = keep_artifacts(config, name, values, run_dir)
@@ -1236,7 +1253,7 @@ def _table(headers: list[str], rows: list[list[Any]]) -> list[str]:
 
 
 def report(summary: dict[str, Any]) -> str:
-    """Markdown: every job and step with its time, then the timing records steps printed."""
+    """Markdown: each job and step with its time and peak memory, then the steps' timing records."""
     lines = [f"# Timing for run {summary.get('runId')}", ""]
     lines.append(
         f"Targets: {' '.join(summary.get('targets', []))}; "
@@ -1250,15 +1267,21 @@ def report(summary: dict[str, Any]) -> str:
         if result.get("cached"):
             status = f"{status} (cached from {result['cached']})"
         seconds = float(sum(s.get("seconds", 0) for s in steps))
-        rows.append([job, status, result.get("begun"), result.get("ended"), seconds])
-    lines += _table(["Job", "Status", "Begun", "Ended", "Seconds"], rows)
+        rows.append([job, status, result.get("begun"), result.get("ended"), seconds,
+                     mebibytes(result.get("peakRssBytes"))])
+    lines += _table(["Job", "Status", "Begun", "Ended", "Seconds", "Peak MiB"], rows)
     rows = [
-        [f"{job} / {step['name']}", step.get("exitCode"), step.get("seconds")]
+        [
+            f"{job} / {step['name']}",
+            step.get("exitCode"),
+            step.get("seconds"),
+            mebibytes(step.get("peakRssBytes")),
+        ]
         for job, result in summary.get("jobs", {}).items()
         for step in result.get("steps", [])
     ]
     if rows:
-        lines += ["", "## Steps", ""] + _table(["Step", "Exit", "Seconds"], rows)
+        lines += ["", "## Steps", ""] + _table(["Step", "Exit", "Seconds", "Peak MiB"], rows)
     records = [
         (job, step["name"], record)
         for job, result in summary.get("jobs", {}).items()

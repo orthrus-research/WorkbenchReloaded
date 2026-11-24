@@ -15,8 +15,8 @@ market_share = { type = "float", default = 0.3, min = 0.0, max = 1.0, summary = 
 market_limit = { type = "int", default = 25, min = 5, max = 500, summary = "rows per card per snapshot; cards rotate across snapshots" }
 ssh_retry_seconds = { type = "float", default = 10, min = 0.01 }
 cards = { type = "list", items = "string", default = [], summary = "the cards offer lookups search and vast.market rotates through; none are built in" }
-templates = { type = "object", default = {}, summary = "bundle templates by name, [modules.vast.templates.<name>]: a folder and its entry script, the input archives and their recipes, how a plan's game steps are written and which results become step outputs (every key: modules/vast/docs/templates.md)" }
-root = { type = "string", default = "", summary = "the host folder a template's relative folder and its recipes' relative repositories are under (a shared config names them relatively)" }
+templates = { type = "object", default = {}, summary = "retired: read by nothing since vast.bundle-launch makes a rental bundle from a launch file alone (the template route is gone); remove it from this machine's config" }
+root = { type = "string", default = "", summary = "retired: read by nothing since vast.bundle-launch makes a rental bundle from a launch file alone (the template route is gone); remove it from this machine's config" }
 
 [requires]
 secrets = ["vast_api_key"]
@@ -121,33 +121,3 @@ params.disk = { type = "int", default = 32, min = 16, max = 500, summary = "the 
 params.purpose = { type = "string", default = "calibration", summary = "recorded with the rental" }
 result.bundle = { type = "string" }
 result.problems = { type = "list" }
-
-[[command]]
-name = "bundle"
-summary = "Make a rental bundle from a template in config, filled with a plan's game steps and the template's input archives; checked, with a manifest of every file's SHA-256. Rents nothing."
-handler = "wb_vast.commands:bundle"
-requires = { config = ["modules.vast.templates"] }
-resources = { cpu = 0.5 }
-params.template = { type = "string", default = "", summary = "a name under [modules.vast.templates]; empty: the only one configured" }
-params.steps = { type = "list", items = "object", default = [], summary = "the game steps to write as the template declares, as plan.run passes them: id, command, role, params" }
-params.values = { type = "object", default = {}, summary = "values the template's steps file may use as {values.<key>}; plan.run passes its [rental] table" }
-params.plan = { type = "path.in", optional = true, summary = "instead of steps: a folder already holding the template's steps file and the files it names, taken as it is" }
-params.lab = { type = "path.in", optional = true, summary = "the folder of the template's input archives (vast.lab-inputs makes them, with receipts)" }
-params.name = { type = "string", optional = true, summary = "the bundle's name; default: the plan folder's, else the template's" }
-params.dry_run = { type = "bool", default = false, summary = "check the template, the steps and the inputs (against their pins and receipts, unhashed) and write nothing" }
-result.bundle = { type = "string" }
-result.problems = { type = "list" }
-result.outputs = { type = "list" }
-
-[[command]]
-name = "lab-inputs"
-summary = "Build the input archives a template declares, each from its pinned commit in a throwaway clean tree by its recipe, with a receipt; archives the pin cache holds are taken from it. Rents nothing."
-handler = "wb_vast.commands:lab_inputs"
-requires = { config = ["modules.vast.templates"], binary = ["git"] }
-resources = { cpu = 2, mem_gb = 4 }
-timeout = "3h"
-params.template = { type = "string", default = "", summary = "a name under [modules.vast.templates]; empty: the only one configured" }
-params.inputs = { type = "list", items = "string", default = [], summary = "the inputs to build, by file name; empty: every input with a recipe" }
-params.cached = { type = "bool", default = true, summary = "take an archive the pin cache holds (by its pinned SHA-256, or as an earlier build of the same recipe made it); false: build again to check it reproduces" }
-params.keep = { type = "bool", default = false, summary = "keep the clean trees after the run" }
-result.archives = { type = "list" }

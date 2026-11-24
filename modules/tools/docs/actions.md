@@ -204,9 +204,18 @@ raises `Stopped` after the run's summary is written.
 
 `summary.json` (`orthrus.actions.summary.v1`) holds `runId`, `targets`, `order`, `trees`,
 `treesChanged`, `seconds` and `jobs`, where each job has `status` (`passed`, `failed`,
-`skipped`), `steps` (`name`, `exitCode`, `seconds`, `log`, `timing`), `begun` and `ended` in
-seconds into the run, `cached` or `inputKey` for pure checks, and `artifacts` for a job that
-keeps them. `--json` returns it as `result`.
+`skipped`), `steps` (`name`, `exitCode`, `seconds`, `peakRssBytes`, `log`, `timing`), its
+`peakRssBytes` (its largest step's), `begun` and `ended` in seconds into the run, `cached` or
+`inputKey` for pure checks, and `artifacts` for a job that keeps them. `--json` returns it as
+`result`.
+
+A step's `peakRssBytes` is the most resident memory its process tree held at once: the step's
+process, what it started and, on Linux, the rest of the session it leads (so a Gradle daemon
+counts), summed every half second while it ran, and never less than the largest high-water mark
+any one of them reported. On Windows the step is put in a Job Object (no limits, no kill on
+close) whose members are the tree. A JVM the step did not start but is connected to over TCP on
+this machine (a Gradle daemon an earlier step started and this one reuses) counts with its
+descendants while the connection lasts. Where it cannot be read the key is absent.
 
 A job's `artifacts` are glob patterns (relative to the root, or absolute; `**` crosses folders)
 for the files it builds. Once its steps pass, each match is copied to
@@ -221,7 +230,8 @@ changed (`treesChanged`) vouches for nothing. The runs folder never counts as a 
 `run --if-needed` skips jobs that already passed for the current trees, and `status` exits 1
 until every job of the workflow has.
 
-`report` writes `timing.md` beside a run's summary: jobs, steps, and the timing records.
+`report` writes `timing.md` beside a run's summary: jobs and steps with their time and peak
+memory, and the timing records.
 
 ## The push gate
 
