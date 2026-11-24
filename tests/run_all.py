@@ -67,6 +67,18 @@ PARTS = ("generated", "core", "modules", "engine")
 GENERATED = {"image/pins.py", "schema/generate.py", "tests/test_command_tables.py"}
 
 
+def _decisive(output: str, limit: int = 80) -> str:
+    """What a failed suite printed that says why: unittest's failure and error blocks (from the first FAIL: or
+    ERROR: header up to its 'Ran N tests' line), else the suite's last lines."""
+    lines = output.splitlines()
+    first = next((i for i, line in enumerate(lines) if line.startswith(("FAIL:", "ERROR:"))), None)
+    if first is None:
+        shown = lines[-limit // 2:]
+    else:
+        end = next((i for i in range(first, len(lines)) if lines[i].startswith("Ran ")), len(lines))
+        shown = lines[first:end]
+    return "\n".join("     " + line for line in shown[:limit])
+
 def part_of(suite: list[str]) -> str:
     if suite[0] in GENERATED:
         return "generated"
@@ -91,6 +103,7 @@ def main() -> int:
         print(f"{'ok  ' if done.returncode == 0 else 'FAIL'} {' '.join(suite):<44} {time.time() - started:5.1f}s  {tail[0]}")
         if done.returncode != 0:
             failed.append(suite[0])
+            print(_decisive(done.stdout + done.stderr), flush=True)
     import os
     if "engine" not in parts:
         print(f"\n{'all suites passed' if not failed else 'failed: ' + ', '.join(failed)}")
