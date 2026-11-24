@@ -382,9 +382,11 @@ class Tools(unittest.TestCase):
         self.assertTrue((folder / "lab/run.properties").is_file())
         self.assertFalse((folder / "README").exists())
 
-    def test_a_project_with_no_line_is_read_at_its_home_head(self):
+    def test_a_project_with_no_line_follows_its_branch_not_its_checkout(self):
+        main = git(self.cube, "rev-parse", "HEAD")
+        git(self.cube, "checkout", "-q", "-b", "parked", self.line)  # the home checkout sits elsewhere
         laid, folder = self.lay_out(["other:tools/**"])  # _project gives the same repository: no line for "other"
-        self.assertEqual(laid, {"other": git(self.cube, "rev-parse", "HEAD")})
+        self.assertEqual(laid, {"other": main})
         self.assertEqual((folder / "tools/a.py").read_text(encoding="utf-8"), "a2")
 
     def test_no_tools_lays_out_nothing(self):

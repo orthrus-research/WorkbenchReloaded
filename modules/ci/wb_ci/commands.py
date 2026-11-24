@@ -389,7 +389,7 @@ def _stand_ins(ctx: Context, work: Path, wanted: dict) -> list[str]:
 
 def _tools(ctx: Context, config, work: Path, revision: str) -> dict[str, str]:
     """Files a check reads from another project's tree (tools = ['<project>:<glob>']), exported at the commit the
-    run's set names for that project (a project with no line: its home checkout's HEAD), into the folder beside the
+    run's set names for that project (a project with no line: its branch in its home repository), into the folder beside the
     clone where its checkout would be, so the tools that look for a sibling checkout find them there. Returns each
     project with the commit its files came from."""
     import fnmatch
@@ -412,14 +412,20 @@ def _tools(ctx: Context, config, work: Path, revision: str) -> dict[str, str]:
     laid = {}
     for project, globs in sorted(wanted.items()):
         line = lines.get(project)
-        source = _project(ctx, project)["source"]
+        entry = _project(ctx, project)
+        source = entry["source"]
         if line:
             sha = _resolve(ctx, source, line["commit"])
         else:
-            # A project with no line (no remote, never landed) is read at its home checkout's HEAD, said aloud.
-            sha = _resolve(ctx, source, "HEAD")
-            ctx.log.info(f"tools: {project} has no line in the set {revision[:12] or '(none)'}; its home checkout's "
-                         f"HEAD {sha[:12]}")
+            # A project with no line follows its branch in its home repository (origin's when it has a remote, never
+            # whatever its home checkout happens to have checked out), and the run says which commit.
+            branch = str(entry.get("branch") or "main")
+            git_dir = str(_git_dir(ctx, source))
+            ref = next((r for r in (f"refs/remotes/origin/{branch}", f"refs/heads/{branch}", "HEAD")
+                        if _git(ctx, ["--git-dir", git_dir, "rev-parse", "--verify", "-q", f"{r}^{{commit}}"],
+                                check=False)), "HEAD")
+            sha = _resolve(ctx, source, ref)
+            ctx.log.info(f"tools: {project} has no line in the set {revision[:12] or '(none)'}; {ref} at {sha[:12]}")
         git_dir = str(_git_dir(ctx, source))
         names = _git(ctx, ["--git-dir", git_dir, "ls-tree", "-r", "--name-only", sha]).splitlines()
         chosen = sorted(n for n in names if any(fnmatch.fnmatchcase(n, g) for g in globs))
