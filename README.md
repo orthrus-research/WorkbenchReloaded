@@ -309,10 +309,22 @@ python tests/run_all.py            # every suite; --quick skips the SDK and host
 python image/pins.py check         # image locks match image/pins.toml
 python schema/generate.py --check  # SDK envelope types match the schema
 wb build                           # docker build -f image/Dockerfile -t wb-core:dev .
+wb deploy                          # this checkout's commit into service; --commit <sha> for another (the undo)
+wb dev status                      # any verb, with the CLI of the Workbench working tree you stand in
 ```
 
-Run the CLI from a checkout with `bin\wb.cmd` (or `bin/wb`). The config folder is `~/.config/wb`; start from
-`config.example`.
+`wb setup` makes this machine's first release when it has none, puts a `wb` shim in `~/.local/bin` (`WB_BIN` names
+another folder; it prints the command that adds the folder to `PATH` and never changes `PATH` itself) and installs
+the hooks. The shim and the hooks run the release in service, `<releases>/current`; `wb dev` (or `WB_DEV=1`) runs a
+working tree on purpose. Run the CLI from a checkout with `bin\wb.cmd` (or `bin/wb`). The config folder is
+`~/.config/wb`; start from `config.example`.
+
+The image holds no Workbench code. The container runs the release it was started on: `wb up` and `wb deploy` mount
+it read-only and the first start copies it into the state volume, where the daemon imports it (`image/code.sh`); a
+machine with no release yet runs the checkout in place. `wb deploy` gates on the container pass CI recorded for the
+commit's tree and on the host suite, records both in the release's `RELEASE.json`, and builds the image only when its
+own inputs changed (the image folder, the other files its Dockerfile copies, `.dockerignore`, and `[core.image]
+tools`), by the digest the image is labelled with; a Python-only deploy is a restart.
 
 The image holds its JDKs; other toolchains are optional. `image/pins.toml` pins them (`[tool.<name>]`: a download
 and its SHA-256, today Node and Zig), and a machine names the ones its projects need in `[core.image] tools =

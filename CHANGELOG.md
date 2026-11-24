@@ -12,10 +12,15 @@
 - A tool runs until its process exits, not its pipe; deadlines fire without output; nothing a job started
   outlives it (a Job Object on Windows, a child subreaper on Linux); a run stopped at its limit is a finding with
   reason kind timeout, never cached.
-- From the folder you stand in, on the host: `wb setup` installs scrub and push-gate hooks that need no daemon;
-  `wb check`, `wb job`, `wb work` (start, add, adopt, finish), `wb backup`. `wb deploy` tests, builds, drains and
-  restarts the daemon and host runner together onto an immutable release; every part reports its commit and a
-  CLI or host runner on other code is named with the fix.
+- From the folder you stand in, on the host: `wb setup` makes the first release on a machine with none, puts a
+  `wb` shim on `PATH` (printing the command that adds its folder, never changing `PATH` itself) and installs scrub
+  and push-gate hooks that need no daemon; `wb check`, `wb job`, `wb work` (start, add, adopt, finish),
+  `wb backup`, and `wb dev` for a working tree's CLI on purpose. `wb deploy [--commit <sha>]` gates on the
+  container pass CI recorded for the tree and on the host suite (both in `RELEASE.json`), drains and restarts the
+  daemon and host runner together onto an immutable release; every part reports its commit and a CLI or host
+  runner on other code is named with the fix. The image holds no Workbench code: the container runs a copy of
+  the release in its state volume, so the image is built only when its own inputs change, and a Python-only
+  deploy is a restart. `[workspace] root` names where project homes are.
 - `wb check` on a commit from before its project's conversion answers that it predates the set and names the
   setup command its own tree carries, then still runs its `actions.toml` checks; `wb status --doctor` names every
   `WB_PIN_CACHE` read, `sourceCommit`, pin file, refresh task, refresh schedule and sibling commit on the
