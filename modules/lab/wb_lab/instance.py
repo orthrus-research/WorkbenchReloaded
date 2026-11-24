@@ -21,7 +21,10 @@ resolves nothing again. It builds in stages:
    server's and client's command lines and working folders with those placeholders.
 
 One template is built per key: the launch file's bytes, the builder schema, the base, the configure hook's bytes and
-the build's own parameters. Instances are made from it by ``wb_lab.store``: read-only files (libraries, mods,
+the build's own parameters. What a session chooses is never part of it: the server's port is the session's
+(``{port}`` stays in the client's command line, and the session writes ``server-port``), as are its JVM options,
+window and views (``wb_lab.run``). A configure hook runs only for a project in ``[lab] trusted``; ``[lab] eula``
+records the machine owner's acceptance of the Minecraft EULA. Instances are made from it by ``wb_lab.store``: read-only files (libraries, mods,
 natives) are hard links to one kept copy, everything the game writes is the instance's own, and each instance carries
 its ``instance.json``. A folder without one is never touched.
 """
@@ -45,6 +48,7 @@ from wb_core import artifacts
 from wb_core.module import Context, EnvironmentProblem, ParamError, sha256_file
 
 from . import assemble
+from . import machine as machines
 from . import process as processes
 from .bases import INTERIM_BASES
 from .profile import Layout
@@ -64,6 +68,10 @@ LAYOUT = Layout(linkable_dirs=["server/libraries", "server/mods", "client/mods",
 PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 SPLICES = ("{jvm}", "{profile}", "{tweakers}")
 INSTALL_TIMEOUT = 1800
+# The port a template's server.properties is written with; a session writes its own (wb_lab.run).
+DEFAULT_PORT = 25565
+# What a session fills in a receipt's command lines, beside the roots.
+SESSION_PLACEHOLDERS = ("port",)
 
 
 def offline_uuid(name: str) -> str:
@@ -374,16 +382,15 @@ def _tree(root: Path, skip: set[str]) -> dict[str, dict]:
 # --- the command -----------------------------------------------------------------------------------------------------
 
 
-def template_inputs(launch_sha: str, base_name: str, base: dict, configure_sha: str | None, params: dict, port: int,
+def template_inputs(launch_sha: str, base_name: str, base: dict, configure_sha: str | None, params: dict,
                     eula: bool, system: str, arch: str) -> dict:
     base_sha = hashlib.sha256(json.dumps(base, sort_keys=True).encode("utf-8")).hexdigest()
     return {"builder": SCHEMA, "launch": launch_sha, "base": base_name, "base_sha256": base_sha,
-            "configure": configure_sha, "params": params, "port": port, "eula": bool(eula), "system": system,
-            "arch": arch}
+            "configure": configure_sha, "params": params, "eula": bool(eula), "system": system, "arch": arch}
 
 
 def build_template(ctx: Context, staging: Path, *, data: bytes, doc: dict, base_name: str, base: dict,
-                   configure: Path | None, params: dict, port: int, eula: bool, key: str, machine: Machine) -> dict:
+                   configure: Path | None, params: dict, eula: bool, key: str, machine: Machine) -> dict:
     """Builds the template for ``key`` in ``staging`` (which becomes ``{instance}``) and returns its receipt."""
     system, arch = assemble.host_system()
     runtime = doc["runtime"]
@@ -425,7 +432,7 @@ def build_template(ctx: Context, staging: Path, *, data: bytes, doc: dict, base_
 
     # 3. base, then the configure hook
     player = str(base.get("player") or "Player")
-    values = {"port": str(port), "seed": str(params.get("seed", "")), "player": player,
+    values = {"port": str(DEFAULT_PORT), "seed": str(params.get("seed", "")), "player": player,
               "player_uuid": offline_uuid(player)}
     write_base(base, staging, values, eula)
     configured = None
@@ -460,7 +467,7 @@ def build_template(ctx: Context, staging: Path, *, data: bytes, doc: dict, base_
                                                                    for i in built.items])
     shared = {"java": _relative(java, roots), "cache": "{cache}", "version": version, "classpath": classpath,
               "main_class": built.main_class, "player": player, "player_uuid": values["player_uuid"],
-              "assets": "{cache}/assets", "asset_index": str(index["id"]), "port": str(port),
+              "assets": "{cache}/assets", "asset_index": str(index["id"]), "port": "{port}",
               "args_file": "win_args.txt" if system == "windows" else "unix_args.txt"}
     jvm = doc.get("jvm") or {}
     profile = list((base.get("jvm_profile") or {}).get("arguments") or [])
@@ -480,7 +487,8 @@ def build_template(ctx: Context, staging: Path, *, data: bytes, doc: dict, base_
         "base": base_name,
         "configure": configured,
         "params": params,
-        "port": port,
+        "session": {"placeholders": list(SESSION_PLACEHOLDERS), "server_properties": "{instance}/server/server.properties",
+                    "default_port": DEFAULT_PORT},
         "eula": bool(eula),
         "system": system,
         "arch": arch,
@@ -505,8 +513,8 @@ def build_template(ctx: Context, staging: Path, *, data: bytes, doc: dict, base_
     }
 
 
-def build(ctx: Context, launch: str, name: str, base: str = "cubature:standalone", port: int = 25565,
-          params: dict | None = None, eula: bool = False, configure: str | None = None, fresh: bool = False):
+def build(ctx: Context, launch: str, name: str, base: str = "cubature:standalone", params: dict | None = None,
+          eula: bool = False, configure: str | None = None, fresh: bool = False):
     if not NAME.match(name):
         raise ParamError(f"name: {name!r} is not a lowercase instance name (letters, digits, . _ -)")
     if base not in INTERIM_BASES:
@@ -518,10 +526,13 @@ def build(ctx: Context, launch: str, name: str, base: str = "cubature:standalone
     hook = Path(configure) if configure else None
     if hook is not None and not hook.is_file():
         raise ParamError(f"configure: {configure} is not a file")
+    if hook is not None:  # before anything is made: the hook is the launched project's own code
+        machines.require_trusted(ctx, str(doc.get("project") or ""), f"configure hook {hook.name}")
+    eula = bool(eula) or bool(machines.lab(ctx)["eula"])
     merged = {**(doc.get("params") or {}), **(params or {})}
     system, arch = assemble.host_system()
     launch_sha = hashlib.sha256(data).hexdigest()
-    inputs = template_inputs(launch_sha, base, base_doc, sha256_file(hook) if hook else None, merged, port, eula,
+    inputs = template_inputs(launch_sha, base, base_doc, sha256_file(hook) if hook else None, merged, eula,
                              system, arch)
     key = recipe_of(inputs)
     root = _lab_root(ctx, machine)
@@ -550,7 +561,7 @@ def build(ctx: Context, launch: str, name: str, base: str = "cubature:standalone
         staging.mkdir(parents=True)
         try:
             receipt = build_template(ctx, staging, data=data, doc=doc, base_name=base, base=base_doc,
-                                     configure=hook, params=merged, port=port, eula=eula, key=key, machine=machine)
+                                     configure=hook, params=merged, eula=eula, key=key, machine=machine)
             (staging / RECEIPT).write_text(json.dumps(receipt, indent=1) + "\n", encoding="utf-8")
             try:
                 store.adopt_template(staging, key, inputs)

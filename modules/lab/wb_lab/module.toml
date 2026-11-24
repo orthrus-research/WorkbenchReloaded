@@ -345,10 +345,9 @@ timeout = "2h"
 params.launch = { type = "path.in", summary = "the launch file (wb run lab.resolve folder=<worktree> writes <worktree>/.local/launch/<name>.json); its runtime.files name the runtime's own files" }
 params.name = { type = "string", pattern = "^[a-z0-9][a-z0-9._-]*$", summary = "the instance's name: its folder under [modules.lab] instances" }
 params.base = { type = "string", default = "cubature:standalone", summary = "the base the instance starts from (wb_lab/bases.py, until its project carries it)" }
-params.port = { type = "int", default = 25565, min = 1, max = 65535, summary = "the server's port, written into the instance and its client command" }
 params.params = { type = "object", default = {}, summary = "values over the launch's params (seed, and what the configure hook reads); they are part of the template's key" }
-params.eula = { type = "bool", default = false, summary = "true writes eula.txt, recording that the requester accepts the Minecraft EULA for this instance" }
-params.configure = { type = "path.in", optional = true, summary = "a Python file whose configure(instance, launch, params, placed) makes a launched product's own changes after the base; its bytes are part of the template's key" }
+params.eula = { type = "bool", default = false, summary = "true writes eula.txt, recording that the requester accepts the Minecraft EULA for this instance; [lab] eula = true does so for every instance of the machine" }
+params.configure = { type = "path.in", optional = true, summary = "a Python file whose configure(instance, launch, params, placed) makes a launched product's own changes after the base; its bytes are part of the template's key; refused unless the launch's project is in [lab] trusted" }
 params.fresh = { type = "bool", default = false, summary = "make the instance again: replaces one of this name built from this or another template" }
 result.instance = { type = "string" }
 result.template = { type = "string" }

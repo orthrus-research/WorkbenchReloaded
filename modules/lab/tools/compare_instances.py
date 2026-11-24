@@ -222,7 +222,9 @@ def main(argv=None) -> int:
     report["commands"] = {}
     for side in ("server", "client"):
         old = normalise(olds[side], roots)
-        new = [t.replace("\\", "/") for t in receipt[side]["command"]]
+        # The port is a session's input: the old route's instance fixed one, so compare with it filled in.
+        port = str(manifest.get("port", ""))
+        new = [t.replace("\\", "/").replace("{port}", port) for t in receipt[side]["command"]]
         moved = {"{cache}/" + item["old"]: "{cache}/" + item["new"] for item in cache["renamed"]}
         report["commands"][side] = compare_commands(old, new, args.cache, moved)
         report["commands"][side]["old"] = old

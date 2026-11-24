@@ -24,3 +24,13 @@ lab_home = '../Lab'    # relative to the Workbench checkout
 # To share a GPU lease and lanes with another tool on this PC:
 # lease_file = 'D:\work\locks\native-measurement.lock'  # scrub: allow
 # coordination_dir = 'D:\work\coordination'  # scrub: allow
+
+[lab]
+# The game lab on this machine (wb setup asks for each key it lacks).
+# home = ''              # instances, sessions, the lease and lanes; empty: [runner] lab_home
+trusted = []             # projects whose configure hooks and drivers may run here, e.g. ['riven', 'cubature']
+eula = false             # true: you accept the Minecraft EULA for the instances built here (eula.txt is written)
+# Old tools join a held lease by their own variable names; a session's driver gets the values in these too:
+# [lab.env]
+# CUBIC_LAB_TURN_LEASE = 'token'
+# GPU_QUEUE_LANE = 'lane'

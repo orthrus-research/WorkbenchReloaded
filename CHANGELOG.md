@@ -45,7 +45,11 @@
   platform's Cleanroom files go into its `runtime.files`.
 - `lab.build`: an instance built from a launch file alone (runtime, content, base, configure hook, receipt), one
   template per launch file hard-linked into each instance, with `instance.json` naming every file by SHA-256 under
-  `{instance}`, `{cache}` and `{jdk:N}` and the command lines that start it.
+  `{instance}`, `{cache}` and `{jdk:N}` and the command lines that start it. The server's port is a session's
+  input, not the template's.
+- `[lab]` in machine config: `home`, `trusted` (the projects whose configure hooks and drivers may run here),
+  `eula` and `env` (more variable names a driver gets the turn token, lease or instance in); `wb setup` names each
+  key not yet set. A configure hook of a project not trusted is refused before anything is built.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,
   ledger, vast, ci, release, plan, frames, tools (the former standalone tools, 0.6.0), selftest.
 - The lab reads a profile's checkouts at a ref, each from a snapshot fixed at its commit for the whole job

@@ -216,7 +216,9 @@ Store file hashed again and placed by side; the base's files and JVM profile (`b
 `{instance}`, `{cache}` and `{jdk:N}`, with the launch file's SHA-256 and the server's and client's command lines. One
 template is built per launch file, base and parameters, and each further instance is hard-linked from it in under a
 second. `modules/lab/tools/compare_instances.py` compares such an instance with one the old route prepared, file by
-file and command line by command line.
+file and command line by command line. A configure hook runs only for a project the machine's `[lab] trusted` names,
+and `eula.txt` is written only where `[lab] eula = true` (or the request) accepts the Minecraft EULA. The server's
+port is not part of a template: `{port}` stays in the client's command line for the session to fill.
 
 ## Money
 

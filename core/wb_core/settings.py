@@ -100,7 +100,23 @@ WORKSPACE = {
     "set": {"type": "string", "default": "",
             "summary": "the Set's home: a bare repository on this host that wb land writes with plumbing"},
 }
-TOP_LEVEL = {"core", "paths", "secrets", "schedules", "modules", "runner", "workspace"}
+# The game lab on this machine: asked by wb setup before any configure hook or driver runs.
+LAB = {
+    "home": {"type": "string", "default": "",
+             "summary": "the lab home (instances, sessions, the lease and lanes); empty: [runner] lab_home"},
+    "trusted": {"type": "list", "items": "string", "default": [],
+                "summary": "the projects whose configure hooks and drivers may run on this machine; a launch of any "
+                           "other project is built and played without them"},
+    "eula": {"type": "bool", "default": False,
+             "summary": "true records that you accept the Minecraft EULA for the instances built here (eula.txt)"},
+    "env": {"type": "object", "default": {},
+            "summary": "more variable names a session's driver gets a value in, NAME = one of " + ", ".join(
+                ("token", "lane", "lease", "coordination", "instance", "session", "launch"))
+            + " (WB_TURN_TOKEN, WB_TURN_LANE, WB_LEASE_FILE, WB_COORDINATION_DIR, WB_INSTANCE, WB_SESSION and "
+              "WB_LAUNCH always)"},
+}
+LAB_VALUES = ("token", "lane", "lease", "coordination", "instance", "session", "launch")
+TOP_LEVEL = {"core", "paths", "secrets", "schedules", "modules", "runner", "workspace", "lab"}
 
 
 class SettingsError(Exception):
@@ -125,6 +141,7 @@ class Settings:
     modules: dict[str, dict] = field(default_factory=dict)
     runner: dict = field(default_factory=dict)
     workspace: dict = field(default_factory=dict)
+    lab: dict = field(default_factory=dict)
 
     @property
     def state_dir(self) -> Path:
@@ -218,5 +235,20 @@ def resolve(config: wbconfig.Config, module_schemas: dict[str, dict] | None = No
                for name, schema in module_schemas.items()}
     runner = _check(config, "runner", HOST_RUNNER, values.get("runner"))
     workspace = _check(config, "workspace", WORKSPACE, values.get("workspace"))
+    lab = check_lab(values.get("lab"), config)
     return Settings(config=config, core=core, roots=roots, secrets=secrets, schedules=schedules,
-                    modules=modules, runner=runner, workspace=workspace)
+                    modules=modules, runner=runner, workspace=workspace, lab=lab)
+
+
+def check_lab(values, config: wbconfig.Config | None = None) -> dict:
+    """[lab] checked: its keys and types, and each env name mapped to a value a session has."""
+    config = config or wbconfig.Config(None)
+    lab = _check(config, "lab", LAB, values)
+    for name, value in lab["env"].items():
+        if value not in LAB_VALUES:
+            raise SettingsError(f"{_where(config, 'lab.env.' + name)}lab.env.{name}: {value!r} is none of "
+                                f"{', '.join(LAB_VALUES)}")
+        if not name.replace("_", "").isalnum():
+            raise SettingsError(f"{_where(config, 'lab.env.' + name)}lab.env: {name!r} is not a variable name")
+    lab["trusted"] = [str(name) for name in lab["trusted"]]
+    return lab

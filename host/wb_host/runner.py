@@ -52,7 +52,8 @@ class Runner:
         self.log = log or (lambda text: print(text, flush=True))
         runner = settings.runner
         base = REPO_ROOT
-        lab = Path(os.path.expanduser(runner["lab_home"]))
+        self.lab = dict(getattr(settings, "lab", None) or {})
+        lab = Path(os.path.expanduser(self.lab.get("home") or runner["lab_home"]))
         self.lab_home = lab if lab.is_absolute() else (base / lab).resolve()
         self.lease_file = Path(runner.get("lease_file") or self.lab_home / "lease" / "gpu.lock")
         coordination = runner.get("coordination_dir")
@@ -123,7 +124,7 @@ class Runner:
                 "params": types.validate(run.command.params, run.body.get("params") or {}),
                 "work": str(work / "work"), "out": out, "module_config": run.body.get("module_config") or {},
                 "secrets": secrets, "jdks": self.jdks, "quote": run.body.get("quote"), "machine": "host",
-                "path_style": "windows", "roots": [], "sys_path": sys_path,
+                "path_style": "windows", "roots": [], "sys_path": sys_path, "lab": self.lab,
                 "env": {"WB_LAB_HOME": str(self.lab_home), "WB_HOST_RUN": run.id,
                         "WB_LEASE_FILE": str(self.lease_file), "WB_COORDINATION_DIR": str(self.coordination)}}
         env = dict(os.environ, PYTHONUNBUFFERED="1",

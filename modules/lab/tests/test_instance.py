@@ -132,6 +132,7 @@ class Build(unittest.TestCase):
         self.addCleanup(bases.INTERIM_BASES.pop, "test:standalone", None)
         self.config = {"instances": str(self.root / "instances"), "runtime_cache": str(self.cache),
                        "runtime_hosts": ["example.com"], "metadata": ""}
+        self.lab = {"trusted": ["game"]}  # [lab] of the machine: the launch's project may run its hook
 
     def keep(self, name: str, data: bytes) -> Path:
         path = self.store / "files" / sha256(data) / name
@@ -147,7 +148,8 @@ class Build(unittest.TestCase):
 
     def run_build(self, name: str = "one", launch: Path | None = None, **params):
         ctx = Context({"job": "direct", "command": "lab.build", "module": "lab", "work": str(self.root / "work"),
-                       "out": str(self.root / "out" / name), "module_config": self.config}, lambda event: None)
+                       "out": str(self.root / "out" / name), "module_config": self.config, "lab": self.lab},
+                      lambda event: None)
         params.setdefault("base", "test:standalone")
         result = instance.build(ctx, str(launch or self.launch), name, **params)
         return ctx, result
@@ -158,14 +160,14 @@ class Build(unittest.TestCase):
     # -- content ------------------------------------------------------------------------------------------------------
 
     def test_members_are_placed_by_side_under_their_place_or_file(self):
-        ctx, result = self.run_build(port=25870, eula=True)
+        ctx, result = self.run_build(eula=True)
         self.assertEqual(ctx.outcome, "ok", ctx.findings)
         folder = Path(result["instance"])
         self.assertEqual(sorted(p.name for p in (folder / "server" / "mods").iterdir()), ["cube-1.jar"])
         self.assertEqual(sorted(p.name for p in (folder / "client" / "mods").iterdir()), ["+Draw.jar", "cube-1.jar"])
         self.assertEqual((folder / "client" / "mods" / "+Draw.jar").read_bytes(), self.client_mod)
         properties = (folder / "server" / "server.properties").read_text(encoding="utf-8")
-        self.assertIn("server-port=25870", properties)
+        self.assertIn(f"server-port={instance.DEFAULT_PORT}", properties)  # a session writes its own
         self.assertIn("level-seed=8675309", properties)
         self.assertEqual((folder / "server" / "eula.txt").read_text(encoding="utf-8"), "eula=true\n")
         self.assertIn("-XX:+UseZGC", (folder / "server" / "user_jvm_args.txt").read_text(encoding="utf-8"))
@@ -191,7 +193,7 @@ class Build(unittest.TestCase):
     # -- the receipt ----------------------------------------------------------------------------------------------------
 
     def test_the_receipt_names_every_file_by_sha256_under_its_root(self):
-        self.run_build(port=25870)
+        self.run_build()
         receipt = self.receipt()
         text = json.dumps(receipt)
         self.assertNotIn(str(self.root), text)  # no absolute path anywhere
@@ -215,7 +217,7 @@ class Build(unittest.TestCase):
         self.assertTrue((self.store / "files" / sha256(UNIVERSAL) / f"cleanroom-{VERSION}-universal.jar").is_file())
 
     def test_the_command_lines_use_the_placeholders(self):
-        self.run_build(port=25870)
+        self.run_build()
         receipt = self.receipt()
         java = "{jdk:26}/bin/" + ("java.exe" if self.system == "windows" else "java")
         server, client = receipt["server"], receipt["client"]
@@ -234,7 +236,8 @@ class Build(unittest.TestCase):
                          ["top.example.Boot", "--tweakClass", "net.example.Tweaker"])
         self.assertIn("-Djava.library.path={instance}/client/natives", command)
         self.assertEqual(command[command.index("--assetsDir") + 1], "{cache}/assets")
-        self.assertEqual(command[-2:], ["--port", "25870"])
+        self.assertEqual(command[-2:], ["--port", "{port}"])  # the session's port, never the template's
+        self.assertEqual(receipt["session"]["placeholders"], ["port"])
         roots = {"instance": "/i", "cache": "/c", "jdk:26": "/j"}
         self.assertEqual(instance.expand(command, roots)[0], "/j/bin/" + Path(java).name)
 
@@ -254,13 +257,31 @@ class Build(unittest.TestCase):
         _, again = self.run_build("one")
         self.assertTrue(again["reused"])
 
-    def test_another_launch_or_port_is_another_template_and_is_not_laid_over_an_instance(self):
-        _, first = self.run_build("one", port=25870)
+    def test_other_params_are_another_template_and_are_not_laid_over_an_instance(self):
+        _, first = self.run_build("one")
         with self.assertRaisesRegex(ParamError, "fresh=true replaces it"):
-            self.run_build("one", port=25871)
-        _, replaced = self.run_build("one", port=25871, fresh=True)
+            self.run_build("one", params={"seed": 42})
+        _, replaced = self.run_build("one", params={"seed": 42}, fresh=True)
         self.assertNotEqual(first["template"], replaced["template"])
-        self.assertIn("server-port=25871", (self.root / "instances" / "one" / "server" / "server.properties").read_text())
+        self.assertIn("level-seed=42", (self.root / "instances" / "one" / "server" / "server.properties").read_text())
+
+    def test_the_eula_comes_from_the_machine(self):
+        _, plain = self.run_build("plain")
+        self.assertFalse((self.root / "instances" / "plain" / "server" / "eula.txt").exists())
+        self.lab["eula"] = True
+        _, accepted = self.run_build("accepted")
+        self.assertTrue((self.root / "instances" / "accepted" / "server" / "eula.txt").is_file())
+        self.assertNotEqual(plain["template"], accepted["template"])
+
+    def test_a_configure_hook_of_a_project_not_trusted_is_refused(self):
+        hook = self.root / "configure.py"
+        hook.write_text("raise SystemExit('must never load')\n", encoding="utf-8")
+        self.lab["trusted"] = ["other"]
+        with self.assertRaises(ParamError) as raised:
+            self.run_build("hooked", configure=str(hook))
+        self.assertIn("not in [lab] trusted", str(raised.exception))
+        self.assertIn("game", str(raised.exception))
+        self.assertFalse((self.root / "instances").exists())  # refused before anything was made
 
     def test_a_folder_lab_build_did_not_make_is_left_alone(self):
         (self.root / "instances" / "mine").mkdir(parents=True)
