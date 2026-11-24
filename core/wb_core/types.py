@@ -2,8 +2,10 @@
 
 A field spec is a small table: ``{ type = "money", unit = "USD/h", default = 0.30 }``. Supported keys:
 type, default, optional, min, max, pattern, values (enum), items (list), unit, summary, and digest (path.in only):
-how a job records the input, ``content`` (the default: a SHA-256 over every file) or ``git`` (a checkout the
-command reads through git, recorded by its HEAD commit; the command reports the commit or tree it read).
+how a job records the input, ``content`` (the default: a SHA-256 over every file), ``git`` (a checkout the
+command reads through git, recorded by its HEAD commit; the command reports the commit or tree it read) or ``none``
+(a folder the command inventories and records itself, such as hundreds of GiB of old instances: recorded by its
+path only, so nothing is read through the mount before the job starts).
 
 An object may say what it holds: ``fields``, a table of field specs for a table with fixed keys (unknown keys are
 refused, defaults filled in), or ``entries``, one field spec every value of a table keyed by name must match (a map,
@@ -18,7 +20,7 @@ TYPES = {"string", "int", "float", "bool", "enum", "list", "object", "money", "d
          "path.in", "path.out", "any"}
 SPEC_KEYS = {"type", "default", "optional", "min", "max", "pattern", "values", "items", "unit", "summary", "digest",
              "fields", "entries"}
-DIGESTS = {"content", "git"}
+DIGESTS = {"content", "git", "none"}
 _DURATION = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?\s*$")
 _UNITS = {"ms": 0.001, "s": 1, "m": 60, "h": 3600, "d": 86400, None: 1}
 _SHA = re.compile(r"^(sha256:)?[0-9a-f]{64}$")

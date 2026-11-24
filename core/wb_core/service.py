@@ -1075,6 +1075,9 @@ class Workbench:
             # A checkout's files, build output and caches included, can take hours to hash through a mount;
             # the command reads it through git and reports the commit or tree it read.
             return {"name": name, "host_path": host_path, "head": _git_head(path)}
+        if spec.get("digest") == "none":
+            # The command inventories the folder itself and records what it read (its own manifest).
+            return {"name": name, "host_path": host_path, "digest": "none"}
         if len(self._digests) > 500_000:  # a bound, not an eviction policy: rebuilt as jobs read files
             self._digests.clear()
         digest, count = sha256_tree(path, self._digests)

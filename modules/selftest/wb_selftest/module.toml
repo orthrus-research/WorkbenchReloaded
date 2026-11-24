@@ -61,6 +61,13 @@ params.repo = { type = "path.in", digest = "git" }
 result.head = { type = "string" }
 
 [[command]]
+name = "count"
+summary = "Count a folder's files itself (an input recorded by its path only, not hashed before the job)."
+handler = "wb_selftest.commands:count"
+params.folder = { type = "path.in", digest = "none" }
+result.files = { type = "int" }
+
+[[command]]
 name = "chain"
 summary = "Call selftest.echo through the daemon (as plans do)."
 handler = "wb_selftest.commands:chain"
