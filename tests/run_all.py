@@ -1,5 +1,11 @@
-"""Every Workbench test suite, one after another: python tests/run_all.py [--quick]. Exit 0 only if all pass."""
+"""Every Workbench test suite, one after another: python tests/run_all.py [--quick] [--part PART]. Exit 0 only if
+all pass.
 
+The suites fall in four parts, which Workbench's own project.toml runs as four checks: ``generated`` (lock files,
+schema types and command tables that must match their sources), ``core`` (tests/), ``modules`` (each module's
+tests) and ``engine`` (the vendored actions engine and tools). With no --part, every part runs, as wb deploy does."""
+
+import argparse
 import subprocess
 import sys
 import time
@@ -9,6 +15,7 @@ REPO = Path(__file__).resolve().parents[1]
 SUITES = [
     ["image/pins.py", "check"],
     ["schema/generate.py", "--check"],
+    ["tests/test_command_tables.py"],
     ["tests/test_core.py"],
     ["tests/test_scheduler.py"],
     ["tests/test_process.py"],
@@ -56,12 +63,26 @@ SUITES = [
     ["tests/test_sdks.py"],
 ]
 VENDORED = ["-m", "unittest", "discover", "-s", "tests", "-t", "."]  # run in modules/tools with src on the path
+PARTS = ("generated", "core", "modules", "engine")
+GENERATED = {"image/pins.py", "schema/generate.py", "tests/test_command_tables.py"}
+
+
+def part_of(suite: list[str]) -> str:
+    if suite[0] in GENERATED:
+        return "generated"
+    return "modules" if suite[0].startswith("modules/") else "core"
 
 
 def main() -> int:
-    quick = "--quick" in sys.argv
+    parser = argparse.ArgumentParser(description="Every Workbench test suite.")
+    parser.add_argument("--quick", action="store_true", help="skip the slowest suites")
+    parser.add_argument("--part", action="append", choices=PARTS, help="only this part (repeatable)")
+    args = parser.parse_args()
+    quick, parts = args.quick, set(args.part or PARTS)
     failed = []
     for suite in SUITES:
+        if part_of(suite) not in parts:
+            continue
         if quick and suite[0] in ("tests/test_sdks.py", "tests/test_host.py", "tests/test_store.py"):
             continue
         started = time.time()
@@ -71,6 +92,9 @@ def main() -> int:
         if done.returncode != 0:
             failed.append(suite[0])
     import os
+    if "engine" not in parts:
+        print(f"\n{'all suites passed' if not failed else 'failed: ' + ', '.join(failed)}")
+        return 1 if failed else 0
     env = dict(os.environ, PYTHONPATH=str(REPO / "modules" / "tools" / "src"))
     started = time.time()
     done = subprocess.run([sys.executable, "-W", "ignore", *VENDORED], cwd=REPO / "modules" / "tools", env=env,

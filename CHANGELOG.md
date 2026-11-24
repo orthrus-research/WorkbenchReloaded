@@ -48,6 +48,8 @@
   (all but the one in service and the one before it), no longer removed by `wb deploy`.
 - The README's module table and docs/commands.md (every command, where it runs, its summary) are generated
   from the module manifests by `tools/command_tables.py`; a test fails when either differs from them.
+- Workbench's own project.toml: its suite as four checks (generated, core, modules, engine; the first and
+  last pure, with inputs), all four gating a push; `tests/run_all.py --part` runs one.
 - `lab.resolve`: a project's `[launch.<name>]` resolved once into launch.json, every member by SHA-256 from the
   worktree's set revision and the project itself from the Store; two builds of one mod id are refused.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,

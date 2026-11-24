@@ -1,0 +1,27 @@
+# Workbench's own checks: its test suite (tests/run_all.py, which wb deploy runs whole) in its four parts.
+schema = 1
+gate = ["generated", "core", "modules", "engine"]
+
+[project]
+name = "workbench"
+
+[checks.generated]
+description = "lock files, the SDKs' envelope types and the command tables match their sources"
+steps = [["{python}", "-B", "tests/run_all.py", "--part", "generated"]]
+inputs = ["image/*.py", "image/*.toml", "image/*.lock", "image/*.txt", "schema/**/*.py", "schema/**/*.json",
+          "sdk/**/*.py", "sdk/**/*.ts", "sdk/**/*.java", "sdk/**/*.ps1", "sdk/**/*.psm1", "sdk/**/*.psd1",
+          "modules/*/wb_*/module.toml", "README.md", "docs/*.md", "tools/*.py", "tests/run_all.py",
+          "tests/test_command_tables.py"]
+
+[checks.core]
+description = "the core, the CLI and the host runner (tests/)"
+steps = [["{python}", "-B", "tests/run_all.py", "--part", "core"]]
+
+[checks.modules]
+description = "every module's own tests"
+steps = [["{python}", "-B", "tests/run_all.py", "--part", "modules"]]
+
+[checks.engine]
+description = "the vendored actions engine and tools"
+steps = [["{python}", "-B", "tests/run_all.py", "--part", "engine"]]
+inputs = ["modules/tools/**/*.py", "modules/tools/**/*.toml", "modules/tools/**/*.json", "tests/run_all.py"]
