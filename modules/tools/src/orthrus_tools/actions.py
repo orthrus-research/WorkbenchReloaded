@@ -750,7 +750,21 @@ def record_pass(
     cache = config.runs / "cache"
     cache.mkdir(parents=True, exist_ok=True)
     record = {"job": name, "key": key, "runId": run_id, "steps": result["steps"]}
-    (cache / f"{name}-{key}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+    # Whole or not at all: two runs of one project may pass the same key at once, and a reader must never see half.
+    target = cache / f"{name}-{key}.json"
+    part = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.part")
+    try:
+        part.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        for attempt in range(50):
+            try:
+                part.replace(target)
+                break
+            except PermissionError:  # Windows: a reader has the record open; it is the same pass either way
+                if attempt == 49:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
+    finally:
+        part.unlink(missing_ok=True)
 
 
 # --- running ---------------------------------------------------------------------------------

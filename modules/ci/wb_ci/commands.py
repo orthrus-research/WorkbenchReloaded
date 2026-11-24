@@ -728,7 +728,7 @@ def _store_artifacts(ctx: Context, project: str, sha: str, trees: dict, records:
     """Keeps what each passed producing job built (its ``artifacts``) in the Store, by SHA-256 and under the
     project's tree, and in the pin cache. The copy comes from the run record, which the engine wrote after the
     job passed and its trees held still; a run whose trees moved records no pass and keeps nothing."""
-    from wb_core import artifacts as store
+    from wb_core import artifacts as store, filelock
     tree = next(iter(trees.values()), None)  # the project's own tree comes first
     if not run_id or not tree:
         return {}
@@ -752,7 +752,12 @@ def _store_artifacts(ctx: Context, project: str, sha: str, trees: dict, records:
             placed = _store_plugins(root, store.path_of(root, item["sha256"], file_name))
             ctx.log.info(f"the Set's plugins from {file_name}: {placed} file(s) added to the Store's plugins folder")
     if kept:
-        store.record(root, project, tree, sha, kept)
+        try:
+            store.record(root, project, tree, sha, kept)  # merged with what another run of the tree records at once
+        except (OSError, store.StoreError, filelock.LockTimeout) as error:
+            ctx.reason("store", f"{project} {tree[:12]}", f"the index was not written: {error}",
+                       "run the check again once the Store's index entry is readable")
+            return {}
         ctx.log.info(f"kept {len(kept)} artifact(s) of {project} tree {tree[:12]} in the Store: "
                      + ", ".join(f"{n} {k['sha256'][:12]}" for n, k in kept.items()))
     return kept

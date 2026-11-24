@@ -6,16 +6,23 @@
 
 Only Workbench writes it: ``ci.run`` after a producing job passed, from the copy the run record keeps, and
 ``wb store add`` for seeded bytes. Every file also goes into the pin cache under its bare SHA-256, so the tools of
-commits that read WB_PIN_CACHE find it. Reads re-hash before they hand a path out."""
+commits that read WB_PIN_CACHE find it. Reads re-hash before they hand a path out.
+
+Two runs of one project may write at once. A file is written under a name of its own and moved into place, and two
+writers of one SHA-256 write the same bytes; an index entry is read, merged and written under its own lock, so one
+run's commit or artifact is never lost to another's write."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 import time
 from pathlib import Path
+
+from . import filelock
+
+INDEX_LOCK_STALE = 60.0  # seconds: an index entry's read, merge and write take milliseconds
 
 
 class StoreError(Exception):
@@ -36,12 +43,19 @@ def _write_once(source: Path, target: Path, digest: str):
             raise StoreError(f"{target} holds other bytes than {digest}; the Store never replaces a file")
         return
     target.parent.mkdir(parents=True, exist_ok=True)
-    part = target.with_name(f"{target.name}.{os.getpid()}.part")
-    shutil.copy2(source, part)
-    if sha256(part) != digest:
+    part = filelock.part_of(target)
+    try:
+        shutil.copy2(source, part)
+        if sha256(part) != digest:
+            raise StoreError(f"{source} changed while it was copied into the Store")
+        try:
+            filelock.replace(part, target)
+        except PermissionError:
+            # Another writer put the same file in place and a reader holds it open: the bytes are there already.
+            if not (target.is_file() and sha256(target) == digest):
+                raise
+    finally:
         part.unlink(missing_ok=True)
-        raise StoreError(f"{source} changed while it was copied into the Store")
-    part.replace(target)
 
 
 def put(store: Path, source: Path, digest: str | None = None, pins: Path | None = None) -> Path:
@@ -62,25 +76,31 @@ def put(store: Path, source: Path, digest: str | None = None, pins: Path | None 
 def record(store: Path, project: str, tree: str, commit: str, artifacts: dict) -> Path:
     """Adds ``artifacts`` ({name: {sha256, bytes, job, run}}) to the index of ``project`` at ``tree``."""
     path = store / "index" / project / f"{tree}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        current = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        current = {"project": project, "tree": tree, "commits": [], "artifacts": {}}
-    if commit not in current["commits"]:
-        current["commits"].append(commit)
-    for name, item in artifacts.items():
-        known = current["artifacts"].get(name)
-        if known and known["sha256"] != item["sha256"]:
-            # Two builds of one tree differ: a bytes problem worth seeing, never a silent replacement.
-            current.setdefault("disagreements", []).append({"name": name, "kept": known["sha256"],
-                                                            "other": item["sha256"], "run": item.get("run")})
-            continue
-        current["artifacts"][name] = item
-    part = path.with_name(path.name + f".{os.getpid()}.part")
-    part.write_text(json.dumps(current, indent=1), encoding="utf-8")
-    part.replace(path)
+    with _entry_lock(path):
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            current = {"project": project, "tree": tree, "commits": [], "artifacts": {}}
+        except (OSError, ValueError) as error:
+            raise StoreError(f"the Store's index entry {path} cannot be read ({error}); it was changed outside "
+                             "Workbench") from None
+        if commit not in current["commits"]:
+            current["commits"].append(commit)
+        for name, item in artifacts.items():
+            known = current["artifacts"].get(name)
+            if known and known["sha256"] != item["sha256"]:
+                # Two builds of one tree differ: a bytes problem worth seeing, never a silent replacement.
+                current.setdefault("disagreements", []).append({"name": name, "kept": known["sha256"],
+                                                                "other": item["sha256"], "run": item.get("run")})
+                continue
+            current["artifacts"][name] = item
+        filelock.write_json(path, current)
     return path
+
+
+def _entry_lock(path: Path):
+    """The lock one index entry's read, merge and write hold."""
+    return filelock.exclusive(path.with_name(path.name + ".lock"), stale=INDEX_LOCK_STALE)
 
 
 def find(store: Path, project: str, tree: str) -> dict | None:
@@ -108,17 +128,12 @@ def seed(store: Path, source: Path, label: str, origin: str, reason: str, pins: 
     kept = put(store, source, digest, pins)
     note = {"sha256": digest, "name": source.name, "as": label, "source": origin, "reason": reason,
             "bytes": kept.stat().st_size, "added": time.strftime("%Y-%m-%dT%H:%M:%S")}
-    path = store / "seeded" / f"{digest}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(note, indent=1), encoding="utf-8")
+    filelock.write_json(store / "seeded" / f"{digest}.json", note)
     return note
 
 
 def _write_json(path: Path, value: dict):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    part = path.with_name(path.name + f".{os.getpid()}.part")
-    part.write_text(json.dumps(value, indent=1), encoding="utf-8")
-    part.replace(path)
+    filelock.write_json(path, value)
 
 
 def entries(store: Path, project: str | None = None) -> list[dict]:
@@ -138,9 +153,10 @@ def entries(store: Path, project: str | None = None) -> list[dict]:
 def note_verified(store: Path, project: str, tree: str, verdict: dict) -> dict:
     """Records a cold rebuild's verdict on ``project`` at ``tree``: {at, job, reproduced, differ: [...]}."""
     path = store / "index" / project / f"{tree}.json"
-    current = json.loads(path.read_text(encoding="utf-8"))
-    current["verified"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), **verdict}
-    _write_json(path, current)
+    with _entry_lock(path):
+        current = json.loads(path.read_text(encoding="utf-8"))
+        current["verified"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), **verdict}
+        _write_json(path, current)
     return current
 
 

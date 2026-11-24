@@ -88,5 +88,72 @@ class Store(unittest.TestCase):
         self.assertEqual([e["tree"] for e in artifacts.entries(self.store, "demo")], ["t1"])
 
 
+WRITER = """import sys, threading
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from wb_core import artifacts
+store, writer = Path(sys.argv[2]), sys.argv[3]
+def write(thread):
+    for n in range(10):
+        name = f"{writer}-{thread}-{n}"
+        artifacts.put(store, Path(sys.argv[4]), None, Path(sys.argv[5]))  # one file, every writer at once
+        artifacts.record(store, "demo", "t1", f"c-{name}", {f"{name}.jar": {"sha256": "a", "job": "build"}})
+threads = [threading.Thread(target=write, args=(t,)) for t in range(4)]
+for t in threads: t.start()
+for t in threads: t.join()
+"""
+
+
+class Concurrent(unittest.TestCase):
+    """Two runs of one project write the Store at once: every commit and artifact each run records is kept."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.base = Path(self.folder.name)
+        self.store = self.base / "store"
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def test_writers_in_several_processes_and_threads_lose_nothing(self):
+        import subprocess
+        core = str(Path(artifacts.__file__).resolve().parents[1])
+        jar = self.base / "mod.jar"
+        jar.write_bytes(b"the same bytes")
+        writers = [subprocess.Popen([sys.executable, "-c", WRITER, core, str(self.store), f"w{n}", str(jar),
+                                     str(self.base / "pins")], stderr=subprocess.PIPE, text=True) for n in range(4)]
+        for writer in writers:
+            _, err = writer.communicate(timeout=120)
+            self.assertEqual(writer.returncode, 0, err)
+        index = artifacts.find(self.store, "demo", "t1")
+        self.assertEqual(len(index["commits"]), 4 * 4 * 10)
+        self.assertEqual(len(index["artifacts"]), 4 * 4 * 10)
+        left = sorted(p.name for p in self.store.rglob("*") if p.is_file() and p.suffix in (".lock", ".part"))
+        self.assertEqual(left, [])  # no lock held and no part left behind
+        digest = hashlib.sha256(b"the same bytes").hexdigest()
+        self.assertEqual(artifacts.path_of(self.store, digest, "mod.jar").read_bytes(), b"the same bytes")
+
+    def test_a_lock_whose_holder_died_is_broken(self):
+        import os
+        import time
+        lock = self.store / "index" / "demo" / "t1.json.lock"
+        lock.parent.mkdir(parents=True)
+        lock.write_text("a holder that was killed\n", encoding="utf-8")
+        old = time.time() - artifacts.INDEX_LOCK_STALE - 5
+        os.utime(lock, (old, old))
+        artifacts.record(self.store, "demo", "t1", "c1", {"mod.jar": {"sha256": "a"}})
+        self.assertEqual(artifacts.find(self.store, "demo", "t1")["commits"], ["c1"])
+        self.assertFalse(lock.exists())
+
+    def test_an_entry_that_cannot_be_read_is_never_overwritten(self):
+        entry = self.store / "index" / "demo" / "t1.json"
+        entry.parent.mkdir(parents=True)
+        entry.write_text("{not json", encoding="utf-8")
+        with self.assertRaises(artifacts.StoreError) as raised:
+            artifacts.record(self.store, "demo", "t1", "c1", {"mod.jar": {"sha256": "a"}})
+        self.assertIn("changed outside Workbench", str(raised.exception))
+        self.assertEqual(entry.read_text(encoding="utf-8"), "{not json")
+
+
 if __name__ == "__main__":
     unittest.main()
