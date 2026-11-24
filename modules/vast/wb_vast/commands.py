@@ -8,12 +8,10 @@ clean-up at the next start (S15).
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
 import re
-import shutil
 import sys
 import time
 import urllib.parse
@@ -23,7 +21,6 @@ from wb_core.module import Context, EnvironmentProblem, ParamError
 
 from . import bundle as bundles
 from . import market, remote
-from . import template as templates
 from .api import DEFAULT_API, Vast, VastError, list_instances
 
 
@@ -604,55 +601,9 @@ def bundle_launch(ctx: Context, launch: str, tour: str, name=None, window: str =
 
 
 # ----------------------------------------------------------------------------------------------
-# bundles and their input archives, made from templates in config (wb_vast.template): no bundle is built in
-def _template(ctx: Context, name: str) -> templates.Template:
-    """A template from ``[modules.vast.templates]``: the one named, or the only one configured."""
-    configured = ctx.config.get("templates") or {}
-    if not name:
-        if len(configured) != 1:
-            raise ParamError(f"name a template: {', '.join(sorted(configured))}" if configured else
-                             "no bundle templates are configured: add [modules.vast.templates.<name>] (see "
-                             "modules/vast/docs/templates.md)")
-        name = next(iter(configured))
-    if name not in configured:
-        raise ParamError(f"no template {name} in [modules.vast.templates] (have: "
-                         f"{', '.join(sorted(configured)) or 'none'})")
-    try:
-        return templates.parse(name, configured[name])
-    except templates.TemplateError as error:
-        raise EnvironmentProblem(str(error)) from None
-
-
-def _host(ctx: Context, value: str, where: str) -> str:
-    """A path from config as the host names it. A relative one (as a shared config writes it) is under the machine's
-    ``[modules.vast] root``."""
-    import ntpath
-    import posixpath
-    windows = len(value) > 2 and value[1] == ":" and value[2] in "\\/"
-    if windows or value.startswith(("/", "\\\\")):
-        return value
-    root = str(ctx.config.get("root") or "")
-    if not root:
-        raise EnvironmentProblem(f"{where} = {value!r} is relative, and [modules.vast] root is not set")
-    return ntpath.join(root, value) if len(root) > 1 and root[1] == ":" else posixpath.join(root, value)
-
-
-def _config_path(ctx: Context, value: str, where: str) -> Path:
-    """A path from config as this process sees it (the container's mount, or the host path itself natively)."""
-    from wb_core.paths import PathError, PathMap
-    from wb_core.settings import Root
-    host = _host(ctx, value, where)
-    roots = [Root(**r) for r in ctx.spec.get("roots", [])]
-    if not roots or ctx.machine == "host":
-        return Path(host)
-    try:
-        return Path(PathMap(roots).resolve(host).container)
-    except PathError as error:
-        raise EnvironmentProblem(f"{where}: {host} is under no configured root ({error})") from None
-
-
+# paths a request names, as this process reads them
 def _readable(ctx: Context, value: str) -> Path:
-    """A host path from a request's values (a step's parameters) as this process can read it."""
+    """A host path a request names (a launch file, a tour) as this process can read it."""
     from wb_core.paths import PathError, PathMap
     from wb_core.settings import Root
     roots = [Root(**r) for r in ctx.spec.get("roots", [])]
@@ -662,234 +613,6 @@ def _readable(ctx: Context, value: str) -> Path:
         except PathError:
             pass
     return Path(value)
-
-
-def _digest_of(source: Path | bytes) -> str:
-    from wb_core.module import sha256_file
-    return hashlib.sha256(source).hexdigest() if isinstance(source, bytes) else sha256_file(source)
-
-
-def _place(files: dict, relative: str, source: Path | bytes, origin: str, problems: list[str]):
-    """Plans one file of the bundle; two different files for one path are a refusal."""
-    held = files.get(relative)
-    if held is not None and _digest_of(held[0]) != _digest_of(source):
-        problems.append(f"{held[1]} and {origin} both have {relative.removeprefix(bundles.FILES + '/')}, with "
-                        "different bytes")
-        return
-    files.setdefault(relative, (source, origin))
-
-
-def _sidecar(path: Path) -> str | None:
-    try:
-        token = path.read_text(encoding="utf-8").split()[0].lower()
-    except (OSError, IndexError):
-        return None
-    return token if re.fullmatch(r"[0-9a-f]{64}", token) else None
-
-
-def _receipt_of(path: Path) -> tuple[dict | None, str | None]:
-    """The receipt vast.lab-inputs wrote beside an archive, if there is one."""
-    from . import lab_inputs as labinputs  # here, not at the top: the rental commands and the clean-up need no git
-    if not path.is_file():
-        return None, None
-    try:
-        receipt = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
-        return None, f"{path.name} is not a receipt ({error})"
-    if not isinstance(receipt, dict) or receipt.get("schema") != labinputs.RECEIPT_SCHEMA:
-        return None, f"{path.name} is not a {labinputs.RECEIPT_SCHEMA} receipt"
-    return receipt, None
-
-
-def _stale(name: str, item: templates.Input, receipt: dict | None) -> str | None:
-    """Why an archive in the lab folder is not what the template's recipe makes now, or None: built at another
-    commit, beside other checkouts, or by other steps, globs, JDK or environment. An archive without a receipt is
-    taken only when the template pins its SHA-256, which then vouches for its bytes."""
-    from . import lab_inputs as labinputs
-    recipe = item.recipe
-    if receipt is None:
-        return None if item.sha256 else "has no receipt, and the template pins no sha256 for it"
-    built = str(receipt.get("commit") or "")
-    if not built.startswith(recipe.commit):
-        return f"was built at {built[:12] or 'an unknown commit'}, not the {recipe.commit[:12]} the template names"
-    beside = {n: str((b or {}).get("commit") or "") for n, b in (receipt.get("beside") or {}).items()}
-    for n, entry in recipe.beside.items():
-        if not beside.get(n, "").startswith(entry.commit):
-            return (f"was built with beside.{n} at {beside.get(n, '')[:12] or 'nothing'}, not the "
-                    f"{entry.commit[:12]} the template names")
-    extra = sorted(set(beside) - set(recipe.beside))
-    if extra:
-        return f"was built with beside.{extra[0]}, which the template no longer names"
-    if labinputs.recipe_key(name, recipe, built, beside) != receipt.get("recipe_sha256"):
-        return "was built by another recipe (its steps, globs, JDK or environment have changed since)"
-    return None
-
-
-def _inputs(ctx: Context, chosen: templates.Template, folder: Path | None, dry_run: bool):
-    """The template's input archives in ``folder``, each at its pin and its receipt; with the reasons to refuse."""
-    if not chosen.inputs:
-        return [], []
-    if folder is None:
-        return [], [f"template {chosen.name} takes input archives ({', '.join(chosen.inputs)}): give lab= (a folder "
-                    "holding them, as vast.lab-inputs makes it)"]
-    records, problems = [], []
-    for name, item in chosen.inputs.items():
-        path = folder / name
-        if not path.is_file():
-            problems.append(f"{ctx.host_path(folder)} has no {name}" + (" (vast.lab-inputs makes it)" if item.recipe
-                                                                        else ""))
-            continue
-        receipt, problem = _receipt_of(folder / f"{name}.receipt.json")
-        if problem:
-            problems.append(f"{name}: {problem}")
-            continue
-        claimed = ((receipt or {}).get("archive") or {}).get("sha256") or _sidecar(folder / f"{name}.sha256")
-        digest = None if dry_run else _digest_of(path)
-        actual = digest or claimed
-        if item.sha256 and actual and actual != item.sha256:
-            problems.append(f"{name} is {actual[:12]}, not the {item.sha256[:12]} template {chosen.name} pins")
-            continue
-        if digest and receipt and claimed != digest:
-            problems.append(f"{name} no longer matches its receipt: {name}.receipt.json names {str(claimed)[:12]}, "
-                            f"and it is {digest[:12]}")
-            continue
-        stale = _stale(name, item, receipt) if item.recipe else None
-        if stale:
-            problems.append(f"{name} {stale}; build it again (vast.lab-inputs template={chosen.name})")
-            continue
-        records.append({"name": name, "path": ctx.host_path(path), "to": item.to, "bytes": path.stat().st_size,
-                        "sha256": digest, "pinned": item.sha256,
-                        "receipt": {key: receipt.get(key) for key in ("commit", "tree", "recipe_sha256", "cached")}
-                        if receipt else None})
-    return records, problems
-
-
-def bundle(ctx: Context, template: str, steps: list, values: dict, dry_run: bool, plan=None, lab=None, name=None):
-    chosen = _template(ctx, template)
-    where = f"modules.vast.templates.{chosen.name}"
-    if plan and steps:
-        raise ParamError("give steps (a plan's game steps, as plan.run passes them) or plan (a folder already written "
-                         "for the template), not both")
-    folder = _config_path(ctx, chosen.folder, f"{where}.folder")
-    if not folder.is_dir():
-        raise EnvironmentProblem(f"{where}.folder: {ctx.host_path(folder)} is not a folder")
-    listed, refused = templates.collect(folder, None, [templates.glob_regex(g, f"{where}.exclude")
-                                                       for g in chosen.exclude])
-    if refused:
-        raise EnvironmentProblem(f"{where}.folder holds {refused[0]}, a link or a special file; a bundle holds "
-                                 "regular files only")
-    if chosen.script not in listed:
-        raise EnvironmentProblem(f"{where}.script: {chosen.script} is not in {ctx.host_path(folder)}")
-    out = ctx.out
-    plan_dir = Path(plan) if plan else None
-    label = name or (plan_dir.name if plan_dir else chosen.name)
-    problems: list[str] = []
-    files: dict[str, tuple] = {}
-    for relative in listed:
-        _place(files, f"{bundles.FILES}/{relative}", folder / relative, "the template's folder", problems)
-        if (relative == chosen.script or relative.endswith(".sh")) and bundles.windows_line_endings(folder / relative):
-            problems.append(f"{where}.folder: {relative} {bundles.CRLF}")
-    if plan_dir is not None:  # a folder already written for the template, taken as it is
-        compiled = templates.Compiled("")
-        compiled.outputs = templates.expand_outputs(chosen, templates.Scope(label, values, {}), problems)
-        if chosen.steps and not (plan_dir / chosen.steps.file).is_file():
-            problems.append(f"{ctx.host_path(plan_dir)} has no {chosen.steps.file} (the steps file template "
-                            f"{chosen.name} takes)")
-        written, links = templates.collect(plan_dir, None, [])
-        problems += [f"the plan folder holds {link}, a link or a special file" for link in links]
-        for relative in written:
-            if not (plan_dir / relative).resolve().is_relative_to(out.resolve()):
-                _place(files, f"{bundles.FILES}/{relative}", plan_dir / relative, "the plan folder", problems)
-    else:
-        compiled = templates.compile_steps(chosen, list(steps), values, label, lambda v: _readable(ctx, v),
-                                           check_files=not dry_run)
-        problems += compiled.problems
-        if chosen.steps:
-            _place(files, f"{bundles.FILES}/{chosen.steps.file}", compiled.text.encode("utf-8"), "the steps file",
-                   problems)
-        for relative, source in compiled.copies.items():
-            _place(files, f"{bundles.FILES}/{relative}", source, "the steps' files", problems)
-    records, refusals = _inputs(ctx, chosen, Path(lab) if lab else None, dry_run)
-    problems += refusals
-    shape = {"name": label, "template": chosen.name, "steps": [s["id"] for s in compiled.steps],
-             "outputs": compiled.outputs, "unpack": chosen.unpack, "dry_run": dry_run}
-    if problems:
-        for problem in problems:
-            ctx.finding(problem)
-        ctx.log.warning("the bundle would be refused" if dry_run else "nothing was written")
-        return {**shape, "bundle": None, "problems": problems, "inputs": records}
-    if dry_run:
-        ctx.summary(f"bundle {label} from template {chosen.name} checks out: {len(files)} file(s), "
-                    f"{len(compiled.steps)} game step(s), {len(records)} input(s)")
-        return {**shape, "bundle": None, "problems": [], "inputs": records}
-    shutil.rmtree(out / bundles.FILES, ignore_errors=True)
-    for stale in ("bundle.toml", bundles.MANIFEST):
-        (out / stale).unlink(missing_ok=True)
-    for relative, (source, _) in sorted(files.items()):
-        target = out / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if isinstance(source, bytes):
-            target.write_bytes(source)
-        else:
-            shutil.copyfile(source, target)
-    uploads = [{"path": r["path"], "sha256": r["sha256"], "to": r["to"]} for r in records]
-    uploads.append({"path": bundles.FILES, "contents": True})
-    text = bundles.render({"name": label, "template": chosen.name, "purpose": chosen.purpose},
-                          {"jdk": chosen.jdks or None, "gpu": chosen.gpu, "disk_gb": chosen.disk_gb}, uploads,
-                          {"script": f"{bundles.FILES}/{chosen.script}", **chosen.run},
-                          comment=f"made by vast.bundle from template {chosen.name}; {bundles.MANIFEST} holds every "
-                                  "file's SHA-256")
-    (out / "bundle.toml").write_text(text, encoding="utf-8", newline="\n")
-    from wb_build.files import set_digest, write_atomic
-    entries = bundles.listed_files(out)
-    tree = set_digest({e["path"]: e["sha256"] for e in entries})
-    manifest = {"schema": bundles.SCHEMA, **{k: v for k, v in shape.items() if k != "dry_run"}, "files": entries,
-                "files_sha256": tree, "inputs": records}
-    write_atomic(out / bundles.MANIFEST, (json.dumps(manifest, indent=1) + "\n").encode("utf-8"))
-    made = bundles.load(out, lambda v: str(_readable(ctx, v)), verify_uploads=False)
-    ctx.output("bundle", out)
-    ctx.measure("upload_bytes", made.upload_bytes(), "B")
-    ctx.summary(f"bundle {label} from template {chosen.name}: {len(entries)} file(s) and {len(records)} input(s), "
-                f"{made.upload_bytes() / 1e6:.0f} MB to upload, {len(compiled.steps)} game step(s)")
-    return {**shape, "bundle": ctx.host_path(out), "problems": [], "inputs": records, "files": len(entries),
-            "bytes": made.upload_bytes(), "files_sha256": tree}
-
-
-def lab_inputs(ctx: Context, template: str, inputs: list, cached: bool, keep: bool):
-    from . import lab_inputs as labinputs
-    chosen = _template(ctx, template)
-    where = f"modules.vast.templates.{chosen.name}.inputs"
-    names = list(dict.fromkeys(inputs)) or [n for n, i in chosen.inputs.items() if i.recipe]
-    unknown = [n for n in names if n not in chosen.inputs]
-    if unknown:
-        raise ParamError(f"template {chosen.name} has no input {unknown[0]} (it has "
-                         f"{', '.join(chosen.inputs) or 'none'})")
-    by_hand = [n for n in names if chosen.inputs[n].recipe is None]
-    if by_hand:
-        raise ParamError(f'{where}."{by_hand[0]}" has no recipe (repo, commit, artifacts): it is made by hand')
-    if not names:
-        raise ParamError(f"template {chosen.name} declares no input with a recipe")
-    cache = labinputs.pin_cache(ctx)
-    ctx.log.info(f"pin cache: {cache}")
-    results = []
-    for name in names:
-        ctx.check_cancel()
-        item = chosen.inputs[name]
-        try:
-            repo = _config_path(ctx, item.recipe.repo, f'{where}."{name}".repo')
-            beside = {n: _config_path(ctx, b.repo, f'{where}."{name}".beside.{n}.repo')
-                      for n, b in item.recipe.beside.items()}
-            results.append(labinputs.build(ctx, chosen.name, item, repo, cache, cached=cached, keep=keep,
-                                           beside=beside))
-        except ParamError as error:
-            ctx.finding(f"{name}: {error}")
-            results.append({"name": name, "archive": None, "refused": str(error)})
-    kept = [r for r in results if r.get("archive")]
-    reused = sum(1 for r in kept if r.get("cached"))
-    if ctx.outcome == "ok":
-        ctx.summary(f"{len(kept)} archive(s) for template {chosen.name}: {len(kept) - reused} built, {reused} from the "
-                    "pin cache, each with its receipt")
-    return {"template": chosen.name, "folder": ctx.host_path(ctx.out), "archives": results}
 
 
 # ----------------------------------------------------------------------------------------------

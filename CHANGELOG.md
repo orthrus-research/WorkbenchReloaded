@@ -105,6 +105,10 @@
   session headless, writing `session.json`. Every load of such a bundle (`vast.bundle-check`, the quote,
   `vast.rent`) refuses one whose member or JDK archive is missing or other bytes, and the quote refuses one
   without the EULA's acceptance. `lab.build` takes `store` and `sources`, the copies a bundle carries.
+- The template rental route is retired: `vast.bundle` (a bundle from a template in config) and `vast.lab-inputs`
+  (its input archives) answer `vast.bundle-launch` for one release, and a plan with `machine = "rental"` or a
+  `[rental]` table is refused with the same pointer; `plan.check` and `plan.run` lose `machine`. `[modules.vast]
+  templates` and `root` are read by nothing and accepted until the machine's config drops them.
 - `wb gpu`: the lease's holder, its waiters in the order they are served and stuck lanes; `wb gpu run` gives any
   command a turn in a lane of its own, with a note, a limit, `--detach` (outlives the shell) and `--quiet`; a
   waiter started again keeps its place; `wb gpu leave` withdraws a lane. The old lock path and variable names stay

@@ -1,45 +1,37 @@
 r"""Declarative plans (spec M5): a turn or a campaign described once, checked before any GPU time is spent,
-and run on a chosen machine.
+and run on the host.
 
     [plan]
     name = "river-r1"
     summary = "A river view, textures held still"
-    protocol = "Settle, then the reference; stop at the first failure. Never score against an instance's first run."
-    machine = "rental"                     # rental, or host (the local GPU through wb-host)
-    turn = true                            # on a host, consecutive turn routines share one GPU lease
+    protocol = "Noise first, then the score; stop at the first failure. Never score against an instance's first run."
+    turn = true                            # consecutive turn routines share one GPU lease
 
-    [inputs.jar]                           # pinned: a drifted input refuses the plan
-    path = '/srv/builds/client-mod-0.1.0.jar'
+    [inputs.reference]                     # pinned: a drifted input refuses the plan
+    path = '/srv/captures/river-reference.png'
+    sha256 = "..."
+
+    [inputs.candidate]
+    path = '/srv/captures/river-candidate.png'
     sha256 = "..."
 
     [[step]]
-    id = "prepare"
-    command = "lab.prepare"
-    params = { name = "river-01", seed = 2485331, scale = 4, args = ["--client-mod", "{inputs.jar}"] }
-
-    [[step]]
-    id = "settle"
-    command = "lab.play"
-    params = { name = "river-01", tour = '/srv/tours/forests.json', label = "r1-settle-game" }
+    id = "noise"
+    command = "frames.check"
+    params = { run = "{inputs.candidate}", other = "{inputs.reference}" }
 
     [[step]]
     id = "score"
     command = "frames.compare"
-    params = { reference = "{steps.settle.outputs.r1-settle-game-captures}", candidate = "...", profile = "near" }
+    params = { reference = "{inputs.reference}", candidate = "{inputs.candidate}", profile = "near" }
     accept = ["ok", "finding"]             # outcomes that let the plan go on (default: ok)
 
-    [rental]                               # for machine = "rental": how the game steps run on a rented GPU
-    offer = "29811734"
-    max_dph = 0.10
-    cap = "90m"
-    template = "tours"                     # a bundle template, [modules.vast.templates.tours]; default: the only one
-    lab = '/srv/lab-inputs/tours'          # the template's input archives, as vast.lab-inputs makes them
-    window = "1280x720"                    # any other key is a value the template's steps file may use
+A step's parameters may name an earlier step's results: ``{steps.<id>.outputs.<name>}``, ``{steps.<id>.data.<key>}``
+or ``{steps.<id>.job}``.
 
-On a rental the game steps (those whose command declares a ``role``: lab.prepare and lab.play) run first, together,
-in one bundle the template says how to write (``vast.bundle``); the results it names come back as those steps'
-outputs. On a host those two are retired (wb play builds and plays a launch), so a host plan's steps are other
-commands.
+A plan runs on the host. The rental route (``machine = "rental"``, a ``[rental]`` table, game steps written into a
+bundle from a template) is retired: a rental bundle is made from a launch file alone (``vast.bundle-launch``) and run
+with ``vast.rent``.
 """
 
 from __future__ import annotations
@@ -51,11 +43,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REF = re.compile(r"\{([a-zA-Z_][\w.\-]*)\}")
-
-
-def role(registry: dict, command: str) -> str | None:
-    """What a command declares itself to a rental (module.toml ``role``): prepare, play, or nothing."""
-    return (registry.get(command) or {}).get("role")
 
 
 def turnable(registry: dict, command: str) -> bool:
@@ -80,11 +67,9 @@ class Plan:
     name: str
     summary: str
     protocol: str
-    machine: str
     turn: bool
     inputs: dict[str, dict]
     steps: list[Step]
-    rental: dict
     source: Path | None = None
 
 
@@ -96,9 +81,16 @@ def load(path: Path) -> Plan:
     return parse(data, Path(path))
 
 
+# A plan that would rent: what replaces the route it used.
+RENTAL_RETIRED = ("rental plans are retired: make a rental bundle from a launch file with vast.bundle-launch and run "
+                  "it with vast.rent")
+
+
 def parse(data: dict, source: Path | None = None) -> Plan:
     head = data.get("plan") or {}
-    unknown = set(data) - {"plan", "inputs", "step", "rental"}
+    if "rental" in data or head.get("machine", "host") == "rental":
+        raise PlanError(RENTAL_RETIRED)
+    unknown = set(data) - {"plan", "inputs", "step"}
     if unknown:
         raise PlanError(f"unknown tables {sorted(unknown)}")
     steps = []
@@ -113,13 +105,11 @@ def parse(data: dict, source: Path | None = None) -> Plan:
             raise PlanError(f"step {index}: accept may hold only ok and finding")
         steps.append(Step(id=str(raw.get("id") or f"step-{index}"), command=raw["command"],
                           params=dict(raw.get("params") or {}), accept=list(accept)))
-    machine = head.get("machine", "host")
-    if machine not in ("host", "rental"):
-        raise PlanError("plan.machine must be host or rental")
+    if head.get("machine", "host") != "host":
+        raise PlanError("plan.machine must be host")
     return Plan(name=head.get("name") or (source.stem if source else "plan"), summary=head.get("summary", ""),
-                protocol=head.get("protocol", ""), machine=machine, turn=bool(head.get("turn", True)),
-                inputs=dict(data.get("inputs") or {}), steps=steps, rental=dict(data.get("rental") or {}),
-                source=source)
+                protocol=head.get("protocol", ""), turn=bool(head.get("turn", True)),
+                inputs=dict(data.get("inputs") or {}), steps=steps, source=source)
 
 
 def sha256(path: Path) -> str:
@@ -162,24 +152,3 @@ def groups(plan: Plan, registry: dict) -> list[list[Step]]:
         else:
             out.append([step])
     return out
-
-
-# The [rental] keys plan.run itself reads; every other key is a value for the bundle template.
-RENTAL_KEYS = ("offer", "max_dph", "cap", "template", "lab")
-
-
-def game_steps(plan: Plan, registry: dict) -> list[Step]:
-    """The steps a rental runs: those whose command declares a role (module.toml ``role``)."""
-    return [s for s in plan.steps if role(registry, s.command)]
-
-
-def rental_steps(plan: Plan, registry: dict, lookup) -> list[dict]:
-    """The game steps as a bundle template takes them (vast.bundle ``steps``): id, command, role, and the
-    parameters with their references resolved through ``lookup``."""
-    return [{"id": s.id, "command": s.command, "role": role(registry, s.command),
-             "params": substitute(s.params, lookup)} for s in game_steps(plan, registry)]
-
-
-def rental_values(plan: Plan) -> dict:
-    """The [rental] table less what plan.run reads itself: the values a template's steps file may use."""
-    return {key: value for key, value in plan.rental.items() if key not in RENTAL_KEYS}

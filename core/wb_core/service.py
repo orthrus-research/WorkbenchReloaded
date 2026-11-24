@@ -68,6 +68,7 @@ RETIRED = {
     "lab.session": "wb play (lab.run), a session of an instance lab.build made",
     "lab.server-scenario": "lab.server, keeping what the run wrote with keep",
     "lab.queue": "wb gpu",
+    **dict.fromkeys(("vast.bundle", "vast.lab-inputs"), "vast.bundle-launch"),
     **dict.fromkeys(("lab.snapshot", "lab.reset"), "wb play --fresh-world, or a kept session (lab.keep)"),
     **dict.fromkeys(("lab.remove", "lab.prune-instances", "lab.store-gc", "lab.dedupe", "lab.instances"),
                     "wb gc: it lists the instances, templates and blobs it would remove, and removes that list"),

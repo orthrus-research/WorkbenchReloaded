@@ -77,13 +77,14 @@ class Vocabulary(unittest.TestCase):
 
     def test_a_kept_place_that_no_longer_uses_its_word_fails(self):
         root = self.copy()
-        manifest = root / "modules" / "vast" / "wb_vast" / "module.toml"
+        manifest = root / "modules" / "ci" / "wb_ci" / "module.toml"
         text = manifest.read_text(encoding="utf-8")
-        self.assertIn("the pin cache holds", text)
-        manifest.write_text(text.replace("the pin cache holds", "the Store holds"), encoding="utf-8")
+        self.assertIn("(pinned repositories at their pins)", text)
+        manifest.write_text(text.replace("(pinned repositories at their pins)", "(the Set's lines)"),
+                            encoding="utf-8")
         found = vocabulary.findings(root)
         self.assertEqual(len(found), 1, found)
-        self.assertIn("pin cache is kept in vast.lab-inputs, which no longer uses it", found[0])
+        self.assertIn("pins is kept in ci.run, which no longer uses it", found[0])
 
 
 if __name__ == "__main__":

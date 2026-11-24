@@ -151,7 +151,7 @@ Mixin and patches: verifying Mixin and patch application without the game. (modu
 
 ### `plan`
 
-Declarative turns and campaigns: pinned inputs, a declared protocol, steps that are Workbench commands; checked first, then run on the host or a rented GPU. (modules/plan/wb_plan/module.toml)
+Declarative turns and campaigns: pinned inputs, a declared protocol, steps that are Workbench commands; checked first, then run on the host. (modules/plan/wb_plan/module.toml)
 
 | Command | Runs on | Summary |
 |---|---|---|
@@ -284,8 +284,6 @@ Rent GPU machines on Vast.ai, run bundles on them, and record market prices and 
 | `vast.probe` | container | Rent one offer briefly to check it gives OpenGL 4.6 through VirtualGL, then destroy it. |
 | `vast.bundle-check` | container | Check a bundle (manifest, pinned files, size) and show the bootstrap it would get; rents nothing. |
 | `vast.bundle-launch` | host | Make a rental bundle from a launch file alone: every member and runtime file by SHA-256 from the Store, the platform's Linux archive of the launch's JDK, the overlays and trusted configure script by id, Workbench's own lab.build and lab.run code and a run script that builds the instance and plays one tour session headless, writing session.json. Checked against the launch file, with a manifest of every file's SHA-256. Rents nothing. |
-| `vast.bundle` | container | Make a rental bundle from a template in config, filled with a plan's game steps and the template's input archives; checked, with a manifest of every file's SHA-256. Rents nothing. |
-| `vast.lab-inputs` | container | Build the input archives a template declares, each from its pinned commit in a throwaway clean tree by its recipe, with a receipt; archives the pin cache holds are taken from it. Rents nothing. |
 
 ### `world`
 

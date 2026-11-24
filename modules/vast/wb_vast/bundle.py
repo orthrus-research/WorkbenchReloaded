@@ -1,6 +1,6 @@
 """Bundle manifests (spec 10.1): what a rental uploads, needs, runs and brings back, instead of a hard-coded
-list of tars. ``vast.bundle`` writes them from a template in config (``wb_vast.template``); one may also be written
-by hand::
+list of tars. ``vast.bundle-launch`` writes them from a launch file (``wb_vast.launch_bundle``); one may also be
+written by hand::
 
     name = "turn-02"
     purpose = "measurement"
@@ -9,7 +9,7 @@ by hand::
     gpu = true
     own_jdk = false                    # true: the bundle carries its JDK (a launch bundle), the bootstrap installs none
     [[upload]]
-    path = "/srv/lab-inputs/app.tar"    # a host path under a root, or relative to the bundle
+    path = "/srv/inputs/app.tar"        # a host path under a root, or relative to the bundle
     sha256 = "..."                     # optional: checked before anything is rented
     [[upload]]
     path = "files"
@@ -25,12 +25,10 @@ by hand::
     stop = "pkill -f launcher.py"      # what to stop when the cap comes first (default: the run script)
     partial = "cd /root/bundle && tar -cf results.tar results"   # how to pack what there is, then fetch it
 
-A launch bundle (``vast.bundle-launch``, ``wb_vast.launch_bundle``) is checked against its launch file on every load
-too: a member, runtime file or JDK archive that is missing or other bytes refuses it, before any quote.
-
-A bundle ``vast.bundle`` made holds ``manifest.json`` (``wb.bundle.v1``) beside ``bundle.toml``: the SHA-256 of
-``bundle.toml`` and of every file under ``files/``, and the inputs it pins. Loading such a bundle refuses one whose
-files changed, or gained a file, since it was made.
+A launch bundle is checked against its launch file on every load: a member, runtime file or JDK archive that is
+missing or other bytes refuses it, before any quote. It also holds ``manifest.json`` (``wb.bundle.v1``) beside
+``bundle.toml``: the SHA-256 of ``bundle.toml`` and of every file under ``files/``. Loading such a bundle refuses one
+whose files changed, or gained a file, since it was made.
 """
 
 from __future__ import annotations
@@ -81,7 +79,6 @@ class Bundle:
     disk_gb: int
     stop: str
     partial: str | None
-    template: str | None = None
     own_jdk: bool = False
     launch: dict | None = None   # a launch bundle's bundle-launch.json
 
@@ -149,7 +146,7 @@ def load(folder: Path, resolve, *, verify_uploads: bool = True) -> Bundle:
                   results=list(run.get("results", [f"{REMOTE}/results.tar", "/root/run.log"])),
                   disk_gb=int(needs.get("disk_gb", 32)),
                   stop=run.get("stop") or f"pkill -f '/root/{script.name}'",
-                  partial=run.get("partial"), template=data.get("template"),
+                  partial=run.get("partial"),
                   own_jdk=bool(needs.get("own_jdk", False)), launch=launched)
 
 
