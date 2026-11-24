@@ -2,8 +2,11 @@
 
 ``pre-commit`` scrubs the staged changes, ``commit-msg`` the message, and ``pre-push`` the commits and ref names being
 pushed and then asks the push gate: each pushed commit of a registered project must have passed its own required
-checks in CI's records. A repository that is not a registered project, or one whose ``gate`` is false, is only
-scrubbed. The scrub reads the machine's rules file; without one it says that it ran on its built-in rules only.
+checks, which for a project.toml commit is the gate record of its tree in the Store (for this release a tree without
+one is still judged by CI's run summaries, with a note), and for an actions.toml commit the run summaries. A
+repository that is not a registered project, or one whose ``gate`` is false, is only scrubbed. The gate reads files
+and git only, never the daemon or the GPU lease, so a running game cannot hold a push up. The scrub reads the
+machine's rules file; without one it says that it ran on its built-in rules only.
 
 Each verdict is one line in the machine's hook log. ``git push --no-verify`` still skips everything."""
 
@@ -89,6 +92,8 @@ def run(name: str, args: list[str], stdin: str | None = None) -> int:
         if project is not None:
             answer = workspace.gate(project, lines)
             refused = answer["refused"]
+            for note in answer.get("notes") or []:
+                _say(note)
             if answer["gated"] and not refused and answer["required"]:
                 _say(f"{project.name}: every pushed commit has passed {', '.join(answer['required'])}")
     except (WorkspaceError, OSError) as error:

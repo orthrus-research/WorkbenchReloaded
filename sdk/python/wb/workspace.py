@@ -261,13 +261,17 @@ class Workspace:
                 f"at {commit[:12]} (or wb land {project.name}={commit[:12]})")
 
     def gate(self, project: Project, lines: list[str]) -> dict:
-        """The push gate, answered on the host from git and CI's records. Each pushed commit is judged by its own
-        jobs file and the trees it pins; a project whose ``gate`` is false, or a commit with no jobs file, is not
-        gated."""
+        """The push gate, answered on the host from git and the Store. A commit with a project.toml is taken when the
+        Store holds the gate record of its tree (every gate check passed under one set identity), or when its gate
+        is empty; for this release a tree with no gate record is still judged by CI's run summaries, with a note. A
+        commit on actions.toml is judged by its own jobs file and the trees it pins, over the run summaries. A project
+        whose ``gate`` is false, or a commit with no jobs file, is not gated."""
+        from wb_core import passes
         actions = self.engine()
         if project.entry.get("gate") is False:
-            return {"refused": [], "required": [], "gated": False}
-        refused, required = [], {}
+            return {"refused": [], "required": [], "gated": False, "notes": []}
+        refused, required, notes = [], {}, []
+        store = self.store_root()
         with tempfile.TemporaryDirectory(prefix="wb-gate-") as scratch:
             for line in lines:
                 fields = line.split()
@@ -284,6 +288,12 @@ class Workspace:
                                     "reason": f"it has no {self.jobs_name(project)}, so Workbench has no checks to "
                                               "judge it by (merge the CI setup into it, or push with --no-verify)"})
                     continue
-                refused += actions.gate_check(config, config.names[0], [line])
                 required |= dict.fromkeys(config.required())
-        return {"refused": refused, "required": list(required), "gated": True}
+                if config.path.name == actions.PROJECT_FILE:
+                    tree = git(project.repo, "rev-parse", f"{fields[1]}^{{tree}}")
+                    if not config.required() or (store is not None and passes.read_gate(store, project.name, tree)):
+                        continue
+                    notes.append(f"{project.name} tree {tree[:12]} has no gate record in the Store, so it is judged "
+                                 "by CI's run summaries for this release (wb check writes the record)")
+                refused += actions.gate_check(config, config.names[0], [line])
+        return {"refused": refused, "required": list(required), "gated": True, "notes": notes}
