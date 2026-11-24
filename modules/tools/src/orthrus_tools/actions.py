@@ -119,7 +119,10 @@ class Config:
 
     @property
     def names(self) -> tuple[str, ...]:
-        return tuple(repository.name for repository in self.tested)
+        """The trees a pass is keyed on: each tested repository's, and the run's set identity when it builds from a
+        set (``WB_SET_IDENTITY``), so a platform or line move needs a new pass."""
+        own = tuple(repository.name for repository in self.tested)
+        return own + ((SET_TREE,) if os.environ.get(SET_IDENTITY) else ())
 
     def required(self) -> list[str]:
         if self.workflow not in self.workflows:
@@ -410,14 +413,24 @@ def pin_value(document: Any, key: str) -> Any:
     return value
 
 
+# A run that builds from a set is given two digests of it: the platform and the lines and third entries the project
+# uses (a tree of its own in the pass key), and the platform's JDK builds (in a pure check's key, which replaces
+# identity_files). A platform or line move then needs a new pass; a pure check reruns only on a JDK move.
+SET_IDENTITY = "WB_SET_IDENTITY"
+JDK_IDENTITY = "WB_JDK_IDENTITY"
+SET_TREE = "set"
+
+
 def trees(config: Config) -> dict[str, str | None]:
-    """Each repository's working tree; None where git could not read one."""
+    """Each repository's working tree, and the set identity when the run has one; None where git could not read one."""
     found: dict[str, str | None] = {}
     for repository in config.tested:
         try:
             found[repository.name] = working_tree(repository.path, config.runs)
         except (OSError, subprocess.SubprocessError):
             found[repository.name] = None
+    if os.environ.get(SET_IDENTITY):
+        found[SET_TREE] = os.environ[SET_IDENTITY]
     return found
 
 
@@ -609,6 +622,8 @@ def identity(config: Config, values: dict[str, Any]) -> list[str]:
             lines.append(f"{template}: missing")
     for variable in settings.get("identity_env", []):
         lines.append(f"${variable}={os.environ.get(variable, '')}")
+    if os.environ.get(JDK_IDENTITY):
+        lines.append(f"platform jdk {os.environ[JDK_IDENTITY]}")
     return lines
 
 

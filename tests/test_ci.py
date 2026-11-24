@@ -391,6 +391,53 @@ class Tools(unittest.TestCase):
         self.assertEqual(self.lay_out([])[0], {})
 
 
+class SetIdentity(unittest.TestCase):
+    """A converted project's run is given the set's identity: the platform and the lines, holds and third entries it
+    uses (a line it does not use moves nothing), and the platform's JDK builds; a project on actions.toml gets none."""
+
+    @classmethod
+    def setUpClass(cls):
+        for module in ("tools", "build", "lab", "ci"):
+            sys.path.insert(0, str(REPO / "modules" / module))
+        from wb_ci import commands
+        cls.commands = commands
+
+    def identity(self, doc, manifest="project.toml"):
+        from unittest import mock
+        from wb_core import setfile
+        from wb_core.module import Context
+        base = Path(tempfile.mkdtemp(prefix="wb-identity-"))
+        self.addCleanup(__import__("shutil").rmtree, base, True)
+        setfile.export(base / "out" / "sets", "r1", json.dumps(doc))
+        ctx = Context({"job": "direct", "command": "ci.run", "module": "ci", "work": str(base / "w"),
+                       "out": str(base / "o"), "module_config": {}}, lambda *a, **k: None)
+        config = type("C", (), {"path": Path(manifest), "data": {"uses": {"cube": "compile", "ui": "compile"}},
+                                "settings": {"name": "game"}})()
+        with mock.patch.object(self.commands, "_store_root", return_value=base / "out" / "store"):
+            return self.commands._set_identity(ctx, config, "r1")
+
+    def doc(self, **changes):
+        doc = {"schema": 1, "projects": {"cube": {"commit": "c" * 40}, "other": {"commit": "e" * 40}},
+               "third": {"ui": {"sha256": "1" * 64}}, "holds": {},
+               "platform": {"java": 26, "jdk": {"26": {"build": "26.0.2.1+1"}}, "logic": "l1"}}
+        for key, value in changes.items():
+            section, _, name = key.partition("__")
+            doc[section][name] = value
+        return doc
+
+    def test_what_moves_the_identities(self):
+        base = self.identity(self.doc())
+        self.assertEqual(set(base), {"WB_SET_IDENTITY", "WB_JDK_IDENTITY"})
+        self.assertEqual(self.identity(self.doc(projects__other={"commit": "f" * 40})), base)  # not used: no move
+        cube = self.identity(self.doc(projects__cube={"commit": "d" * 40}))
+        self.assertNotEqual(cube["WB_SET_IDENTITY"], base["WB_SET_IDENTITY"])
+        self.assertEqual(cube["WB_JDK_IDENTITY"], base["WB_JDK_IDENTITY"])
+        jdk = self.identity(self.doc(platform__jdk={"26": {"build": "26.0.3+4"}}))
+        self.assertNotEqual(jdk["WB_JDK_IDENTITY"], base["WB_JDK_IDENTITY"])
+        self.assertNotEqual(self.identity(self.doc(platform__logic="l2"))["WB_SET_IDENTITY"], base["WB_SET_IDENTITY"])
+        self.assertEqual(self.identity(self.doc(), manifest="actions.toml"), {})
+
+
 class PythonLookup(unittest.TestCase):
     """ci.matrix finds a version wherever the host keeps it, and takes only an interpreter that says it is that one."""
 

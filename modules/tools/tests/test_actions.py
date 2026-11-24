@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -496,6 +497,26 @@ class ProjectManifestTest(Project):
         commit = commit_all(self.root)
         self.assertEqual(actions.file_at(self.root, commit)[0], "project.toml")
         self.assertEqual(actions.file_at(self.root, git(self.root, "rev-parse", "HEAD~1"))[0], "actions.toml")
+
+    def test_a_set_identity_keys_passes_and_a_jdk_identity_keys_pure_checks(self):
+        """A run given the set's identity records it as a tree, so a platform or line move needs a new pass; a pure
+        check's key takes the platform's JDK digest. The gate, given no identity, still judges by the tree alone."""
+        from unittest import mock
+        self.write_manifest(MANIFEST)
+        commit_all(self.root)
+        plain = self.load()
+        self.assertEqual(plain.names, ("demo",))
+        with mock.patch.dict(os.environ, {actions.SET_IDENTITY: "a" * 64, actions.JDK_IDENTITY: "b" * 64}):
+            config = self.load()
+            self.assertEqual(config.names, ("demo", "set"))
+            self.assertEqual(actions.trees(config)["set"], "a" * 64)
+            first = actions.input_key(config, "docs", actions.placeholders(config, "r"))
+            with mock.patch.dict(os.environ, {actions.JDK_IDENTITY: "c" * 64}):
+                moved = actions.input_key(config, "docs", actions.placeholders(config, "r"))
+            with mock.patch.dict(os.environ, {actions.SET_IDENTITY: "d" * 64}):
+                same = actions.input_key(config, "docs", actions.placeholders(config, "r"))
+        self.assertNotEqual(first, moved)  # a JDK move reruns a pure check
+        self.assertEqual(first, same)      # a line move alone does not
 
 
 class GateTest(Project):

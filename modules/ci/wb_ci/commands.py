@@ -434,6 +434,32 @@ def _tools(ctx: Context, config, work: Path, revision: str) -> dict[str, str]:
     return laid
 
 
+def _set_identity(ctx: Context, config, revision: str) -> dict[str, str]:
+    """For a project that builds from a set (project.toml): WB_SET_IDENTITY, a digest of the set's platform and of the
+    lines, holds and third entries the project uses, and WB_JDK_IDENTITY, a digest of the platform's JDK builds. Empty
+    for a project still on actions.toml, or with no set revision."""
+    import hashlib
+    from wb_core import setfile
+    if config.path.name != engine.PROJECT_FILE or not revision:
+        return {}
+    try:
+        doc = setfile.read_export(_store_root(ctx).parent / "sets", revision)
+    except setfile.SetError:
+        return {}
+    uses = set((config.data.get("uses") or {}).keys())
+    lines = {n: line for n, line in (doc.get("projects") or {}).items() if n in uses}
+    thirds = {n: entry for n, entry in (doc.get("third") or {}).items() if n in uses}
+    holds = {n: hold for n, hold in (doc.get("holds") or {}).items()
+             if n.split(":")[0].split("@")[0] in uses or n.split("@")[-1] == config.settings.get("name")}
+    platform = doc.get("platform") or {}
+
+    def digest(value) -> str:
+        return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+    return {"WB_SET_IDENTITY": digest({"platform": platform, "lines": lines, "holds": holds, "third": thirds}),
+            "WB_JDK_IDENTITY": digest(platform.get("jdk") or {})}
+
+
 def _gradle_launcher(ctx: Context, work: Path, revision: str, extra: list | None = None) -> tuple[Path, str]:
     """The launcher {gradle} runs: the Gradle distribution the set's platform names, from the Store, with -Pset.dir
     (the run's export of the set), -Pset.store, -Pset.plugins, -Pset.exact=true and the platform's JDK builds as
@@ -525,6 +551,7 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
         gradle_home, served = _gradle_home(ctx)
         launcher, set_revision, gradle_opts = _gradle_launcher(ctx, work, set, _stand_ins(ctx, work, stand_ins or {}))
         tools = _tools(ctx, config, work, set_revision or set)
+        identity = _set_identity(ctx, config, set_revision or set)
         if stand_ins:
             # Against stand-in bytes a run vouches for nothing: its records go one level down, where the gate, which
             # reads <records>/<run>/summary.json, never counts them, and its step logs stay readable.
@@ -532,7 +559,8 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
             records.mkdir(parents=True, exist_ok=True)
         env = {**_jdk_env(ctx, major), "GRADLE_USER_HOME": str(gradle_home), "WB_PIN_CACHE": str(pins),
                "WB_GRADLE": str(launcher), **({"GRADLE_OPTS": gradle_opts} if gradle_opts else {}),
-               **{k: str(v) for k, v in (entry.get("env") or {}).items()}, **({"WB_COLD": "1"} if cold else {})}
+               **{k: str(v) for k, v in (entry.get("env") or {}).items()}, **({"WB_COLD": "1"} if cold else {}),
+               **identity}
         python = _python(ctx, root, [str(r) for r in entry.get("python") or config.data.get("project", {}).get("python")
                                      or []])
         targets = [*([workflow] if workflow else []), *[str(j) for j in jobs]] or [config.workflow]
