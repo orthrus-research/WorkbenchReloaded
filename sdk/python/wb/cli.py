@@ -72,6 +72,30 @@ def parse_params(pairs: list[str], schema: dict | None) -> dict:
     return params
 
 
+def _memory(value) -> str:
+    if not isinstance(value, (int, float)):
+        return ""
+    return f", peak {value / 2**30:.2f} GiB" if value >= 2**30 else f", peak {value / 2**20:.0f} MiB"
+
+
+def check_lines(data: dict) -> list[str]:
+    """The checks a ci.run or ci.host-run ran, from the engine's run summary in its data: each job's status, time
+    and peak memory (the most its steps' process trees held at once), then each step's."""
+    engine = data.get("engine")
+    results = engine if isinstance(engine, list) else [engine] if isinstance(engine, dict) else []
+    lines = []
+    for result in results:
+        for name, job in ((result or {}).get("jobs") or {}).items():
+            if not isinstance(job, dict) or not job.get("steps"):
+                continue  # skipped, or passed already: nothing ran
+            seconds = sum(step.get("seconds") or 0 for step in job["steps"])
+            lines.append(f"  check {name}: {job.get('status')}, {seconds:.1f} s{_memory(job.get('peakRssBytes'))}")
+            for step in job["steps"]:
+                lines.append(f"    {step.get('name')}: exit {step.get('exitCode')}, {step.get('seconds')} s"
+                             f"{_memory(step.get('peakRssBytes'))}")
+    return lines
+
+
 def print_envelope(env: Envelope, as_json: bool):
     if as_json:
         print(json.dumps(env, indent=1, default=str))
@@ -101,6 +125,8 @@ def print_envelope(env: Envelope, as_json: bool):
     if data:
         text = json.dumps(data, default=str)
         print("  data: " + (text if len(text) < 400 else text[:400] + " ...  (all of it: --json)"))
+    for line in check_lines(data):
+        print(line)
     for item in env.get("measurements") or []:
         print(f"  {item['name']} = {item['value']}{' ' + item['unit'] if item.get('unit') else ''}")
     for item in env.get("outputs") or []:

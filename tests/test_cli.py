@@ -38,6 +38,26 @@ class Params(unittest.TestCase):
                                 "waiting": {"reason": "lock ci:demo held by j_Y", "since": None}}, False)
         self.assertIn("waiting: lock ci:demo held by j_Y", out.getvalue())
 
+    def test_a_ci_run_shows_each_checks_and_steps_peak_memory(self):
+        steps = [{"name": "compile", "exitCode": 0, "seconds": 12.0, "peakRssBytes": 3 * 2**30},
+                 {"name": "test", "exitCode": 0, "seconds": 30.5, "peakRssBytes": 512 * 2**20}]
+        engine = {"jobs": {"build": {"status": "passed", "steps": steps, "peakRssBytes": 3 * 2**30},
+                           "docs": {"status": "skipped", "reason": "needs build"},
+                           "old": {"status": "passed", "steps": [{"name": "x", "exitCode": 0, "seconds": 1.0}]}}}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.print_envelope({"state": "settled", "outcome": "ok", "command": "ci.run", "job": "j_X",
+                                "summary": "1 passed", "data": {"engine": engine}}, False)
+        lines = out.getvalue().splitlines()
+        self.assertIn("  check build: passed, 42.5 s, peak 3.00 GiB", lines)
+        self.assertIn("    compile: exit 0, 12.0 s, peak 3.00 GiB", lines)
+        self.assertIn("    test: exit 0, 30.5 s, peak 512 MiB", lines)
+        self.assertIn("    x: exit 0, 1.0 s", lines)  # a summary from before peaks were kept shows none
+        self.assertFalse([line for line in lines if "check docs" in line])  # it did not run
+        # ci.host-run's engine is a list: one summary per lease
+        self.assertEqual(cli.check_lines({"engine": [engine, {"jobs": {}}]})[0],
+                         "  check build: passed, 42.5 s, peak 3.00 GiB")
+
 
 class Verbs(unittest.TestCase):
     @classmethod

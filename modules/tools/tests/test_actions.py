@@ -321,6 +321,41 @@ class RunTest(Project):
         self.assertEqual(document["result"]["order"], [])
         self.assertEqual(document["result"]["alreadyPassed"], ["lint", "test"])
 
+    def test_each_step_and_job_keeps_the_peak_memory_of_its_process_tree(self):
+        # The step's own process stays small; the 200 MiB is held by a process it starts.
+        (self.root / "tools").mkdir()
+        (self.root / "tools" / "hold.py").write_text(
+            "import subprocess, sys\n"
+            "child = 'b = bytearray(200 * 2**20)\\nfor i in range(0, len(b), 4096): b[i] = 1\\n"
+            "import time; time.sleep(2)'\n"
+            "sys.exit(subprocess.call([sys.executable, '-c', child]))\n",
+            encoding="utf-8",
+        )
+        self.write_config(
+            self.config.replace(
+                f'name = "lint", run = {PASS}',
+                f'name = "small", run = {PASS} }}, {{ name = "holds", run = '
+                '["{python}", "tools/hold.py"]',
+            )
+        )
+        commit_all(self.root)
+        code, document = self.actions("run", "lint")
+        self.assertEqual(code, cli.OK, document["messages"])
+        job = document["result"]["jobs"]["lint"]
+        small, holds = job["steps"]
+        self.assertGreater(holds["peakRssBytes"], 190 * 2**20)
+        self.assertLess(small.get("peakRssBytes", 0), holds["peakRssBytes"])
+        self.assertEqual(job["peakRssBytes"], holds["peakRssBytes"])  # its largest step's
+        recorded = json.loads(
+            (self.root / ".local/actions" / document["result"]["runId"] / "summary.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(recorded["jobs"]["lint"]["peakRssBytes"], job["peakRssBytes"])
+        code, report = self.actions("report")
+        self.assertIn("| Step | Exit | Seconds | Peak MiB |", report["result"]["markdown"])
+        self.assertIn(f"| {actions.mebibytes(job['peakRssBytes'])} |", report["result"]["markdown"])
+
     def test_a_failure_skips_its_dependants_and_exits_with_a_finding(self):
         self.write_config(
             self.config.replace(f'name = "lint", run = {PASS}', f'name = "lint", run = {FAIL}')
