@@ -1,17 +1,23 @@
 """Fake publishing services for the release tests: GitHub releases, Modrinth, CurseForge (its upload API and its Core
-API) and a Maven repository. Each is an http.server on 127.0.0.1 that keeps what it was sent and records every
-request, so a test can check exactly what a publish sent, and that nothing was sent before a yes."""
+API), a Maven repository, the Central Publisher Portal, and an S3 bucket with its public view. Each is an
+http.server on 127.0.0.1 that keeps what it was sent and records every request, so a test can check exactly what a
+publish sent, and that nothing was sent before a yes."""
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
+import io
 import json
 import re
 import threading
 import urllib.parse
+import uuid
+import zipfile
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from xml.etree import ElementTree
 
 
 @dataclass
@@ -277,3 +283,179 @@ class Maven(Service):
                 return 200, {"Content-Type": "application/octet-stream"}, self.files[r.path]
             return answer(404)
         return answer(405)
+
+
+class Central(Service):
+    """The Publisher Portal: a bundle is checked as Central checks it (the layout, checksums, signatures beside every
+    file, the POM's metadata), and each status call moves its deployment one state on."""
+
+    def __init__(self, user: str, password: str):
+        super().__init__()
+        self.auth = "Bearer " + base64.b64encode(f"{user}:{password}".encode()).decode()
+        self.deployments: dict[str, dict] = {}
+        self.published: set[str] = set()       # group:artifact:version
+        self.refuse: list[str] = []             # errors the next deployment fails with
+
+    def handle(self, r: Request) -> tuple:
+        if r.headers.get("authorization") != self.auth:
+            return answer(401, {"error": "invalid token"})
+        if r.method == "GET" and r.path == "/api/v1/publisher/published":
+            coordinates = f"{r.query['namespace']}:{r.query['name']}:{r.query['version']}"
+            return answer(200, {"published": coordinates in self.published})
+        if r.method == "POST" and r.path == "/api/v1/publisher/upload":
+            parts = multipart(r.headers["content-type"], r.body)
+            bundle = parts["bundle"]
+            errors = self.check(bundle.body) + self.refuse
+            self.refuse = []
+            kind = r.query.get("publishingType", "USER_MANAGED")
+            states = ["PENDING", "VALIDATING", "FAILED" if errors else "VALIDATED"]
+            if kind == "AUTOMATIC" and not errors:
+                states += ["PUBLISHING", "PUBLISHED"]
+            deployment = str(uuid.uuid4())
+            self.deployments[deployment] = {"name": r.query.get("name"), "type": kind, "states": states,
+                                            "state": None, "bundle": bundle.body, "filename": bundle.filename,
+                                            "errors": errors, "coordinates": r.query.get("name")}
+            return 201, {"Content-Type": "text/plain"}, deployment.encode()
+        if r.method == "POST" and r.path == "/api/v1/publisher/status":
+            item = self.deployments.get(r.query.get("id", ""))
+            if item is None:
+                return answer(404, {"error": "no such deployment"})
+            if item["states"]:
+                item["state"] = item["states"].pop(0)
+            if item["state"] == "PUBLISHED":
+                self.published.add(item["coordinates"])
+            group, artifact, version = item["coordinates"].split(":")
+            status = {"deploymentId": r.query["id"], "deploymentName": item["name"],
+                      "deploymentState": item["state"], "purls": [f"pkg:maven/{group}/{artifact}@{version}"]}
+            if item["state"] == "FAILED":
+                status["errors"] = {f"pkg:maven/{group}/{artifact}@{version}": item["errors"]}
+            return answer(200, status)
+        return answer(404, {"error": "not found"})
+
+    @staticmethod
+    def check(data: bytes) -> list[str]:
+        errors = []
+        with zipfile.ZipFile(io.BytesIO(data)) as bundle:
+            names = set(bundle.namelist())
+            sums = (".md5", ".sha1", ".sha256", ".sha512")
+            files = [n for n in names if not n.endswith(sums + (".asc",))]
+            for name in files:
+                body = bundle.read(name)
+                for algo in ("md5", "sha1"):
+                    if f"{name}.{algo}" not in names:
+                        errors.append(f"{name}: no .{algo}")
+                    elif bundle.read(f"{name}.{algo}").decode() != sha(algo, body):
+                        errors.append(f"{name}: .{algo} is wrong")
+                if f"{name}.asc" not in names:
+                    errors.append(f"{name}: no signature")
+            poms = [n for n in files if n.endswith(".pom")]
+            if len(poms) != 1:
+                return errors + ["no POM"]
+            stem = poms[0][:-4]
+            for suffix in (".jar", "-sources.jar", "-javadoc.jar"):
+                if stem + suffix not in names:
+                    errors.append(f"no {stem}{suffix}")
+            root = ElementTree.fromstring(bundle.read(poms[0]))
+            ns = {"m": "http://maven.apache.org/POM/4.0.0"}
+            for path in ("m:name", "m:description", "m:url", "m:licenses/m:license/m:name",
+                         "m:developers/m:developer/m:name", "m:scm/m:url", "m:scm/m:connection",
+                         "m:scm/m:developerConnection"):
+                if not root.findtext(path, namespaces=ns):
+                    errors.append(f"the POM has no {path.replace('m:', '')}")
+        return errors
+
+
+def _signature(secret: str, day: str, region: str, text: str) -> str:
+    key = ("AWS4" + secret).encode()
+    for part in (day, region, "s3", "aws4_request"):
+        key = hmac.new(key, part.encode(), hashlib.sha256).digest()
+    return hmac.new(key, text.encode(), hashlib.sha256).hexdigest()
+
+
+class Bucket(Service):
+    """An S3 bucket, path style (/<bucket>/<key>), that checks every request's Signature Version 4 and honours
+    If-None-Match and If-Match on a PUT."""
+
+    def __init__(self, key_id: str, secret: str, bucket: str, region: str = "auto"):
+        super().__init__()
+        self.key_id, self.secret, self.bucket, self.region = key_id, secret, bucket, region
+        self.objects: dict[str, dict] = {}
+
+    def put(self, key: str, body: bytes, meta: dict | None = None):
+        """An object as another writer left it (by default without the SHA-256 Workbench stores)."""
+        self.objects[key] = {"body": body, "meta": dict(meta or {}), "etag": sha("md5", body),
+                             "content_type": "application/octet-stream"}
+
+    def _denied(self, r: Request) -> str | None:
+        auth = r.headers.get("authorization", "")
+        found = re.fullmatch(r"AWS4-HMAC-SHA256 Credential=([^/]+)/(\d{8})/([^/]+)/s3/aws4_request, "
+                             r"SignedHeaders=([a-z0-9;-]+), Signature=([0-9a-f]{64})", auth)
+        if not found:
+            return "no signature"
+        key_id, day, region, names, given = found.groups()
+        if key_id != self.key_id or region != self.region:
+            return "unknown key or region"
+        if r.headers.get("x-amz-content-sha256") != sha("sha256", r.body):
+            return "the payload hash is not the body's"
+        stamp = r.headers.get("x-amz-date", "")
+        if stamp[:8] != day:
+            return "the date is not the scope's"
+        signed = names.split(";")
+        if not {"host", "x-amz-date", "x-amz-content-sha256"} <= set(signed):
+            return "host and the x-amz headers must be signed"
+        query = "&".join(f"{urllib.parse.quote(k, safe='-_.~')}={urllib.parse.quote(v, safe='-_.~')}"
+                         for k, v in sorted(r.query.items()))
+        headers = "".join(f"{name}:{' '.join(r.headers.get(name, '').split())}\n" for name in signed)
+        canonical = "\n".join([r.method, r.path, query, headers, names, r.headers["x-amz-content-sha256"]])
+        scope = f"{day}/{region}/s3/aws4_request"
+        text = "\n".join(["AWS4-HMAC-SHA256", stamp, scope, sha("sha256", canonical.encode())])
+        return None if hmac.compare_digest(_signature(self.secret, day, region, text), given) else "bad signature"
+
+    def handle(self, r: Request) -> tuple:
+        denied = self._denied(r)
+        if denied:
+            return 403, {"Content-Type": "application/xml"}, (
+                f"<Error><Code>SignatureDoesNotMatch</Code><Message>{denied}</Message></Error>").encode()
+        prefix = f"/{self.bucket}/"
+        if not r.path.startswith(prefix):
+            return 404, {"Content-Type": "application/xml"}, b"<Error><Code>NoSuchBucket</Code></Error>"
+        key = urllib.parse.unquote(r.path[len(prefix):])
+        held = self.objects.get(key)
+        refused = 412, {"Content-Type": "application/xml"}, b"<Error><Code>PreconditionFailed</Code></Error>"
+        if r.method in ("GET", "HEAD"):
+            if held is None:
+                return 404, {"Content-Type": "application/xml"}, b"<Error><Code>NoSuchKey</Code></Error>"
+            headers = {"Content-Type": held["content_type"], "ETag": f'"{held["etag"]}"',
+                       **{f"x-amz-meta-{k}": v for k, v in held["meta"].items()}}
+            return 200, headers, held["body"]
+        if r.method == "PUT":
+            if r.headers.get("if-none-match") == "*" and held is not None:
+                return refused
+            if "if-match" in r.headers and (held is None or r.headers["if-match"].strip('"') != held["etag"]):
+                return refused
+            meta = {k[len("x-amz-meta-"):]: v for k, v in r.headers.items() if k.startswith("x-amz-meta-")}
+            self.objects[key] = {"body": r.body, "meta": meta, "etag": sha("md5", r.body),
+                                 "content_type": r.headers.get("content-type", "application/octet-stream")}
+            return 200, {"ETag": f'"{self.objects[key]["etag"]}"'}, b""
+        return 405, {}, b""
+
+
+class Public(Service):
+    """The bucket's public base URL: anyone may GET, nobody may write; ``override`` serves other bytes for a key, as
+    a stale cache would."""
+
+    def __init__(self, bucket: Bucket):
+        super().__init__()
+        self.bucket = bucket
+        self.override: dict[str, bytes] = {}
+
+    def handle(self, r: Request) -> tuple:
+        key = urllib.parse.unquote(r.path.lstrip("/"))
+        if r.method != "GET":
+            return 405, {}, b""
+        if key in self.override:
+            return 200, {"Content-Type": "application/octet-stream"}, self.override[key]
+        held = self.bucket.objects.get(key)
+        if held is None:
+            return 404, {"Content-Type": "text/plain"}, b"not found"
+        return 200, {"Content-Type": held["content_type"]}, held["body"]
