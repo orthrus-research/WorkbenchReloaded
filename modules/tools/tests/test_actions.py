@@ -554,6 +554,31 @@ class ProjectManifestTest(Project):
         self.assertNotEqual(first, moved)  # a JDK move reruns a pure check
         self.assertEqual(first, same)      # a line move alone does not
 
+    def test_a_pure_checks_key_takes_the_used_third_entries_and_holds(self):
+        """The run's WB_USES_IDENTITY (the SHA-256 of the third entries and holds the project uses) is in a pure
+        check's key: a candidate set with other bytes for a used third entry reruns it; without one the key is the
+        one it had."""
+        from unittest import mock
+        self.write_manifest(MANIFEST)
+        commit_all(self.root)
+        config = self.load()
+        bare = actions.input_key(config, "docs", actions.placeholders(config, "r"))
+        with mock.patch.dict(os.environ, {actions.USES_IDENTITY: "a" * 64}):
+            config = self.load()
+            used = actions.input_key(config, "docs", actions.placeholders(config, "r"))
+        with mock.patch.dict(os.environ, {actions.USES_IDENTITY: "b" * 64}):
+            config = self.load()
+            moved = actions.input_key(config, "docs", actions.placeholders(config, "r"))
+        with mock.patch.dict(os.environ, {actions.USES_IDENTITY: ""}):
+            config = self.load()
+            empty = actions.input_key(config, "docs", actions.placeholders(config, "r"))
+        given = actions.Config(config.root, config.path, config.data, config.repositories, config.runs,
+                               identity={"uses": "a" * 64})
+        self.assertEqual(actions.input_key(given, "docs", actions.placeholders(given, "r")), used)
+        self.assertNotEqual(bare, used)
+        self.assertNotEqual(used, moved)
+        self.assertEqual(bare, empty)
+
     def test_a_pure_checks_key_covers_the_tools_files_it_reads(self):
         from unittest import mock
         self.write_manifest(MANIFEST.replace('[checks.docs]', '[checks.docs]\ntools = ["lib:assets/**"]'))

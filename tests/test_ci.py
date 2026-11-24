@@ -677,7 +677,7 @@ class SetIdentity(unittest.TestCase):
 
     def test_what_moves_the_identities(self):
         base = self.identity(self.doc())
-        self.assertEqual(set(base), {"WB_SET_IDENTITY", "WB_JDK_IDENTITY"})
+        self.assertEqual(set(base), {"WB_SET_IDENTITY", "WB_JDK_IDENTITY", "WB_USES_IDENTITY"})
         self.assertEqual(self.identity(self.doc(projects__other={"commit": "f" * 40})), base)  # not used: no move
         cube = self.identity(self.doc(projects__cube={"commit": "d" * 40}))
         self.assertNotEqual(cube["WB_SET_IDENTITY"], base["WB_SET_IDENTITY"])
@@ -686,6 +686,29 @@ class SetIdentity(unittest.TestCase):
         self.assertNotEqual(jdk["WB_JDK_IDENTITY"], base["WB_JDK_IDENTITY"])
         self.assertNotEqual(self.identity(self.doc(platform__logic="l2"))["WB_SET_IDENTITY"], base["WB_SET_IDENTITY"])
         self.assertEqual(self.identity(self.doc(), manifest="actions.toml"), {})
+
+    def test_the_uses_identity_moves_with_the_bytes_of_a_used_third_entry_or_hold(self):
+        """A pure check's key takes WB_USES_IDENTITY: the SHA-256 of each third entry [uses] names and of each hold
+        that applies to the project. Bytes it does not use, and a hold for another consumer, leave it alone."""
+        base = self.identity(self.doc())["WB_USES_IDENTITY"]
+        self.assertTrue(base)
+        self.assertNotEqual(self.identity(self.doc(third__ui={"sha256": "2" * 64}))["WB_USES_IDENTITY"], base)
+        self.assertNotEqual(self.identity(self.doc(third__ui={"files": {"runtime": "1" * 64}}))["WB_USES_IDENTITY"],
+                            base)
+        unused = self.doc(third__gson={"sha256": "3" * 64})
+        self.assertEqual(self.identity(unused)["WB_USES_IDENTITY"], base)
+        unused["third"]["gson"]["sha256"] = "4" * 64
+        self.assertEqual(self.identity(unused)["WB_USES_IDENTITY"], base)
+        held = {"commit": "a" * 40, "artifacts": {"mod": {"sha256": "5" * 64}}}
+        mine = self.identity(self.doc(holds__cube=held))["WB_USES_IDENTITY"]
+        self.assertNotEqual(mine, base)
+        moved = {"commit": "a" * 40, "artifacts": {"mod": {"sha256": "6" * 64}}}
+        self.assertNotEqual(self.identity(self.doc(holds__cube=moved))["WB_USES_IDENTITY"], mine)
+        self.assertEqual(self.identity(self.doc(**{"holds__cube:mod@other": held}))["WB_USES_IDENTITY"], base)
+        self.assertNotEqual(self.identity(self.doc(**{"holds__cube:mod@game": held}))["WB_USES_IDENTITY"], base)
+        bare = self.doc()
+        bare["third"] = {}
+        self.assertEqual(self.identity(bare)["WB_USES_IDENTITY"], "")  # nothing used: no line in the key
 
 
 class PythonLookup(unittest.TestCase):

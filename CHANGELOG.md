@@ -148,7 +148,10 @@
   giving it the steps' whole environment, the project's interpreter as `{python}` and the set's identities, instead
   of starting the engine as a process and reading its JSON from the output. Steps still run as processes of their
   own under the project's interpreter, and cancelling the job kills them; the `actions` command line still reads the
-  identities from WB_SET_IDENTITY, WB_JDK_IDENTITY and WB_TOOLS_ROOTS.
+  identities from WB_SET_IDENTITY, WB_JDK_IDENTITY, WB_USES_IDENTITY and WB_TOOLS_ROOTS.
+- A pure check's key covers the SHA-256 of each third entry the project's `[uses]` names and of each hold that
+  applies to it (`WB_USES_IDENTITY`), beside the platform's JDK: a candidate set with other bytes for a used third
+  entry reruns it, and one that moves only a third entry the project does not use reuses its pass.
 - Each check's and step's peak memory in the run summary (`peakRssBytes`): the most resident memory the step's
   process tree held at once, sampled while it ran from `/proc` (the step's descendants and its session, so a Gradle
   daemon counts) or, on Windows, a Job Object the step is put in, and a JVM the step reuses over a local TCP
