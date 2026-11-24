@@ -62,6 +62,7 @@ sha256 = "796866b5a84dc47e57e9d45f5ea621c9dbc49a26344b89111a63d39ec8fc2184"  # c
 # System packages of the image, from the snapshot above.
 image = [
   "ca-certificates", "curl", "wget", "git", "openssh-client", "xz-utils", "zip", "unzip", "procps",
+  "gpg", "gpg-agent",  # release.publish signs what a central channel sends to Maven Central
   "python3", "python3-venv", "python3-numpy", "python3-scipy", "python3-pil",
   "ffmpeg", "xvfb", "xauth", "mesa-utils", "libegl1", "libegl-mesa0", "libgl1", "libgl1-mesa-dri",
   "libglu1-mesa", "libvulkan1", "glslang-tools", "fonts-dejavu-core",
