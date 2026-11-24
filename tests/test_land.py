@@ -466,6 +466,13 @@ class Land(unittest.TestCase):
         kept.parent.mkdir(parents=True, exist_ok=True)
         kept.write_bytes(rebuilt)
         record["artifacts"]["lib-1.jar"]["sha256"] = digest
+        # Another file of the check whose name the glob's file part also matches (as orthlib-*-dev.jar matches
+        # orthlib-mixinkit-0.5.0-dev.jar): the index's path picks the file, the record its bytes.
+        other = b"another jar of the same check"
+        other_digest = hashlib.sha256(other).hexdigest()
+        (self.store / "files" / other_digest).mkdir(parents=True, exist_ok=True)
+        (self.store / "files" / other_digest / "lib-extra-1.jar").write_bytes(other)
+        record["artifacts"]["lib-extra-1.jar"] = {"sha256": other_digest}
         record_path.chmod(0o644)
         record_path.write_text(json.dumps(record), encoding="utf-8")
         result = self.lander().land({"lib": commit})

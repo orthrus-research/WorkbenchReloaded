@@ -115,27 +115,25 @@ def _member(ctx: Context, name: str, wanted: dict, base: dict) -> tuple[dict, st
     _, keys = commands.pass_keys(ctx, config, tree, base)
     files = {}
     for artifact, spec in (config.data.get("artifacts") or {}).items():
-        recorded = (passes.find(root, name, tree, spec["check"], keys.get(spec["check"], "")) or {}).get("artifacts") \
-            or {}
-        by_pass = [f for f, item in recorded.items() if fnmatch.fnmatch(f, Path(spec["file"]).name)
-                   and (root / "files" / str(item.get("sha256")) / f).is_file()]
-        if len(by_pass) == 1:
-            files[artifact] = {"sha256": recorded[by_pass[0]]["sha256"], "file": by_pass[0], "glob": spec["file"],
-                               "check": spec["check"]}
-            if spec.get("mod_id"):
-                files[artifact]["mod_id"] = str(spec["mod_id"])
-            continue
-        # Matched on the path the build left the file at, where the Store knows it; by name for older records.
+        record = passes.find(root, name, tree, spec["check"], keys.get(spec["check"], "")) or {}
+        recorded = record.get("artifacts") or {}
+        # Matched on the path the build left the file at, where the Store knows it; by name for older records. The
+        # name is the index's; the bytes are the pass record's under this set when it names that file.
         matched = [f for f, item in kept["artifacts"].items()
                    if item.get("job") == spec["check"] and (fnmatch.fnmatch(item["from"].replace("\\", "/"), spec["file"])
                                                            if item.get("from") else
                                                            fnmatch.fnmatch(f, Path(spec["file"]).name))]
+        if not matched:  # no index entry for the tree yet: the pass record alone, by name
+            matched = [f for f in recorded if fnmatch.fnmatch(f, Path(spec["file"]).name)]
         if len(matched) != 1:
             raise EnvironmentProblem(f"{name} {sha[:12]}: the Store holds {len(matched)} file(s) of check "
                                      f"{spec['check']} matching {spec['file']} ({', '.join(matched) or 'none'}); "
                                      "a landing needs exactly one")
-        item = kept["artifacts"][matched[0]]
-        files[artifact] = {"sha256": item["sha256"], "file": matched[0], "glob": spec["file"], "check": spec["check"]}
+        chosen = matched[0]
+        item = recorded.get(chosen) or kept["artifacts"][chosen]
+        if chosen in recorded and not (root / "files" / str(item.get("sha256")) / chosen).is_file():
+            item = kept["artifacts"].get(chosen) or item  # the record names bytes the Store does not keep
+        files[artifact] = {"sha256": item["sha256"], "file": chosen, "glob": spec["file"], "check": spec["check"]}
         if spec.get("mod_id"):
             files[artifact]["mod_id"] = str(spec["mod_id"])
     line = {"branch": wanted.get("branch") or (old or {}).get("branch") or "main", "commit": sha, "artifacts": files}
