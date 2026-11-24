@@ -46,6 +46,8 @@
   kept sessions are never listed. Lab-home items go only under the GPU lease; `wb gc --nightly` removes the
   unattended classes only. Folders are removed with every link in them unlinked first. Old releases are gc's
   (all but the one in service and the one before it), no longer removed by `wb deploy`.
+- The README's module table and docs/commands.md (every command, where it runs, its summary) are generated
+  from the module manifests by `tools/command_tables.py`; a test fails when either differs from them.
 - `lab.resolve`: a project's `[launch.<name>]` resolved once into launch.json, every member by SHA-256 from the
   worktree's set revision and the project itself from the Store; two builds of one mod id are refused.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,

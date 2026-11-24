@@ -48,30 +48,34 @@ Modules follow a taxonomy of what a command does in Minecraft modding, one modul
 utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is `world.*`, a build's provenance is
 `build.*`. `plan` orchestrates commands of every kind.
 
-| Module | Kind of operation | Commands |
+<!-- begin generated modules: python tools/command_tables.py writes this table from the module manifests -->
+| Module | What it does | Commands |
 |---|---|---|
-| `toolchain` | JDKs, pinned inputs, dependency repair, artifact rescue | `jdk`, `pins`, `patch`, `repo-add`, `repo-list`, `repo-verify`, `repo-init`, `gradle-home` |
-| `build` | builds and their provenance | `receipt`, `archive` |
-| `jar` | static analysis of compiled mods | `audit`, `survey`, `index`, `references`, `hook-targets`, `diff` |
-| `mixin` | Mixin and patches: configurations and application verified without the game | `remap-proof`, `apply`, `doctor` |
-| `probe` | probes and harnesses: JVM runs without the game | `jdk-matrix`, `api-consumer` |
-| `source` | formatting and determinism of source | `format`, `strict-math` |
-| `lab` | game instances and sessions: host routines, dedicated servers in the container, runtimes assembled from launcher metadata, and a server with several clients | `ensure`, `snapshot`, `reset`, `instances`, `remove`, `dedupe`, `store-gc`, `play`, `turn`, `script`, `prepare`, `migrate`, `prune-instances`, `gpu`, `queue`, `server`, `server-scenario`, `session`, `assemble`, `install-server`, `userdev`, `pack` |
-| `drive` | workload drivers: what a game session is made to do and see | `tour-lint`, `path`, `path-check`, `gallery`, `send` |
-| `frames` | capture and visual verification | `compare`, `measure`, `check`, `quality` |
-| `world` | world saves on disk and generated worlds: reading, comparing, goldens | `read`, `diff`, `digest-diff`, `light-diff`, `golden`, `preview` |
-| `render` | shader packs, GPU test runs and GPU qualification | `validate`, `load-verdict`, `gl-gate`, `gl-run` |
-| `assets` | assets and resource packs | `generate`, `blockstates`, `texture-metrics` |
-| `content` | content and data: modpack scripts, recipes and placement data | `scripts`, `recipe-graph`, `placement` |
-| `runs` | measurement, statistics and run evidence | `at-commit`, `repeat`, `ab`, `interleaved`, `evidence`, `compare-evidence`, `stats`, `workload-guard` |
-| `profile` | profiling and diagnostics of Java game processes and the GPU they run on | `jfr`, `attribute`, `memory`, `settings`, `gpu-sample`, `gpu-report` |
-| `ledger` | results and evidence | `query`, `runs`, `findings`, `show`, `costs`, `calls`, `add-run`, `add-finding`, `supersede`, `link-run`, `add-machine`, `prune`, `import`, `import-ci`, `import-results`, `import-json`, `parse-log` |
-| `vast` | rented machines | `offers`, `market`, `charges`, `instances`, `destroy`, `keys`, `rent`, `probe`, `bundle-check`, `bundle`, `lab-inputs` |
-| `ci` | project jobs, push gates, commit hygiene, Python lanes, and the Store of what CI built | `run`, `gate`, `status`, `hook`, `actions`, `scrub`, `matrix`, `store-verify`, `store-export`, `store-import` |
-| `release` | release and publishing: GitHub releases, Modrinth, CurseForge, Maven | `check`, `publish`, `status` |
-| `plan` | declarative plans of commands | `check`, `run` |
-| `tools` | the engine of the former standalone tools, behind toolchain, build, jar, mixin, probe, source, runs and ci | — |
-| `selftest` | exercises the core end to end | |
+| `assets` | Assets and resource packs: content JSON generated from one manifest, reference blockstates copied from the client JAR into a pack complete but for its textures, and texture readability metrics. | `generate`, `blockstates`, `texture-metrics` |
+| `build` | Builds with receipts and reproducible archives. | `receipt`, `archive` |
+| `ci` | Run a project's jobs, gate pushes on them, and keep commits clean. | `run`, `gate`, `status`, `hook`, `actions`, `scrub`, `matrix`, `store-verify`, `store-export`, `store-import`, `land`, `store-platform` |
+| `content` | Content and data: modpack scripts, recipes and placement data, read without running the game. | `scripts`, `recipe-graph`, `placement` |
+| `drive` | Workload drivers: what a game session is made to do and see. Tours checked before a session plays them, camera paths made from keyframes and checked against the frames captured along them, and block galleries laid out for review. | `tour-lint`, `path`, `path-check`, `gallery`, `send` |
+| `frames` | Score captured frames: pass or fail against references, capture noise, wrong-view checks, and PSNR/SSIM quality (from Quadrature's frames.py). | `compare`, `measure`, `check`, `quality` |
+| `jar` | Static analysis of compiled mods: class files, references and what each JAR patches. | `audit`, `survey`, `index`, `references`, `hook-targets`, `diff` |
+| `lab` | Game sessions: native client sessions on the host through wb-host (instances, the GPU lease, the lab home), and headless dedicated-server sessions in the container. | `gpu`, `queue`, `prepare`, `play`, `inputs`, `resolve`, `checkouts`, `migrate-plan`, `script`, `turn`, `migrate`, `prune-instances`, `ensure`, `snapshot`, `reset`, `instances`, `remove`, `dedupe`, `store-gc`, `install-server`, `userdev`, `pack`, `assemble`, `server`, `session`, `server-scenario` |
+| `ledger` | Formal results, costs and market prices in one queryable database. | `query`, `runs`, `findings`, `show`, `costs`, `calls`, `add-run`, `add-finding`, `supersede`, `link-run`, `add-machine`, `prune`, `import`, `import-ci`, `import-results`, `import-json`, `parse-log` |
+| `mixin` | Mixin and patches: verifying Mixin and patch application without the game. | `remap-proof`, `apply`, `doctor` |
+| `plan` | Declarative turns and campaigns: pinned inputs, a declared protocol, steps that are Workbench commands; checked first, then run on the host or a rented GPU. | `check`, `run` |
+| `probe` | Probes and harnesses: JVM runs without the game. Small Java programs compiled against an artifact and run in throwaway JVMs on known JDKs. | `jdk-matrix`, `api-consumer` |
+| `profile` | Profiling and diagnostics of Java game processes and the GPU they run on: JFR recordings over time windows, cost charged to the code that incurred it, native memory by owner, the JFR settings that feed them, and whole-device GPU telemetry sampled beside a run and read by window. | `jfr`, `attribute`, `memory`, `settings`, `gpu-sample`, `gpu-report` |
+| `release` | Publish built mod artifacts to GitHub releases, Modrinth, CurseForge and Maven repositories: checked against the publication allow-list, quoted as a plan, sent only after an explicit yes. | `check`, `publish`, `status` |
+| `render` | Rendering: shader pack checks (the pack contract, every stage compiled and linked per profile, driver hazards), whether a pack really loaded, and GL qualification of a card. | `validate`, `load-verdict`, `gl-gate`, `gl-run` |
+| `runs` | Run custody (from orun): steps in a clean tree at an exact commit, repeated runs, interleaved A/B with paired statistics, and evidence records that refuse a comparison of runs differing in more than their treatment. | `at-commit`, `repeat`, `ab`, `evidence`, `compare-evidence`, `stats`, `workload-guard`, `interleaved` |
+| `selftest` | Exercises the core: echo, sleep, fail, a zero-cost approval, and a call into another command. | `echo`, `sleep`, `fail`, `spend`, `copy`, `sizes`, `checkout`, `chain`, `host-echo`, `quiet-echo`, `nest`, `inline-echo`, `orphan`, `tool` |
+| `source` | Formatting, lint and determinism of source code. | `format`, `strict-math` |
+| `toolchain` | JDKs, pinned inputs, dependency repair and the rescue repository. | `jdk`, `pins`, `patch`, `repo-add`, `repo-list`, `repo-verify`, `repo-init`, `gradle-home` |
+| `tools` | The engine of the former standalone tools. Its tools are commands of the taxonomy's modules: toolchain, build, jar, source, runs and ci. | none (aliases only) |
+| `vast` | Rent GPU machines on Vast.ai, run bundles on them, and record market prices and charges. | `offers`, `market`, `charges`, `instances`, `destroy`, `keys`, `rent`, `probe`, `bundle-check`, `bundle`, `lab-inputs` |
+| `world` | Worlds on disk and as generated: what a stopped save holds, how two worlds differ (save by save or by digest), and a generator's windows against golden digests, sampled without the game. | `read`, `diff`, `digest-diff`, `light-diff`, `golden`, `preview` |
+<!-- end generated modules -->
+
+Every command, where it runs and what it does: [docs/commands.md](docs/commands.md), generated from the same manifests.
 
 The former standalone tools' commands kept their earlier names as aliases (`tools.jar-audit` runs `jar.audit`).
 
