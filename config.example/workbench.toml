@@ -15,6 +15,11 @@ port = 7377            # published on 127.0.0.1 only; `wb up` refuses anything w
 # cpu_cores = 8        # CPU jobs share this budget (default: every core the container sees)
 # mem_gb = 12
 
+[core.inputs]
+# max_files = 200000   # an input folder past either limit is refused once it is listed, before any file is read
+# max_gb = 64
+# notice = "5s"        # a longer digest shows as the job's wait reason, with its progress
+
 [core.retention]
 days = 30              # the age wb gc's rules use (wb gc --rules); pass records, set exports, seeded and kept
                        # things are never removed. Nightly: the line `wb gc --schedule` prints, which runs

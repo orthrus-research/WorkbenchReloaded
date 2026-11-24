@@ -41,43 +41,81 @@ class TimedOut(Exception):
     """A tool was stopped at its limit: outcome ``finding`` with reason kind timeout, and never cached."""
 
 
-def sha256_file(path: Path) -> str:
+def sha256_file(path: Path, tick=None) -> str:
+    """A file's SHA-256. ``tick(bytes)`` is called for each block read; it may raise to stop the read."""
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
         for block in iter(lambda: handle.read(1 << 20), b""):
             digest.update(block)
+            if tick is not None:
+                tick(len(block))
     return digest.hexdigest()
 
 
-def sha256_tree(path: Path, known: dict | None = None) -> tuple[str, int]:
+LISTED_EVERY = 256  # files listed between two calls of a tree digest's watch
+
+
+def sha256_tree(path: Path, known: dict | None = None, watch=None) -> tuple[str, int]:
     """A directory's digest: SHA-256 over its sorted relative paths and file digests; with file count.
 
     ``known`` (a path's ``(size, mtime_ns, digest)``, kept by the caller) lets one that hashes the same files again
-    skip those whose size and modification time are unchanged."""
+    skip those whose size and modification time are unchanged.
+
+    ``watch(stage, files, size, read)`` lets the caller follow a digest and stop it by raising: it is called while
+    the files are listed (stage ``listing``: files and bytes found so far, nothing read yet), once when the list is
+    whole (``listed``: the totals, before any file is read) and while they are read (``reading``: bytes read so
+    far). A folder is always listed whole before its first byte is read, so a caller can refuse one by its size."""
     path = Path(path)
     if path.is_file():
-        return _file_digest(path, known), 1
+        size = path.stat().st_size if watch is not None else 0
+        if watch is not None:
+            watch("listed", 1, size, 0)
+        return _file_digest(path, known, _reader(watch, 1, size)), 1
+    files, size = [], 0
+    for file in path.rglob("*"):
+        if not file.is_file():
+            continue
+        files.append(file)
+        if watch is not None:
+            size += file.stat().st_size
+            if len(files) % LISTED_EVERY == 0:
+                watch("listing", len(files), size, 0)
+    if watch is not None:
+        watch("listed", len(files), size, 0)
     digest = hashlib.sha256()
-    count = 0
-    for file in sorted(p for p in path.rglob("*") if p.is_file()):
+    tick = _reader(watch, len(files), size)
+    for file in sorted(files):
         relative = file.relative_to(path).as_posix()
-        digest.update(f"{relative}\0{_file_digest(file, known)}\n".encode())
-        count += 1
-    return digest.hexdigest(), count
+        digest.update(f"{relative}\0{_file_digest(file, known, tick)}\n".encode())
+    return digest.hexdigest(), len(files)
+
+
+def _reader(watch, files: int, size: int):
+    """The per-block callback of a watched digest: counts the bytes read and reports them."""
+    if watch is None:
+        return None
+    read = [0]
+
+    def tick(count: int):
+        read[0] += count
+        watch("reading", files, size, read[0])
+    return tick
 
 
 RACY_SECONDS = 2.0  # a file changed this recently may change again within the same clock tick, unseen by its stat
 
 
-def _file_digest(file: Path, known: dict | None) -> str:
+def _file_digest(file: Path, known: dict | None, tick=None) -> str:
+    # sha256_file gets a tick only when there is one, so a caller that replaces it sees the call it always saw.
+    read = (lambda: sha256_file(file, tick)) if tick is not None else (lambda: sha256_file(file))
     if known is None:
-        return sha256_file(file)
+        return read()
     stat = file.stat()
     key = str(file)
     hit = known.get(key)
     if hit and hit[0] == stat.st_size and hit[1] == stat.st_mtime_ns:
         return hit[2]
-    digest = sha256_file(file)
+    digest = read()
     if time.time() - stat.st_mtime > RACY_SECONDS:
         known[key] = (stat.st_size, stat.st_mtime_ns, digest)
     return digest

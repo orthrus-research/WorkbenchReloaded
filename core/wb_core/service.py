@@ -27,7 +27,7 @@ from . import __version__, types
 from .db import Database, dumps
 from .logs import REDACT, LogHub
 from .manifest import Command, Module
-from .module import ParamError, sha256_tree
+from .module import Cancelled, ParamError, sha256_tree
 from .paths import PathError, PathMap
 from .requirements import Activation, Checker, Reason
 from .settings import Settings
@@ -37,6 +37,7 @@ TERMINAL = {"settled", "cancelled", "interrupted"}
 WAKE_STATES = TERMINAL | {"awaiting_approval"}
 CODES = {"ok": 0, "finding": 1, "usage": 2, "environment": 3}
 LOCAL_MACHINES = {"container", "host"}  # one physical machine; a rental is another
+DIGEST_SAID_EVERY = 30.0  # seconds between two progress lines of one input's digest
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -808,12 +809,14 @@ class Workbench:
         stalled: list[dict] = []
         if queued and not started and self.running:
             waiting_parents = set()
-            for job, info in self.waiting.items():
-                if info["reason"] != "approval":
-                    waiting_parents |= self._ancestors(job)
+            # A dispatched job that says how its input digest goes (it is in running) waits for nothing.
+            held = {job: info for job, info in self.waiting.items()
+                    if info["reason"] != "approval" and job not in self.running}
+            for job in held:
+                waiting_parents |= self._ancestors(job)
             if set(self.running) <= waiting_parents:
                 stalled = [{"job": job, "reason": info["reason"], "since": iso(info["since"])}
-                           for job, info in self.waiting.items() if info["reason"] != "approval"]
+                           for job, info in held.items()]
         if stalled and not self.stalled:
             self.hub.error(f"stalled: {len(stalled)} queued job(s) cannot start while every running job waits "
                            "on them", module="core")
@@ -953,7 +956,11 @@ class Workbench:
             if problems:
                 outcome, summary, reasons = "environment", problems[0].detail, problems
                 return
-            inputs = self._inputs(command, params, translated)
+            inputs = self._inputs(command, params, translated, job, running)
+            with self.cond:
+                self._wait_reason(job, None)  # what a long digest said of itself
+            if running.cancel_requested:
+                raise Cancelled()
             cache_key = self._cache_key(command, params, inputs) if command.deterministic else None
             if cache_key:
                 self.db.execute("UPDATE job SET cache_key = ? WHERE id = ?", (cache_key, job))
@@ -987,6 +994,8 @@ class Workbench:
                     outcome, summary = "environment", f"handler result does not match its schema: {error}"
         except ParamError as error:
             outcome, summary = "usage", str(error)
+        except Cancelled:  # asked for while its inputs were digested: no worker was started
+            outcome, summary = "cancelled", "cancelled while its inputs were digested"
         except Exception as error:  # noqa: BLE001
             self.hub.error(f"job failed in the core: {error}", job=job, module=entry.module.name)
             outcome, summary = "environment", f"{type(error).__name__}: {error}"
@@ -996,6 +1005,7 @@ class Workbench:
             with self.cond:
                 self.running.pop(job, None)
                 self.sized.pop(job, None)
+                self.waiting.pop(job, None)
                 self.cond.notify_all()
             if outcome is not None and not requoted:
                 if outcome == "cancelled":
@@ -1123,19 +1133,54 @@ class Workbench:
 
     # ------------------------------------------------------------------------------------------
     # inputs, cache, artifacts
-    def _inputs(self, command: Command, params: dict, translated: dict) -> list[dict]:
+    def _inputs(self, command: Command, params: dict, translated: dict, job: str | None = None,
+                running: Running | None = None) -> list[dict]:
         inputs = []
         for name, spec in command.params.items():
             if spec["type"] == "path.in" and translated.get(name):
-                inputs.append(self._input(name, spec, params[name], Path(translated[name])))
+                inputs.append(self._input(name, spec, params[name], Path(translated[name]), job, running))
             elif spec["type"] == "list" and spec.get("items") in ("path.in", {"type": "path.in"}) \
                     and translated.get(name):
                 # Each path of a list is an input too: a cached result must not outlive a change to any of them.
                 for index, (host, container) in enumerate(zip(params[name], translated[name])):
-                    inputs.append(dict(self._input(name, {}, host, Path(container)), index=index))
+                    inputs.append(dict(self._input(name, {}, host, Path(container), job, running), index=index))
         return inputs
 
-    def _input(self, name: str, spec: dict, host_path: str, path: Path) -> dict:
+    def _digest_watch(self, name: str, host_path: str, job: str | None, running: Running | None):
+        """What follows one input's content digest (sha256_tree's watch), so that a digest can never hold a job
+        unseen: it stops for a cancel, refuses an input past [core.inputs] max_files or max_gb once that much is
+        listed (before a byte of it is read), and says how far it is as the job's wait reason once it has taken
+        longer than [core.inputs] notice."""
+        limits = self.settings.core["inputs"]
+        max_files, max_bytes, notice = limits["max_files"], int(limits["max_gb"] * (1 << 30)), limits["notice"]
+        began, said = time.time(), [0.0, None]  # when it last said how far it is, and in which stage
+
+        def gib(count: int) -> str:
+            return f"{count / (1 << 30):.1f} GiB" if count >= 1 << 30 else f"{count / (1 << 20):.1f} MiB"
+
+        def watch(stage: str, files: int, size: int, read: int):
+            if running is not None and running.cancel_requested:
+                raise Cancelled()
+            if files > max_files or size > max_bytes:
+                raise ParamError(
+                    f"input {name} is too large to digest: {host_path} holds more than "
+                    f"{max_files:,} files or {gib(max_bytes)} ({files:,} files and {gib(size)} were listed before "
+                    "it was refused; nothing was read). A job is tied to the content of its inputs, so each is "
+                    "read whole: name the folder the command needs, not one above it. A checkout is read through "
+                    f"git when the command's manifest says digest = \"git\" for {name}; if this is one, that "
+                    "line is missing. The limits are [core.inputs] max_files and max_gb.")
+            now, reading = time.time(), stage == "reading"
+            if job is None or now - began < notice or (now - said[0] < DIGEST_SAID_EVERY and said[1] == reading):
+                return  # once per interval, and at once when the reading begins
+            said[:] = [now, reading]
+            done = f"read {gib(read)} of {gib(size)} in {files:,} files" if reading \
+                else f"listed {files:,} files, {gib(size)}, so far"
+            with self.cond:
+                self._wait_reason(job, f"digesting input {name} ({host_path}): {done}; wb cancel {job} stops it")
+        return watch
+
+    def _input(self, name: str, spec: dict, host_path: str, path: Path, job: str | None = None,
+               running: Running | None = None) -> dict:
         if not path.exists():  # the request names a file that is not there: outcome usage, as a handler's would be
             raise ParamError(f"input {name} does not exist: {host_path}")
         if spec.get("digest") == "git":
@@ -1147,7 +1192,7 @@ class Workbench:
             return {"name": name, "host_path": host_path, "digest": "none"}
         if len(self._digests) > 500_000:  # a bound, not an eviction policy: rebuilt as jobs read files
             self._digests.clear()
-        digest, count = sha256_tree(path, self._digests)
+        digest, count = sha256_tree(path, self._digests, self._digest_watch(name, host_path, job, running))
         return {"name": name, "host_path": host_path, "sha256": digest, "files": count}
 
     def _cache_key(self, command: Command, params: dict, inputs: list[dict]) -> str:

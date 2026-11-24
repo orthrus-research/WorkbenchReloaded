@@ -41,7 +41,7 @@ summary = "Resolve a launch once into launch.json: the [launch.<name>] of the pr
 handler = "wb_lab.resolve:resolve_command"
 runs_on = ["host"]
 timeout = "5m"
-params.folder = { type = "path.in", summary = "the product's worktree (clean: a launch describes a commit CI built)" }
+params.folder = { type = "path.in", digest = "git", summary = "the product's worktree (clean: a launch describes a commit CI built)" }
 params.launch = { type = "string", default = "default", pattern = "^[A-Za-z0-9._-]+$", summary = "the launch's name, [launch.<name>] in project.toml" }
 params.out = { type = "string", default = "", summary = "where to write launch.json; empty: <worktree>/.local/launch/<name>.json" }
 result.launch = { type = "string" }
@@ -138,7 +138,7 @@ params.tour = { type = "path.in", optional = true, summary = "tour and measure: 
 params.launch = { type = "path.in", optional = true, summary = "measure: the launch file the instance must have been built from" }
 params.copy = { type = "bool", default = true, summary = "measure: play a fresh copy of the instance's template (false: the named instance itself)" }
 params.driver = { type = "string", default = "", summary = "driver: the name of a driver the launch declares (drivers.<name>.command)" }
-params.driver_root = { type = "path.in", optional = true, summary = "driver: the folder its {root} and its working folder are, the project's export or checkout" }
+params.driver_root = { type = "path.in", optional = true, digest = "git", summary = "driver: the folder its {root} and its working folder are, the project's export or checkout" }
 params.port = { type = "int", default = 0, min = 0, max = 65535, summary = "the server's port; 0: a free one" }
 params.jvm = { type = "list", items = "string", default = [], summary = "JVM options for this session: -X for both sides, client:-X or server:-X for one" }
 params.view = { type = "object", default = {}, summary = "view distances by the base's view keys (horizontal, vertical, client_render)" }
