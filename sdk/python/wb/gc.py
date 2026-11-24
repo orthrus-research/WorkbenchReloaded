@@ -17,6 +17,7 @@ The classes (``RULES`` here and the daemon's ``wb_core.retention.DAEMON_RULES``)
     lab.instances    an instance lab.build made (it holds instance.json), unused for the days       lab home
     lab.templates    a template no instance uses, unused for the days                                lab home
     lab.blobs        a shared file no template names and no instance links to                        lab home
+    lab.legacy       an old-route instance lab.freeze froze, unchanged since, its evidence imported   lab home
     jobs.scratch, jobs.artifacts, logs.archives: the daemon's state folder (see wb_core.retention)  unattended
 
 Roots, which no class ever removes or lists:
@@ -27,8 +28,14 @@ Roots, which no class ever removes or lists:
 - the Store's index entries and the files they name, seeded entries and their files, landing records and what
   they name, and the folders beside files/ (plugins, JDKs, Gradle);
 - kept sessions and every byte their files name (``kept_roots``);
-- the pin cache folder, the set exports, and any folder without the receipt its class needs (a legacy instance
-  is never swept).
+- the pin cache folder, the set exports, and any folder without the receipt its class needs: a legacy instance
+  is listed only once lab.freeze has frozen it, never swept on sight.
+
+A frozen legacy instance (``lab.legacy``) is listed only while its manifest (``<lab home>/legacy/<id>/frozen.json``)
+says frozen and every file is still there with the size and time it recorded, nothing added; while its world was
+imported into the world store (or it had none) and its tours and runs went into a kept session (or it had none);
+and while none of its files is the only copy of bytes a root names (a SHA-256 the manifest recorded that a root
+names and the Store does not keep). The manifest stays: it records every file by size, time and SHA-256.
 
 Kept sessions: ``lab.keep`` marks a session folder as kept by writing ``kept.json`` in it. A session folder is
 ``<out>/sessions/<id>/`` (out is the Store's parent folder) or ``<lab home>/sessions/<id>/``. ``kept_roots`` returns,
@@ -74,6 +81,9 @@ RULES = [
     Rule("lab.templates", "a template that no instance was made from and no kept session names, unused for "
          "[core.retention] days", False, lab=True),
     Rule("lab.blobs", "a shared read-only file that no template names and no instance links to", False, lab=True),
+    Rule("lab.legacy", "an old-route instance lab.freeze froze, unchanged since its manifest, whose world and "
+         "sessions were imported and none of whose files is the only copy of bytes a root names; its manifest "
+         "stays", False, lab=True),
 ]
 
 
@@ -472,6 +482,78 @@ def lab_blobs(places: Places, found: Roots) -> list[Item]:
     return items
 
 
+def _walk_files(root: Path):
+    """(relative name, lstat) of every file under ``root``; links are never entered and are reported with None."""
+    stack = [root]
+    while stack:
+        folder = stack.pop()
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                child = Path(entry.path)
+                rel = child.relative_to(root).as_posix()
+                if entry.is_symlink() or entry.is_junction() or is_link(child):
+                    yield rel, None
+                elif entry.is_dir(follow_symlinks=False):
+                    stack.append(child)
+                else:
+                    yield rel, entry.stat(follow_symlinks=False)
+
+
+def _frozen_as_recorded(instance: Path, manifest: dict) -> str | None:
+    """None when every file the manifest records is there with its size and time and nothing was added (its links
+    as recorded); else what differs."""
+    files = manifest.get("files") or {}
+    links = {str(link.get("path")) for link in manifest.get("links") or []}
+    seen = 0
+    for rel, st in _walk_files(instance):
+        if st is None:
+            if rel not in links:
+                return f"{rel} is a new link"
+            continue
+        entry = files.get(rel)
+        if entry is None:
+            return f"{rel} was added"
+        if st.st_size != entry.get("size") or st.st_mtime_ns != entry.get("mtime_ns"):
+            return f"{rel} changed"
+        seen += 1
+    return None if seen == len(files) else f"{len(files) - seen} file(s) are gone"
+
+
+def lab_legacy(places: Places, found: Roots) -> list[Item]:
+    items = []
+    root = places.lab_home / "legacy" if places.lab_home else None
+    if root is None or not root.is_dir():
+        return items
+    for manifest_path in sorted(root.glob("*/frozen.json")):
+        manifest = _json(manifest_path)
+        if not isinstance(manifest, dict) or manifest.get("schema") != "wb.lab.frozen/1" \
+                or manifest.get("state") != "frozen":
+            continue
+        instance = Path(str(manifest.get("instance") or ""))
+        if not str(manifest.get("instance") or "") or not instance.is_dir() or is_link(instance) \
+                or any(is_link(parent) for parent in instance.parents) or found.holds(instance):
+            continue
+        world = manifest.get("world") or {}
+        if world.get("path") and not world.get("label"):
+            continue  # its world was not imported: the instance is still its only copy
+        session = manifest.get("session")
+        if session is not None and not (isinstance(session, dict) and session.get("kept")):
+            continue
+        named = {str(e.get("sha256")) for e in (manifest.get("files") or {}).values() if e.get("sha256")}
+        only = [sha for sha in named & found.sha256
+                if not (places.store and (places.store / "files" / sha).is_dir())]
+        if only:
+            continue  # holds the only copy of bytes a root names
+        if _frozen_as_recorded(instance, manifest) is not None:
+            continue
+        item = _item("lab.legacy", instance, "")
+        item.why = (f"legacy instance {instance.name}, frozen {str(manifest.get('frozen') or '?')[:10]} and unchanged "
+                    f"since: {len(manifest.get('files') or {})} files recorded in {manifest_path}; world "
+                    f"{world.get('label') or 'none'}, session {(session or {}).get('session') or 'none'}")
+        items.append(item)
+    return items
+
+
 def host_items(places: Places, only: set[str] | None = None, unattended: bool = False) -> list[Item]:
     """The host's candidates, every class (or ``only`` these, or only the unattended ones), in one pass over one
     reading of the roots."""
@@ -492,7 +574,7 @@ def host_items(places: Places, only: set[str] | None = None, unattended: bool = 
     if "releases" in wanted:
         items += release_folders(places, found)
     for name, finder in (("lab.instances", lab_instances), ("lab.templates", lab_templates),
-                         ("lab.blobs", lab_blobs)):
+                         ("lab.blobs", lab_blobs), ("lab.legacy", lab_legacy)):
         if name in wanted:
             items += finder(places, found)
     return items
