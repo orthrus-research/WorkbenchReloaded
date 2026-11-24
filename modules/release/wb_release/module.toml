@@ -1,11 +1,11 @@
 [module]
 name = "release"
 version = "0.1.0"
-summary = "Publish built mod artifacts to GitHub releases, Modrinth, CurseForge and Maven repositories: checked against the publication allow-list, quoted as a plan, sent only after an explicit yes."
+summary = "Publish built mod artifacts to GitHub releases, Modrinth, CurseForge, Maven repositories, Maven Central and our own Maven mirror: checked against the publication allow-list, quoted as a plan, sent only after an explicit yes."
 
 [config]
-channels = { type = "object", default = {}, summary = "publishing channels by name: kind (github, modrinth, curseforge, maven), base_url, project, secret, rules, page_url, defaults and the kind's own settings (see wb_release/channels.py)" }
-rules = { type = "object", default = {}, summary = "publication allow-lists by name: java, production, extras, dev_classifiers, dependencies, manifest, versions (see wb_release/rules.py); \"default\" applies when nothing names one" }
+channels = { type = "object", default = {}, summary = "publishing channels by name: kind (github, modrinth, curseforge, maven, central, mirror), base_url, project, secret, rules, page_url, defaults and the kind's own settings (see wb_release/channels.py and modules/release/README.md)" }
+rules = { type = "object", default = {}, summary = "publication allow-lists by name: java, production, extras, dev_classifiers, dependencies, manifest, versions, licence (see wb_release/rules.py); \"default\" applies when nothing names one" }
 user_agent = { type = "string", default = "workbench-release", summary = "the User-Agent of every request; a service may ask for one that names the publisher" }
 timeout = { type = "duration", default = "120s", min = "1s", max = "1h", summary = "how long a request waits for a channel to answer" }
 store = { type = "string", default = "", summary = "the Store a publish with set reads its files from: <out>/store, given by the daemon from [paths] out" }
@@ -17,7 +17,7 @@ handler = "wb_release.commands:check"
 resources = { cpu = 1 }
 params.files = { type = "list", items = "path.in", summary = "the files to publish" }
 params.version = { type = "string", optional = true, pattern = "^[0-9A-Za-z][0-9A-Za-z.+_-]{0,99}$", summary = "the version every file must carry; without it, the versions found must agree" }
-params.channel = { type = "string", optional = true, summary = "check as a publish to this channel would: its rules, and for maven its layout and POM" }
+params.channel = { type = "string", optional = true, summary = "check as a publish to this channel would: its rules, for maven, central and mirror its layout and POM, and for central the files Central needs" }
 params.rules = { type = "string", optional = true, summary = "a name under [modules.release.rules]; default: the channel's, else \"default\", else the built-in rules" }
 params.java = { type = "int", optional = true, min = 1, max = 99, summary = "the target Java feature version (8, 17, 21), instead of the rules'" }
 params.production = { type = "list", items = "string", optional = true, summary = "file-name globs of the production JARs ({version} is filled in), instead of the rules'" }
@@ -41,7 +41,7 @@ params.set = { type = "string", optional = true, pattern = "^[a-z0-9][a-z0-9._-]
 params.artifacts = { type = "list", items = "string", optional = true, summary = "with set: the line's artifacts to publish, in this order (the first production JAR is the primary file); default: every artifact of the line, mod first" }
 params.notes = { type = "path.in", optional = true, summary = "the release notes: a UTF-8 text or Markdown file" }
 params.release_type = { type = "enum", values = ["release", "beta", "alpha"], optional = true, summary = "github, modrinth, curseforge; default: the channel's, else release" }
-params.visibility = { type = "enum", values = ["public", "unlisted", "draft"], optional = true, summary = "github public or draft; modrinth public, unlisted or draft; curseforge and maven public; default: the channel's, else public" }
+params.visibility = { type = "enum", values = ["public", "unlisted", "draft"], optional = true, summary = "github public or draft; modrinth public, unlisted or draft; curseforge, maven, central and mirror public; default: the channel's, else public" }
 params.name = { type = "string", optional = true, summary = "the display name, with {version} and {release_type} filled in; default: the channel's, else {version}" }
 params.tag = { type = "string", optional = true, summary = "github: the release's tag ({version} filled in); default: the channel's, else {version}" }
 params.commit = { type = "string", optional = true, summary = "github: the commit or branch a new tag is made at; default: the channel's, else the repository's default branch" }

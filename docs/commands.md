@@ -182,7 +182,7 @@ Profiling and diagnostics of Java game processes and the GPU they run on: JFR re
 
 ### `release`
 
-Publish built mod artifacts to GitHub releases, Modrinth, CurseForge and Maven repositories: checked against the publication allow-list, quoted as a plan, sent only after an explicit yes. (modules/release/wb_release/module.toml)
+Publish built mod artifacts to GitHub releases, Modrinth, CurseForge, Maven repositories, Maven Central and our own Maven mirror: checked against the publication allow-list, quoted as a plan, sent only after an explicit yes. (modules/release/wb_release/module.toml)
 
 | Command | Runs on | Summary |
 |---|---|---|
