@@ -1,14 +1,19 @@
 """release: the publication allow-list, the plan a publish is quoted as, its approval and re-quote, and uploads to
-fake GitHub, Modrinth, CurseForge and Maven services checked request by request. Every channel points at a fake
-service on 127.0.0.1 and every token is a made-up one: nothing here reaches a real publishing service."""
+fake GitHub, Modrinth, CurseForge, Maven, Central Portal and S3 services checked request by request. Every channel
+points at a fake service on 127.0.0.1 and every token is a made-up one: nothing here reaches a real publishing
+service. The central tests sign with a throwaway key made in a temporary gpg home; without a usable gpg on PATH
+they are skipped."""
 
+import calendar
 import hashlib
 import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -25,13 +30,20 @@ from harness import Daemon  # noqa: E402
 
 from wb import ApprovalRequired  # noqa: E402
 from wb_core.module import EnvironmentProblem, ParamError  # noqa: E402
-from wb_release import channels, commands, transport  # noqa: E402
+from wb_release import central, channels, commands, mirror, transport  # noqa: E402
 from wb_release import rules as rulebook  # noqa: E402
 
 TOKENS = {"gh": "fake-github-token", "mr": "fake-modrinth-token", "cf": "fake-curseforge-token",
-          "cf_core": "fake-core-api-key", "maven": "deployer:fake-maven-password"}
-D = C = GH = MR = CF = MV = NOTES = None
+          "cf_core": "fake-core-api-key", "maven": "deployer:fake-maven-password",
+          "central": "portal-user:fake-portal-password", "r2_key_id": "fakeaccesskeyid0000",
+          "r2_secret": "fake-secret-access-key", "r2_wrong": "not-the-secret-access-key",
+          "signing_pass": "fake-signing-passphrase"}
+D = C = GH = MR = CF = MV = CE = BK = PB = NOTES = None
 SERVERS: list = []
+GPG_HOME: Path | None = None
+KEY: str | None = None        # the throwaway signing key's fingerprint, when gpg can make one
+NO_KEY = "no gpg on PATH"
+LICENCE = {"name": "Example Licence 1.0", "url": "https://licence.example.invalid/1.0"}
 
 
 def digest(path: Path, algo: str = "sha256") -> str:
@@ -80,12 +92,17 @@ def sources_jar(folder: Path, version: str) -> Path:
                      entries={"org/example/examplemod/ExampleMod.java": "class ExampleMod {}"})
 
 
-def write_pom(path: Path, version: str, *, artifact: str = "examplemod", dependencies=()) -> Path:
+def javadoc_jar(folder: Path, version: str) -> Path:
+    return write_jar(folder / f"examplemod-{version}-javadoc.jar", entries={"index.html": "<html></html>"})
+
+
+def write_pom(path: Path, version: str, *, artifact: str = "examplemod", dependencies=(),
+              group: str = "org.example") -> Path:
     deps = "".join(f"<dependency><groupId>{g}</groupId><artifactId>{a}</artifactId><version>{v}</version>"
                    f"<scope>{s}</scope></dependency>" for g, a, v, s in dependencies)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('<?xml version="1.0" encoding="UTF-8"?>\n<project xmlns="http://maven.apache.org/POM/4.0.0">'
-                    f"<modelVersion>4.0.0</modelVersion><groupId>org.example</groupId><artifactId>{artifact}"
+                    f"<modelVersion>4.0.0</modelVersion><groupId>{group}</groupId><artifactId>{artifact}"
                     f"</artifactId><version>{version}</version><dependencies>{deps}</dependencies></project>\n",
                     encoding="utf-8")
     return path
@@ -128,6 +145,18 @@ def config(secrets: Path, store: Path) -> str:
         host = '{secrets / "cf_core"}'
         [secrets.release_maven]
         host = '{secrets / "maven"}'
+        [secrets.release_central]
+        host = '{secrets / "central"}'
+        [secrets.release_signing_pass]
+        host = '{secrets / "signing_pass"}'
+        [secrets.release_signing_key]
+        host = '{secrets / "signing_key"}'
+        [secrets.release_r2_key_id]
+        host = '{secrets / "r2_key_id"}'
+        [secrets.release_r2_secret]
+        host = '{secrets / "r2_secret"}'
+        [secrets.release_r2_wrong]
+        host = '{secrets / "r2_wrong"}'
 
         [modules.release]
         user_agent = "wb-release-tests"
@@ -183,6 +212,77 @@ def config(secrets: Path, store: Path) -> str:
         secret = "release_maven"
         rules = "mod"
 
+        [modules.release.rules.lib]
+        java = 8
+        production = ["examplemod-{{version}}.jar"]
+        dependencies = ["org.example:*"]
+        licence = {{ name = "{LICENCE['name']}", url = "{LICENCE['url']}" }}
+
+        [modules.release.channels.central]
+        kind = "central"
+        base_url = "{CE.url}"
+        project = "cc.orthrus:examplemod"
+        secret = "release_central"
+        rules = "lib"
+        signing = {{ key = "{KEY or '0' * 40}", secret = "release_signing_pass", keyring = "release_signing_key" }}
+        poll_interval = "20ms"
+        {POM}
+
+        [modules.release.channels.central_auto]
+        kind = "central"
+        base_url = "{CE.url}"
+        project = "cc.orthrus:examplemod"
+        secret = "release_central"
+        rules = "lib"
+        publishing_type = "AUTOMATIC"
+        javadoc = "placeholder"
+        checksums = ["md5", "sha1"]
+        signing = {{ key = "{KEY or '0' * 40}", secret = "release_signing_pass", keyring = "release_signing_key" }}
+        poll_interval = "20ms"
+        {POM}
+
+        [modules.release.channels.central_unlicensed]
+        kind = "central"
+        base_url = "{CE.url}"
+        project = "cc.orthrus:examplemod"
+        secret = "release_central"
+        rules = "mod"
+        javadoc = "placeholder"
+        signing = {{ key = "{KEY or '0' * 40}", secret = "release_signing_pass", keyring = "release_signing_key" }}
+        {POM}
+
+        [modules.release.channels.mirror]
+        kind = "mirror"
+        base_url = "{BK.url}"
+        bucket = "orthrus-maven"
+        public_url = "{PB.url}"
+        group = "cc.orthrus"
+        project = "cc.orthrus:examplemod"
+        key_id_secret = "release_r2_key_id"
+        secret = "release_r2_secret"
+        rules = "lib"
+
+        [modules.release.channels.mirror_other_group]
+        kind = "mirror"
+        base_url = "{BK.url}"
+        bucket = "orthrus-maven"
+        public_url = "{PB.url}"
+        group = "cc.orthrus"
+        project = "org.example:examplemod"
+        key_id_secret = "release_r2_key_id"
+        secret = "release_r2_secret"
+
+        [modules.release.channels.mirror_wrong_key]
+        kind = "mirror"
+        base_url = "{BK.url}"
+        bucket = "orthrus-maven"
+        public_url = "{PB.url}"
+        group = "cc.orthrus"
+        project = "cc.orthrus:examplemod"
+        key_id_secret = "release_r2_key_id"
+        secret = "release_r2_wrong"
+        rules = "lib"
+
         [modules.release.channels.insecure]
         kind = "github"
         base_url = "http://example.invalid"
@@ -197,14 +297,55 @@ def config(secrets: Path, store: Path) -> str:
     """
 
 
+POM = ('pom = { name = "Example Mod", description = "An example mod.", url = "https://examplemod.example.invalid", '
+       'developers = [{ id = "example", name = "Example Developer", url = "https://example.invalid/dev" }], '
+       'scm = { url = "https://git.example.invalid/examplemod", '
+       'connection = "scm:git:https://git.example.invalid/examplemod.git", '
+       'developer_connection = "scm:git:ssh://git.example.invalid/examplemod.git" } }')
+
+
+def gpg(*args: str, input: str | None = None) -> subprocess.CompletedProcess:
+    """gpg in the tests' own throwaway home, never the user's."""
+    return subprocess.run([shutil.which("gpg"), "--homedir", GPG_HOME.as_posix(), "--batch", "--no-tty", *args],
+                          input=input, capture_output=True, text=True, timeout=120)
+
+
+def make_key(home: Path) -> tuple[str | None, str]:
+    """A throwaway ed25519 signing key in ``home``, and its armored secret key; (None, why) without a usable gpg."""
+    global GPG_HOME
+    if not shutil.which("gpg"):
+        return None, "no gpg on PATH"
+    GPG_HOME = home
+    home.mkdir(mode=0o700)
+    (home / "private-keys-v1.d").mkdir(mode=0o700)
+    try:
+        gpg("--pinentry-mode", "loopback", "--passphrase", TOKENS["signing_pass"], "--quick-gen-key",
+            "Release Tests <release-tests@example.invalid>", "ed25519", "sign", "never")
+        listed = gpg("--with-colons", "--list-secret-keys").stdout
+        fingerprint = next(line.split(":")[9] for line in listed.splitlines() if line.startswith("fpr:"))
+        exported = gpg("--pinentry-mode", "loopback", "--passphrase-fd", "0", "--armor", "--export-secret-keys",
+                       fingerprint, input=TOKENS["signing_pass"] + "\n").stdout
+    except (OSError, subprocess.SubprocessError, StopIteration):
+        return None, "the gpg on PATH cannot make a key in a temporary home"
+    if "PRIVATE KEY BLOCK" not in exported:
+        return None, "the gpg on PATH cannot export a key from a temporary home"
+    return fingerprint, exported
+
+
 def setUpModule():
-    global D, C, GH, MR, CF, MV, NOTES
+    global D, C, GH, MR, CF, MV, CE, BK, PB, NOTES, KEY, NO_KEY
     GH, MR = fakes.GitHub(TOKENS["gh"]), fakes.Modrinth(TOKENS["mr"])
     CF, MV = fakes.CurseForge(TOKENS["cf"], TOKENS["cf_core"]), fakes.Maven("deployer", "fake-maven-password")
-    SERVERS.extend(fakes.serve(service) for service in (GH, MR, CF, MV))
+    CE = fakes.Central(*TOKENS["central"].split(":"))
+    BK = fakes.Bucket(TOKENS["r2_key_id"], TOKENS["r2_secret"], "orthrus-maven")
+    PB = fakes.Public(BK)
+    SERVERS.extend(fakes.serve(service) for service in (GH, MR, CF, MV, CE, BK, PB))
     root = Path(tempfile.mkdtemp(prefix="wb-release-"))
     (root / "secrets").mkdir()
-    for name, value in TOKENS.items():
+    KEY, armored = make_key(root / "gnupg")
+    if KEY is None:
+        NO_KEY, armored = armored, "no key"
+    for name, value in {**TOKENS, "signing_key": armored}.items():
         (root / "secrets" / name).write_text(value, encoding="ascii")
     D = Daemon(config(root / "secrets", root / "data" / "set-out" / "store"), root=root).start()
     C = D.client
@@ -217,6 +358,9 @@ def tearDownModule():
     for server in SERVERS:
         server.shutdown()
         server.server_close()
+    if GPG_HOME is not None and shutil.which("gpgconf"):
+        subprocess.run([shutil.which("gpgconf"), "--homedir", GPG_HOME.as_posix(), "--kill", "gpg-agent"],
+                       capture_output=True, timeout=30, check=False)
 
 
 def submit(channel: str, version: str, files: list, **params):
@@ -670,6 +814,368 @@ class Publish(unittest.TestCase):
                 self.assertIn(text, result.summary)
         self.assertEqual([len(s.requests) for s in (GH, MR, CF, MV)], before)
 
+
+# ---------------------------------------------------------------------------------------------
+# Maven Central and the mirror
+
+def central_channel(**change) -> channels.Channel:
+    pom = {"name": "Example Mod", "description": "An example mod.", "url": "https://examplemod.example.invalid",
+           "developers": [{"id": "example", "name": "Example Developer", "email": "dev@example.invalid"}],
+           "scm": {"url": "https://git.example.invalid/examplemod",
+                   "connection": "scm:git:https://git.example.invalid/examplemod.git",
+                   "developer_connection": "scm:git:ssh://git.example.invalid/examplemod.git"}}
+    raw = {"kind": "central", "base_url": "https://central.example.invalid", "project": "cc.orthrus:examplemod",
+           "secret": "s", "signing": {"key": "ab" * 20, "secret": "p"}, "pom": pom, **change}
+    return channels.load({"channels": {"c": raw}}, "c")
+
+
+def mirror_channel(**change) -> channels.Channel:
+    raw = {"kind": "mirror", "base_url": "https://account.r2.example.invalid", "bucket": "orthrus-maven",
+           "public_url": "https://maven.example.invalid", "group": "cc.orthrus", "project": "cc.orthrus:examplemod",
+           "secret": "s", "key_id_secret": "k", **change}
+    return channels.load({"channels": {"m": raw}}, "m")
+
+
+POM_TAGS = {"m": "http://maven.apache.org/POM/4.0.0"}
+
+
+class MavenRoutes(unittest.TestCase):
+    """The parts of the central and mirror channels that need no service."""
+
+    def test_signature_version_4_matches_the_aws_example(self):
+        # The GET Object example of the AWS Signature Version 4 documentation, with its published signature.
+        now = calendar.timegm(time.strptime("20130524T000000Z", "%Y%m%dT%H%M%SZ"))
+        signed = mirror.sign("GET", "https://examplebucket.s3.amazonaws.com/test.txt", key_id="AKIAIOSFODNN7EXAMPLE",
+                             secret="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", region="us-east-1",
+                             payload_sha256=mirror.EMPTY, headers={"Range": "bytes=0-9"}, now=now)
+        self.assertEqual(signed["Authorization"],
+                         "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, "
+                         "SignedHeaders=host;range;x-amz-content-sha256;x-amz-date, "
+                         "Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41")
+        self.assertEqual(signed["x-amz-date"], "20130524T000000Z")
+
+    def test_metadata_is_merged_and_names_the_newest(self):
+        self.assertEqual([mirror.compare_versions(a, b) for a, b in
+                          (("1.0", "1.0.0"), ("1.0-beta", "1.0"), ("1.10", "1.9"), ("2.0", "10.0"))], [0, -1, 1, -1])
+        first, versions = mirror.merged_metadata(None, "cc.orthrus", "examplemod", "1.2.0")
+        self.assertEqual(versions, ["1.2.0"])
+        body, versions = mirror.merged_metadata(first, "cc.orthrus", "examplemod", "1.1.0")
+        root = ElementTree.fromstring(body)
+        self.assertEqual(versions, ["1.2.0", "1.1.0"])
+        self.assertEqual((root.findtext("versioning/latest"), root.findtext("versioning/release")), ("1.2.0", "1.2.0"))
+        with self.assertRaises(transport.ChannelError):
+            mirror.merged_metadata(first, "cc.orthrus", "othermod", "1.0.0")
+
+    def test_the_pom_carries_the_channel_metadata_and_the_licence(self):
+        chan = central_channel()
+        folder = Path(tempfile.mkdtemp(prefix="wb-release-pom-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        given = write_pom(folder / "pom.xml", "1.0.0", group="cc.orthrus",
+                          dependencies=[("org.example", "examplelib", "2.0", "compile")])
+        root = ElementTree.fromstring(central.pom(chan, "1.0.0", LICENCE, given.read_bytes()))
+        self.assertEqual(root.tag, "{http://maven.apache.org/POM/4.0.0}project")
+        text = {path: root.findtext(path, namespaces=POM_TAGS) for path in (
+            "m:groupId", "m:artifactId", "m:version", "m:name", "m:description", "m:url",
+            "m:licenses/m:license/m:name", "m:licenses/m:license/m:url", "m:developers/m:developer/m:id",
+            "m:developers/m:developer/m:email", "m:scm/m:connection", "m:scm/m:developerConnection", "m:scm/m:url",
+            "m:dependencies/m:dependency/m:artifactId")}
+        self.assertEqual(text, {
+            "m:groupId": "cc.orthrus", "m:artifactId": "examplemod", "m:version": "1.0.0", "m:name": "Example Mod",
+            "m:description": "An example mod.", "m:url": "https://examplemod.example.invalid",
+            "m:licenses/m:license/m:name": LICENCE["name"], "m:licenses/m:license/m:url": LICENCE["url"],
+            "m:developers/m:developer/m:id": "example", "m:developers/m:developer/m:email": "dev@example.invalid",
+            "m:scm/m:connection": "scm:git:https://git.example.invalid/examplemod.git",
+            "m:scm/m:developerConnection": "scm:git:ssh://git.example.invalid/examplemod.git",
+            "m:scm/m:url": "https://git.example.invalid/examplemod", "m:dependencies/m:dependency/m:artifactId":
+            "examplelib"})
+        alone = rulebook.read_pom(central.pom(chan, "1.0.0", LICENCE, None))
+        self.assertEqual((alone["group"], alone["artifact"], alone["version"], alone["dependencies"]),
+                         ("cc.orthrus", "examplemod", "1.0.0", []))
+        placeholder = central.placeholder_javadoc(chan, "1.0.0")
+        self.assertEqual(placeholder, central.placeholder_javadoc(chan, "1.0.0"), "the same bytes each time")
+        with zipfile.ZipFile(io.BytesIO(placeholder)) as jar:
+            self.assertEqual(sorted(jar.namelist()), ["META-INF/MANIFEST.MF", "README.md"])
+            self.assertIn("placeholder", jar.read("README.md").decode())
+
+    def test_central_and_mirror_config_is_checked(self):
+        self.assertEqual(central_channel(signing={"key": "ab" * 20, "secret": "p"}).settings["signing"]["key"],
+                         "AB" * 20)
+        self.assertEqual(central_channel().settings["publishing_type"], "USER_MANAGED")
+        self.assertEqual(central_channel().settings["javadoc"], "built")
+        for change in ({"signing": {"key": "ABCD1234", "secret": "p"}}, {"checksums": ["sha256"]},
+                       {"publishing_type": "LATER"}, {"pom": {"name": "x"}}, {"project": "examplemod"}):
+            with self.subTest(change), self.assertRaises(EnvironmentProblem):
+                central_channel(**change)
+        self.assertEqual(mirror_channel().settings["region"], "auto")
+        self.assertEqual(mirror_channel(project="cc.orthrus.tools:examplemod").project, "cc.orthrus.tools:examplemod")
+        for change, text in (({"project": "org.example:examplemod"}, "publishes only cc.orthrus"),
+                             ({"project": "cc.orthrusx:examplemod"}, "publishes only cc.orthrus"),
+                             ({"bucket": "Orthrus_Maven"}, "not a bucket name"),
+                             ({"public_url": "http://maven.example.invalid"}, "in the clear")):
+            with self.subTest(change), self.assertRaises(EnvironmentProblem) as raised:
+                mirror_channel(**change)
+            self.assertIn(text, str(raised.exception))
+
+
+def bundle_of(deployment: str) -> zipfile.ZipFile:
+    return zipfile.ZipFile(io.BytesIO(CE.deployments[deployment]["bundle"]))
+
+
+class Central(unittest.TestCase):
+    FOLDER = "cc/orthrus/examplemod"
+
+    def setUp(self):
+        if KEY is None:
+            self.skipTest(NO_KEY)
+
+    def test_the_bundle_is_signed_checked_and_waits_for_a_person(self):
+        folder = D.data / "central-1.0.0"
+        jar, sources, javadoc = mod_jar(folder, "1.0.0"), sources_jar(folder, "1.0.0"), javadoc_jar(folder, "1.0.0")
+        pom = write_pom(folder / "pom-default.xml", "1.0.0", group="cc.orthrus",
+                        dependencies=[("org.example", "examplelib", "2.0", "compile")])
+        before = len(CE.requests)
+        job = submit("central", "1.0.0", [jar, sources, javadoc, pom])
+        approval = quoted(self, job)
+        plan = approval.quote["plan"]
+        self.assertEqual(len(CE.requests), before, "the quote reads local files only")
+        self.assertEqual([f["name"] for f in plan["files"]],
+                         [jar.name, sources.name, javadoc.name, "examplemod-1.0.0.pom"])
+        self.assertIn("written by Workbench from", plan["files"][3]["path"])
+        self.assertEqual(plan["central"]["publishing_type"], "USER_MANAGED")
+        self.assertEqual((plan["central"]["signing_key"], plan["central"]["javadoc"]), (KEY, "built"))
+        self.assertEqual(plan["precheck"], "whether Central has published this version")
+        self.assertIn(f"signed by {KEY}", approval.prompt["question"])
+        job.approve(approval.quote["id"])
+        result = job.result(timeout=120)
+        self.assertEqual(result.outcome, "ok", result.summary)
+        self.assertIn("waits for a person to press Publish", result.summary)
+        sent = CE.requests[before:]
+        self.assertEqual([(r.method, r.path) for r in sent],
+                         [("GET", "/api/v1/publisher/published"), ("POST", "/api/v1/publisher/upload")]
+                         + [("POST", "/api/v1/publisher/status")] * 3)
+        self.assertEqual(sent[0].query, {"namespace": "cc.orthrus", "name": "examplemod", "version": "1.0.0"})
+        self.assertEqual(sent[1].query, {"name": "cc.orthrus:examplemod:1.0.0", "publishingType": "USER_MANAGED"})
+        self.assertFalse([r for r in sent if "/deployment/" in r.path], "a person presses Publish, not Workbench")
+        receipt = result["data"]["receipt"]
+        deployment = receipt["release"]["deployment"]
+        self.assertEqual(CE.deployments[deployment]["errors"], [])
+        self.assertEqual(receipt["release"]["state"], "VALIDATED")
+        self.assertEqual(receipt["release"]["bundle"]["sha256"], hashlib.sha256(CE.deployments[deployment]["bundle"])
+                         .hexdigest())
+        self.assertTrue(receipt["complete"])
+        base = f"{self.FOLDER}/1.0.0/"
+        with bundle_of(deployment) as bundle:
+            names = set(bundle.namelist())
+            published = [jar.name, sources.name, javadoc.name, "examplemod-1.0.0.pom"]
+            self.assertEqual(names, {base + n + suffix for n in published
+                                     for suffix in ("", ".md5", ".sha1", ".sha256", ".sha512", ".asc")})
+            for local in (jar, sources, javadoc):
+                self.assertEqual(bundle.read(base + local.name), local.read_bytes())
+            written = bundle.read(base + "examplemod-1.0.0.pom")
+            self.assertEqual(hashlib.sha256(written).hexdigest(), plan["files"][3]["sha256"], "the approved POM")
+            root = ElementTree.fromstring(written)
+            self.assertEqual(root.findtext("m:licenses/m:license/m:name", namespaces=POM_TAGS), LICENCE["name"])
+            self.assertEqual(root.findtext("m:dependencies/m:dependency/m:artifactId", namespaces=POM_TAGS),
+                             "examplelib")
+            checks = Path(tempfile.mkdtemp(prefix="wb-release-asc-"))
+            self.addCleanup(shutil.rmtree, checks, ignore_errors=True)
+            for name in published:
+                (checks / name).write_bytes(bundle.read(base + name))
+                (checks / f"{name}.asc").write_bytes(bundle.read(base + name + ".asc"))
+                verified = gpg("--status-fd", "1", "--verify", (checks / f"{name}.asc").as_posix(),
+                               (checks / name).as_posix())
+                self.assertIn(f"VALIDSIG {KEY}", verified.stdout, verified.stderr)
+        self.assertFalse(status("central", "1.0.0").data.exists, "validated is not published")
+
+    def test_automatic_with_a_placeholder_javadoc_then_never_again(self):
+        folder = D.data / "central-1.1.0"
+        jar, sources = mod_jar(folder, "1.1.0"), sources_jar(folder, "1.1.0")
+        job = submit("central_auto", "1.1.0", [jar, sources])
+        approval = quoted(self, job)
+        plan = approval.quote["plan"]
+        names = [f["name"] for f in plan["files"]]
+        self.assertEqual(names, [jar.name, sources.name, "examplemod-1.1.0-javadoc.jar", "examplemod-1.1.0.pom"])
+        self.assertIn('javadoc = "placeholder"', plan["files"][2]["path"])
+        self.assertIn("with a placeholder javadoc JAR", approval.prompt["question"])
+        job.approve(approval.quote["id"])
+        result = job.result(timeout=120)
+        self.assertEqual(result.outcome, "ok", result.summary)
+        receipt = result["data"]["receipt"]
+        self.assertEqual(receipt["release"]["state"], "PUBLISHED")
+        self.assertIn("published 1.1.0", result.summary)
+        with bundle_of(receipt["release"]["deployment"]) as bundle:
+            entries = bundle.namelist()
+            readme = zipfile.ZipFile(io.BytesIO(bundle.read(f"{self.FOLDER}/1.1.0/examplemod-1.1.0-javadoc.jar")))
+            self.assertIn("No Javadoc is published", readme.read("README.md").decode())
+        self.assertFalse([e for e in entries if e.endswith((".sha256", ".sha512"))], "this channel asks md5, sha1")
+        self.assertTrue(status("central", "1.1.0").data.exists)
+        uploads = len(CE.sent("POST", "/upload"))
+        again = submit("central_auto", "1.1.0", [jar, sources])
+        again.approve(quoted(self, again).quote["id"])
+        refused = again.result(timeout=120)
+        self.assertEqual(refused.outcome, "finding", refused.summary)
+        self.assertIn("Maven Central already has cc.orthrus:examplemod:1.1.0", refused.summary)
+        self.assertEqual(len(CE.sent("POST", "/upload")), uploads)
+
+    def test_a_failed_deployment_leaves_its_id_in_the_receipt(self):
+        folder = D.data / "central-1.2.0"
+        files = [mod_jar(folder, "1.2.0"), sources_jar(folder, "1.2.0"), javadoc_jar(folder, "1.2.0")]
+        CE.refuse = ["Invalid signature for file examplemod-1.2.0.jar"]
+        job = submit("central", "1.2.0", files)
+        job.approve(quoted(self, job).quote["id"])
+        result = job.result(timeout=120)
+        self.assertEqual(result.outcome, "environment", result.summary)
+        self.assertIn("Central failed deployment", result.summary)
+        receipt = receipt_file(result)
+        self.assertFalse(receipt["complete"])
+        self.assertEqual(receipt["release"]["state"], "FAILED")
+        self.assertIn(receipt["release"]["deployment"], CE.deployments)
+        self.assertIn("Invalid signature", receipt["error"])
+        self.assertNotIn(TOKENS["signing_pass"], json.dumps(receipt) + result.summary)
+
+    def test_refusals_come_before_any_request(self):
+        folder = D.data / "central-refusals"
+        jar, sources, javadoc = mod_jar(folder, "2.0.0"), sources_jar(folder, "2.0.0"), javadoc_jar(folder, "2.0.0")
+        other = write_pom(folder / "pom-default.xml", "2.0.0", group="org.example")
+        before = len(CE.requests)
+        cases = [("central", [jar, sources], "Central needs the javadoc JAR examplemod-2.0.0-javadoc.jar"),
+                 ("central", [jar, javadoc], "Central needs the sources JAR"),
+                 ("central", [jar, sources, javadoc, other], "is the POM of org.example:examplemod:2.0.0"),
+                 ("central_unlicensed", [jar, sources], "Central needs the POM's licence")]
+        for channel, files, text in cases:
+            with self.subTest(channel=channel, files=[f.name for f in files]):
+                result = submit(channel, "2.0.0", files).result(timeout=60)
+                self.assertEqual(result.outcome, "usage", result.summary)
+                self.assertIn(text, result.summary)
+        self.assertEqual(len(CE.requests), before)
+        checked = C.submit("release.check", {"files": [str(jar), str(sources)], "version": "2.0.0",
+                                             "channel": "central"}).result(timeout=60)
+        self.assertEqual(checked.outcome, "finding", checked.summary)
+        self.assertIn("javadoc JAR", checked["findings"][0])
+
+
+class Mirror(unittest.TestCase):
+    ROOT = "cc/orthrus/examplemod"
+
+    def files(self, version: str) -> list[Path]:
+        folder = D.data / f"mirror-{version}"
+        return [mod_jar(folder, version), sources_jar(folder, version),
+                write_pom(folder / "pom-default.xml", version, group="cc.orthrus")]
+
+    def test_every_path_is_written_once_signed_and_read_back(self):
+        jar, sources, pom = self.files("1.0.0")
+        before, public = len(BK.requests), len(PB.requests)
+        quote, result = publish(self, "mirror", "1.0.0", [jar, sources, pom])
+        self.assertEqual(quote["plan"]["mirror"], {"bucket": "orthrus-maven", "public_url": PB.url,
+                                                   "group": "cc.orthrus", "region": "auto"})
+        self.assertEqual(quote["plan"]["maven"]["metadata"], True)
+        sent = BK.requests[before:]
+        self.assertTrue(all(r.headers["authorization"].startswith("AWS4-HMAC-SHA256 Credential="
+                                                                  f"{TOKENS['r2_key_id']}/") for r in sent))
+        puts = [r for r in sent if r.method == "PUT"]
+        base = f"/orthrus-maven/{self.ROOT}/1.0.0/"
+        names = [jar.name, sources.name, "examplemod-1.0.0.pom"]
+        expected = [base + n + suffix for n in names for suffix in ("", ".md5", ".sha1", ".sha256", ".sha512")]
+        expected += [f"/orthrus-maven/{self.ROOT}/maven-metadata.xml" + s
+                     for s in ("", ".md5", ".sha1", ".sha256", ".sha512")]
+        self.assertEqual([r.path for r in puts], expected)
+        self.assertTrue(all(r.headers.get("if-none-match") == "*" for r in puts[:15]), "a path is written once")
+        for local, name in ((jar, jar.name), (sources, sources.name), (pom, "examplemod-1.0.0.pom")):
+            held = BK.objects[f"{self.ROOT}/1.0.0/{name}"]
+            self.assertEqual((held["body"], held["meta"]["sha256"]), (local.read_bytes(), digest(local)))
+            for algo in ("md5", "sha1", "sha256", "sha512"):
+                self.assertEqual(BK.objects[f"{self.ROOT}/1.0.0/{name}.{algo}"]["body"].decode(), digest(local, algo))
+        metadata = ElementTree.fromstring(BK.objects[f"{self.ROOT}/maven-metadata.xml"]["body"])
+        self.assertIn("1.0.0", [v.text for v in metadata.findall("versioning/versions/version")])
+        reads = PB.requests[public:]
+        self.assertEqual(len(reads), 20, "every path read back from the public base URL")
+        self.assertTrue(all("wb-verify" in r.query for r in reads))
+        receipt = result["data"]["receipt"]
+        self.assertEqual([(f["name"], f["verified"], f["verified_by"], f["kept"]) for f in receipt["files"]],
+                         [(n, True, "sha256", False) for n in names])
+        self.assertEqual(receipt["release"]["verified"], 20)
+        self.assertEqual(receipt["files"][0]["url"], f"{PB.url}/{self.ROOT}/1.0.0/{jar.name}")
+
+        held = status("mirror", "1.0.0", [jar, sources])
+        self.assertEqual(held.outcome, "ok", held.summary)
+        self.assertEqual([f["local"]["same"] for f in held.data.files], [True, True])
+        writes = len(BK.sent("PUT"))
+        again = submit("mirror", "1.0.0", [jar, sources, pom])
+        again.approve(quoted(self, again).quote["id"])
+        refused = again.result(timeout=120)
+        self.assertEqual(refused.outcome, "finding", refused.summary)
+        self.assertIn("with these exact bytes; nothing to publish", refused.summary)
+        self.assertEqual(len(BK.sent("PUT")), writes)
+
+    def test_the_same_bytes_are_kept_and_other_bytes_refused(self):
+        jar, sources, pom = self.files("2.0.0")
+        BK.put(f"{self.ROOT}/2.0.0/{jar.name}", jar.read_bytes())  # left by an earlier, stopped publish
+        quote, result = publish(self, "mirror", "2.0.0", [jar, sources, pom])
+        self.assertFalse(BK.sent("PUT", f"/2.0.0/{jar.name}$"), "the same bytes are not written again")
+        receipt = result["data"]["receipt"]
+        self.assertEqual([f["kept"] for f in receipt["files"]], [True, False, False])
+        self.assertIn(f"{self.ROOT}/2.0.0/{jar.name}", receipt["release"]["kept"])
+
+        jar, sources, pom = self.files("2.1.0")
+        BK.put(f"{self.ROOT}/2.1.0/{sources.name}", b"another build")
+        writes = len(BK.sent("PUT"))
+        job = submit("mirror", "2.1.0", [jar, sources, pom])
+        job.approve(quoted(self, job).quote["id"])
+        refused = job.result(timeout=120)
+        self.assertEqual(refused.outcome, "finding", refused.summary)
+        self.assertIn(f"{sources.name} with other bytes", refused.summary)
+
+        jar, sources, pom = self.files("2.2.0")
+        BK.put(f"{self.ROOT}/2.2.0/{jar.name}.sha1", b"0" * 40)
+        job = submit("mirror", "2.2.0", [jar, sources, pom])
+        job.approve(quoted(self, job).quote["id"])
+        stopped = job.result(timeout=120)
+        self.assertEqual(stopped.outcome, "environment", stopped.summary)
+        self.assertIn(f"{jar.name}.sha1 already holds other bytes", stopped.summary)
+        self.assertIn("nothing was uploaded", stopped.summary)
+        self.assertEqual(len(BK.sent("PUT")), writes)
+
+    def test_metadata_keeps_what_another_writer_listed(self):
+        key = f"{self.ROOT}/maven-metadata.xml"
+        body, _ = mirror.merged_metadata(BK.objects.get(key, {}).get("body"), "cc.orthrus", "examplemod", "99.0.0")
+        BK.put(key, body)
+        jar, sources, pom = self.files("3.0.0")
+        publish(self, "mirror", "3.0.0", [jar, sources, pom])
+        root = ElementTree.fromstring(BK.objects[key]["body"])
+        listed = [v.text for v in root.findall("versioning/versions/version")]
+        self.assertEqual(listed[-2:], ["99.0.0", "3.0.0"])
+        self.assertEqual(root.findtext("versioning/release"), "99.0.0")
+        put = BK.sent("PUT", "/maven-metadata.xml$")[-1]
+        self.assertEqual(put.headers["if-match"].strip('"'), fakes.sha("md5", body), "written only over what it read")
+
+    def test_bytes_served_otherwise_are_a_finding(self):
+        jar, sources, pom = self.files("4.0.0")
+        PB.override[f"{self.ROOT}/4.0.0/{jar.name}"] = b"a stale cache"
+        self.addCleanup(PB.override.clear)
+        job = submit("mirror", "4.0.0", [jar, sources, pom])
+        job.approve(quoted(self, job).quote["id"])
+        result = job.result(timeout=120)
+        self.assertEqual(result.outcome, "finding", result.summary)
+        self.assertIn(f"{jar.name} serves other bytes", " ".join(result["findings"]))
+        receipt = receipt_file(result)
+        self.assertEqual(receipt["files"][0]["verified"], False)
+        self.assertTrue(receipt["complete"])
+
+    def test_refusals_before_any_write(self):
+        jar, sources, pom = self.files("5.0.0")
+        writes = len(BK.sent("PUT"))
+        before = len(BK.requests)
+        result = submit("mirror_other_group", "5.0.0", [jar]).result(timeout=60)
+        self.assertEqual(result.outcome, "environment", result.summary)
+        self.assertIn("publishes only cc.orthrus", result.summary)
+        self.assertEqual(len(BK.requests), before)
+        job = submit("mirror_wrong_key", "5.0.0", [jar, sources, pom])
+        job.approve(quoted(self, job).quote["id"])
+        refused = job.result(timeout=120)
+        self.assertEqual(refused.outcome, "environment", refused.summary)
+        self.assertIn("HTTP 403", refused.summary)
+        self.assertIn("nothing was uploaded", refused.summary)
+        self.assertEqual(len(BK.sent("PUT")), writes)
 
 
 class FromSet(unittest.TestCase):

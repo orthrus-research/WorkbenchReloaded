@@ -1,4 +1,5 @@
-"""release: publish built mod artifacts to GitHub releases, Modrinth, CurseForge and Maven repositories.
+"""release: publish built mod artifacts to GitHub releases, Modrinth, CurseForge, Maven repositories, Maven Central
+(``central``, wb_release/central.py) and our own Maven repository in a bucket (``mirror``, wb_release/mirror.py).
 
 ``release.check`` holds files to the publication allow-list (``wb_release/rules.py``) with no network: one finding
 per violation.
@@ -26,6 +27,7 @@ a rebuild.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import json
@@ -104,10 +106,17 @@ def check(ctx: Context, files: list, version: str | None = None, channel: str | 
                                        "dependencies": dependencies})
     sources = _sources(ctx, files)
     violations = []
-    if chan is not None and chan.kind == "maven":
+    if chan is not None and chan.kind in channels.MAVEN_LAYOUT:
         if not version:
-            raise ParamError("checking files for a maven channel needs their version: the layout names them by it")
-        violations += channels.maven_names(chan, version, sources)
+            raise ParamError(f"checking files for a {chan.kind} channel needs their version: the layout names them "
+                             "by it")
+        violations += channels.maven_names(chan, version, sources, need_pom=chan.kind != "central")
+        if chan.kind == "central":
+            from . import central
+            found = central.problems(chan, version, sources, applied.licence, applied.name)
+            violations += found
+            if not found and not violations:
+                sources = _complete(ctx, chan, version, sources, applied)
     report = rulebook.inspect([s.item() for s in sources], applied, version)
     violations += report.violations
     for violation in violations:
@@ -135,6 +144,7 @@ def quote_publish(ctx: Context, channel: str, version: str, files: list | None =
     given = {"release_type": release_type, "visibility": visibility, "name": name, "tag": tag, "commit": commit,
              "game_versions": game_versions, "loaders": loaders, "dependencies": dependencies}
     sources, origin = _chosen(ctx, files, set, artifacts)
+    sources = _complete(ctx, chan, version, sources)
     plan = _plan(ctx, chan, version, sources, _notes(ctx, notes), _at_line(chan, given, origin), origin)
     return _quote(plan)
 
@@ -150,6 +160,7 @@ def publish(ctx: Context, channel: str, version: str, files: list | None = None,
              "game_versions": game_versions, "loaders": loaders, "dependencies": dependencies}
     ctx.progress("stage", msg="copying the files into the job and hashing the copies")
     sources, origin = _chosen(ctx, files, set, artifacts, stage=True)
+    sources = _complete(ctx, chan, version, sources)
     note = _notes(ctx, notes)
     plan = _plan(ctx, chan, version, sources, note, _at_line(chan, given, origin), origin)
     changes = _changes(approved["plan"], plan)
@@ -158,7 +169,9 @@ def publish(ctx: Context, channel: str, version: str, files: list | None = None,
         ctx.requote(_quote(plan), "; ".join(changes))
     _mounted(ctx, chan)
     token = ctx.secret(chan.secret)
-    status_token = ctx.secret(chan.settings["status_secret"]) if chan.settings.get("status_url") else None
+    second = channels.SECOND_SECRET.get(chan.kind)
+    status_token = ctx.secret(chan.settings[second]) if second and (chan.kind != "curseforge"
+                                                                     or chan.settings.get("status_url")) else None
     client = channels.client(chan, _http(ctx), token, status_token)
     receipt = channels.Receipt(channel=chan.name, kind=chan.kind, endpoint=chan.base_url, project=chan.project,
                                version=version, job=ctx.job, quote=approved.get("id"),
@@ -181,7 +194,8 @@ def publish(ctx: Context, channel: str, version: str, files: list | None = None,
         client.publish(ctx, plan, sources, note.text if note else "", receipt)
         receipt.complete = True
     except BaseException as error:
-        receipt.error = _redact(str(error) or type(error).__name__, token, status_token)
+        encoded = base64.b64encode(token.encode("utf-8")).decode("ascii") if token else None  # as a Bearer sends it
+        receipt.error = _redact(str(error) or type(error).__name__, token, status_token, encoded)
         _receipt(ctx, receipt)
         if isinstance(error, ChannelError):
             raise EnvironmentProblem(f"publishing to {chan.name} stopped: {error}; {_progress(receipt, plan)} "
@@ -192,11 +206,15 @@ def publish(ctx: Context, channel: str, version: str, files: list | None = None,
     for entry in differing:
         ctx.finding(f"{entry['name']} was uploaded, but {chan.name} reports other bytes for it "
                     f"(by {entry['verified_by']}): {entry.get('remote')}")
+    for text in receipt.release.get("mismatched") or []:
+        ctx.finding(f"{chan.name} published {version}, but {text}")
     where = receipt.release.get("url") or receipt.release.get("id")
-    ctx.summary(f"published {version} to {chan.kind} channel {chan.name} ({chan.project}): {len(receipt.files)} "
+    done = "uploaded" if receipt.release.get("next") else "published"
+    ctx.summary(f"{done} {version} to {chan.kind} channel {chan.name} ({chan.project}): {len(receipt.files)} "
                 f"file(s){', ' + str(where) if where else ''}"
                 + (f"; the channel reports other bytes for {', '.join(e['name'] for e in differing)}"
-                   if differing else ""))
+                   if differing else "")
+                + (f"; {receipt.release['next']}" if receipt.release.get("next") else ""))
     return {"published": True, "receipt": receipt.as_dict()}
 
 
@@ -204,7 +222,7 @@ def _plan(ctx: Context, chan: channels.Channel, version: str, sources: list[Sour
           given: dict, origin: dict | None = None) -> dict:
     """The publication plan: everything the yes covers, from the files as read now."""
     settings = channels.resolve(chan, given, version)
-    if chan.kind == "maven":
+    if chan.kind in channels.MAVEN_LAYOUT:
         problems = channels.maven_names(chan, version, sources)
         if problems:
             raise ParamError("; ".join(problems))
@@ -228,11 +246,35 @@ def _plan(ctx: Context, chan: channels.Channel, version: str, sources: list[Sour
         plan["upload_endpoint"] = chan.settings.get("upload_url") or chan.base_url
     elif chan.kind == "curseforge":
         plan["changelog_type"] = chan.settings["changelog_type"]
-    elif chan.kind == "maven":
+    if chan.kind in channels.MAVEN_LAYOUT:
         group, artifact = chan.project.split(":", 1)
         plan["maven"] = {"folder": f"{group.replace('.', '/')}/{artifact}/{version}",
-                         "checksums": chan.settings["checksums"], "metadata": chan.settings["metadata"]}
+                         "checksums": chan.settings["checksums"],
+                         "metadata": chan.settings.get("metadata", chan.kind == "mirror")}
+    if chan.kind == "central":
+        plan["central"] = {"publishing_type": chan.settings["publishing_type"],
+                           "signing_key": chan.settings["signing"]["key"], "javadoc": chan.settings["javadoc"],
+                           "signatures": "an .asc for every file, made when the publish runs"}
+    elif chan.kind == "mirror":
+        plan["mirror"] = {"bucket": chan.settings["bucket"], "public_url": chan.settings["public_url"],
+                          "group": chan.settings["group"], "region": chan.settings["region"]}
     return json.loads(json.dumps(plan))  # the plan as it reads back from the approval
+
+
+def _complete(ctx: Context, chan: channels.Channel, version: str, sources: list[Source],
+              applied: rulebook.Rules | None = None) -> list[Source]:
+    """The files a channel publishes beyond those given: for central, the POM Workbench writes and a placeholder
+    javadoc JAR when the channel asks for one."""
+    if chan.kind != "central":
+        return sources
+    from . import central
+    problems = channels.maven_names(chan, version, sources, need_pom=False)
+    applied = applied or rulebook.load(ctx.config, chan.rules, given=False)
+    problems += central.problems(chan, version, sources, applied.licence, applied.name)
+    if problems:
+        raise ParamError("; ".join(problems))
+    return central.complete(chan, version, sources, applied.licence, ctx.work / "written",
+                            lambda path, label: Source.measure(path, label))
 
 
 def _quote(plan: dict) -> dict:
@@ -247,6 +289,12 @@ def _quote(plan: dict) -> dict:
     if line:
         where += (f", the bytes set {line['revision'][:12]} names for {line['project']} at "
                   f"{line['commit'][:12]}")
+    central = plan.get("central")
+    if central:
+        where += (f", {central['publishing_type']}, signed by {central['signing_key']}"
+                  + (", with a placeholder javadoc JAR" if central["javadoc"] == "placeholder" else ""))
+    if plan.get("mirror"):
+        where += f", read back from {plan['mirror']['public_url']}"
     question = (f"Publish version {plan['version']} to {where} as {how}, "
                 f"{'with notes ' + notes['sha256'][:12] if notes else 'without notes'}: {listing}?")
     return {"summary": f"publish {plan['version']} to {plan['kind']} channel {plan['channel']}: {len(files)} file(s), "
@@ -297,12 +345,13 @@ def status(ctx: Context, channel: str, version: str, files: list | None = None, 
     chan = channels.load(ctx.config, channel)
     settings = channels.resolve(chan, {"tag": tag}, version, strict=False)
     sources = _sources(ctx, files) if files else []
-    if chan.kind == "maven" and sources:
+    if chan.kind in channels.MAVEN_LAYOUT and sources:
         problems = channels.maven_names(chan, version, sources, need_pom=False)
         if problems:
             raise ParamError("; ".join(problems))
     token = _optional_secret(ctx, chan.secret)
-    status_token = _optional_secret(ctx, chan.settings.get("status_secret"))
+    second = channels.SECOND_SECRET.get(chan.kind)
+    status_token = _optional_secret(ctx, chan.settings.get(second) if second else None)
     client = channels.client(chan, _http(ctx), token, status_token)
     ctx.progress("ask", msg=f"asking {chan.name} what it holds for {version}")
     try:
@@ -482,6 +531,15 @@ def _mounted(ctx: Context, chan: channels.Channel):
     needed = [("secret", chan.secret)]
     if chan.kind == "curseforge" and chan.settings.get("status_url"):
         needed.append(("status_secret", chan.settings.get("status_secret")))
+    elif chan.kind == "mirror":
+        needed.append(("key_id_secret", chan.settings["key_id_secret"]))
+    elif chan.kind == "central":
+        from . import central
+        central.gpg_program()
+        signing = chan.settings["signing"]
+        needed.append(("signing.secret", signing["secret"]))
+        if signing.get("keyring"):
+            needed.append(("signing.keyring", signing["keyring"]))
     for key, name in needed:
         if not name:
             raise EnvironmentProblem(f"channel {chan.name} names no {key}: set {chan.where}.{key}")

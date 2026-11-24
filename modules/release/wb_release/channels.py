@@ -1,11 +1,12 @@
 """Publishing channels: ``[modules.release.channels.<name>]``, one per destination, each with one secret::
 
-    kind = "modrinth"                    # github, modrinth, curseforge or maven
+    kind = "modrinth"                    # github, modrinth, curseforge, maven, central or mirror
     base_url = "https://api.modrinth.com"   # the service's API; no default, so a channel always names where it goes
     project = "AbCdEf12"                 # github owner/repo; modrinth project id; curseforge project id (a number);
-                                         # maven group:artifact
+                                         # maven, central and mirror group:artifact
     secret = "release_modrinth"          # the [secrets.<name>] holding the token (maven: user:password, or just
-                                         # the password when username is set)
+                                         # the password when username is set; central: the Portal user token as
+                                         # username:password; mirror: the S3 secret access key)
     rules = "examplemod"                 # the [modules.release.rules.<name>] its files must pass (default: "default")
     page_url = "https://modrinth.com/mod/examplemod/version/{id}"   # receipts link here ({id}, {version})
 
@@ -16,11 +17,27 @@
 
 The defaults a kind takes are its publish parameters: github ``release_type``, ``visibility``, ``name``, ``tag``,
 ``commit``; modrinth and curseforge ``release_type``, ``visibility``, ``name``, ``game_versions``, ``loaders``,
-``dependencies``; maven none. Kind settings: github ``upload_url`` (default: base_url; https://uploads.github.com
-for github.com); curseforge ``changelog_type`` (markdown, text or html), ``status_url`` and ``status_secret`` (the
-Core API and its key: the upload API lists no files, so without them release.status cannot answer for the channel
-and a publish has no pre-check); maven ``username``, ``checksums`` (default md5, sha1, sha256, sha512) and
-``metadata`` (update maven-metadata.xml; default true).
+``dependencies``; maven, central and mirror none. Kind settings: github ``upload_url`` (default: base_url;
+https://uploads.github.com for github.com); curseforge ``changelog_type`` (markdown, text or html), ``status_url``
+and ``status_secret`` (the Core API and its key: the upload API lists no files, so without them release.status cannot
+answer for the channel and a publish has no pre-check); maven ``username``, ``checksums`` (default md5, sha1, sha256,
+sha512) and ``metadata`` (update maven-metadata.xml; default true).
+
+central (Maven Central through the Publisher Portal, wb_release/central.py): ``base_url`` is the Portal
+(https://central.sonatype.com); ``publishing_type`` USER_MANAGED (the default: the deployment stops at VALIDATED and a
+person presses Publish in the Portal) or AUTOMATIC; ``javadoc`` "built" (the default: the files must hold
+<artifact>-<version>-javadoc.jar) or "placeholder" (Workbench writes a javadoc JAR holding only a README);
+``checksums`` (md5 and sha1 always; default all four); ``signing = { key = "<fingerprint>", secret = "<passphrase
+secret>", keyring = "<secret holding the armored secret key>" }`` (without keyring, gpg's own home is used);
+``pom = { name, description, url, developers = [{ id, name, email, url, organization, organization_url }], scm = {
+url, connection, developer_connection } }``, the POM's metadata (its licence comes from the rules' ``licence``);
+``poll_interval`` and ``poll_timeout`` (default 10s and 40m).
+
+mirror (a Maven repository in an S3-compatible bucket such as Cloudflare R2, wb_release/mirror.py): ``base_url`` is
+the account's S3 API endpoint (for R2 it names the account id); ``bucket``; ``public_url``, the bucket's public base
+URL, which every upload is read back from; ``group``, the only group the channel publishes (and its subgroups);
+``key_id_secret``, the secret holding the access key id (``secret`` holds the secret access key); ``region``
+(default auto); ``checksums`` (default all four). maven-metadata.xml is always merged with what the bucket holds.
 """
 
 from __future__ import annotations
@@ -41,15 +58,18 @@ from wb_core.module import EnvironmentProblem, ParamError
 from . import rules as rulebook
 from .transport import ChannelError, Form, Http, basic, checked_url, excerpt
 
-KINDS = ("github", "modrinth", "curseforge", "maven")
+KINDS = ("github", "modrinth", "curseforge", "maven", "central", "mirror")
+MAVEN_LAYOUT = ("maven", "central", "mirror")  # the kinds that publish one group:artifact:version folder
 RELEASE_TYPES = ("release", "beta", "alpha")
 VISIBILITY = {"github": ("public", "draft"), "modrinth": ("public", "unlisted", "draft"),
-              "curseforge": ("public",), "maven": ("public",)}
+              "curseforge": ("public",), "maven": ("public",), "central": ("public",), "mirror": ("public",)}
 SETTINGS = {  # the publish parameters a kind takes; a channel's defaults may set the same
     "github": ("release_type", "visibility", "name", "tag", "commit"),
     "modrinth": ("release_type", "visibility", "name", "game_versions", "loaders", "dependencies"),
     "curseforge": ("release_type", "visibility", "name", "game_versions", "loaders", "dependencies"),
     "maven": (),
+    "central": (),
+    "mirror": (),
 }
 SETTING_FIELDS = {
     "release_type": {"type": "enum", "values": list(RELEASE_TYPES), "optional": True},
@@ -70,12 +90,21 @@ CURSEFORGE_RELATIONS = {"required": "requiredDependency", "optional": "optionalD
 CURSEFORGE_TYPES = {1: "release", 2: "beta", 3: "alpha"}
 MODRINTH_STATUS = {"public": "listed", "unlisted": "unlisted", "draft": "draft"}
 CHECKSUMS = ("md5", "sha1", "sha256", "sha512")
+PUBLISHING_TYPES = ("USER_MANAGED", "AUTOMATIC")
+FINGERPRINT = re.compile(r"^(?:[0-9A-F]{40}|[0-9A-F]{64})$")
+BUCKET = re.compile(r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
+GROUP = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$")
+COORDINATES = (re.compile(r"^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+$"), "group:artifact")
 PROJECT = {
     "github": (re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"), "owner/repo"),
     "modrinth": (re.compile(r"^[A-Za-z0-9_.-]{1,64}$"), "a project id or slug"),
     "curseforge": (re.compile(r"^[0-9]{1,12}$"), "a numeric project id"),
-    "maven": (re.compile(r"^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+$"), "group:artifact"),
+    "maven": COORDINATES,
+    "central": COORDINATES,
+    "mirror": COORDINATES,
 }
+_TEXT = {"type": "string"}
+_MAYBE = {"type": "string", "optional": True}
 COMMON = {
     "kind": {"type": "enum", "values": list(KINDS)},
     "base_url": {"type": "string"},
@@ -95,7 +124,26 @@ KIND_FIELDS = {
               "checksums": {"type": "list", "items": {"type": "enum", "values": list(CHECKSUMS)},
                             "default": list(CHECKSUMS)},
               "metadata": {"type": "bool", "default": True}},
+    "central": {"publishing_type": {"type": "enum", "values": list(PUBLISHING_TYPES), "default": "USER_MANAGED"},
+                "javadoc": {"type": "enum", "values": ["built", "placeholder"], "default": "built"},
+                "checksums": {"type": "list", "items": {"type": "enum", "values": list(CHECKSUMS)},
+                              "default": list(CHECKSUMS)},
+                "signing": {"type": "object", "fields": {"key": _TEXT, "secret": _TEXT, "keyring": _MAYBE}},
+                "pom": {"type": "object", "fields": {
+                    "name": _TEXT, "description": _TEXT, "url": _TEXT,
+                    "developers": {"type": "list", "items": {"type": "object", "fields": {
+                        "id": _MAYBE, "name": _TEXT, "email": _MAYBE, "url": _MAYBE, "organization": _MAYBE,
+                        "organization_url": _MAYBE}}},
+                    "scm": {"type": "object", "fields": {"url": _TEXT, "connection": _TEXT,
+                                                         "developer_connection": _TEXT}}}},
+                "poll_interval": {"type": "duration", "default": "10s", "min": "10ms", "max": "10m"},
+                "poll_timeout": {"type": "duration", "default": "40m", "min": "1s", "max": "100m"}},
+    "mirror": {"bucket": _TEXT, "public_url": _TEXT, "group": _TEXT, "key_id_secret": _TEXT,
+               "region": {"type": "string", "default": "auto", "pattern": r"^[a-z0-9-]{1,32}$"},
+               "checksums": {"type": "list", "items": {"type": "enum", "values": list(CHECKSUMS)},
+                             "default": list(CHECKSUMS)}},
 }
+SECOND_SECRET = {"curseforge": "status_secret", "mirror": "key_id_secret"}  # a kind's other secret, by its setting
 REF = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+/-]{0,99}$")       # a tag or commit
 PROJECT_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")  # a project a relation names
 
@@ -146,11 +194,15 @@ def load(config: dict, name: str) -> Channel:
         raise EnvironmentProblem(f"{where}.project = {values['project']!r} is not {shape}")
     try:
         values["base_url"] = checked_url(values["base_url"], f"{where}.base_url")
-        for key in ("upload_url", "status_url"):
+        for key in ("upload_url", "status_url", "public_url"):
             if values.get(key):
                 values[key] = checked_url(values[key], f"{where}.{key}")
     except ValueError as error:
         raise EnvironmentProblem(str(error)) from None
+    if kind == "central":
+        _central_settings(values, where)
+    elif kind == "mirror":
+        _mirror_settings(values, where)
     if values.get("page_url") and not values["page_url"].startswith(("https://", "http://")):
         raise EnvironmentProblem(f"{where}.page_url must be an http(s) URL template")
     defaults = values["defaults"]
@@ -166,6 +218,39 @@ def load(config: dict, name: str) -> Channel:
     return Channel(name=name, kind=kind, base_url=values["base_url"], project=values["project"],
                    secret=values.get("secret"), rules=values.get("rules"), page_url=values.get("page_url"),
                    defaults=defaults, settings=own)
+
+
+def _central_settings(values: dict, where: str):
+    signing = values["signing"]
+    signing["key"] = re.sub(r"\s+", "", signing["key"]).upper().removeprefix("0X")
+    if not FINGERPRINT.match(signing["key"]):
+        raise EnvironmentProblem(f"{where}.signing.key must be the signing key's full fingerprint (40 or 64 hex "
+                                 "digits), not a short id or a name")
+    if not {"md5", "sha1"} <= set(values["checksums"]):
+        raise EnvironmentProblem(f"{where}.checksums must hold md5 and sha1: Central needs both for every file")
+    pom = values["pom"]
+    if not pom["developers"]:
+        raise EnvironmentProblem(f"{where}.pom.developers is empty: Central needs at least one developer")
+    links = [("pom.url", pom["url"]), ("pom.scm.url", pom["scm"]["url"])]
+    links += [(f"pom.developers[{i}].{key}", d[key]) for i, d in enumerate(pom["developers"])
+              for key in ("url", "organization_url") if d.get(key)]
+    for key, value in links:
+        if not value.startswith(("https://", "http://")):
+            raise EnvironmentProblem(f"{where}.{key} = {value!r} is not an http(s) URL")
+    for key in ("connection", "developer_connection"):
+        if not pom["scm"][key].startswith("scm:"):
+            raise EnvironmentProblem(f"{where}.pom.scm.{key} = {pom['scm'][key]!r} is not an SCM URL (scm:git:...)")
+
+
+def _mirror_settings(values: dict, where: str):
+    if not BUCKET.match(values["bucket"]):
+        raise EnvironmentProblem(f"{where}.bucket = {values['bucket']!r} is not a bucket name")
+    if not GROUP.match(values["group"]):
+        raise EnvironmentProblem(f"{where}.group = {values['group']!r} is not a Maven group")
+    group = values["project"].split(":", 1)[0]
+    if group != values["group"] and not group.startswith(values["group"] + "."):
+        raise EnvironmentProblem(f"{where}.project is in group {group}, and the channel publishes only "
+                                 f"{values['group']} (and its subgroups)")
 
 
 def resolve(channel: Channel, given: dict, version: str, *, strict: bool = True) -> dict:
@@ -199,7 +284,7 @@ def resolve(channel: Channel, given: dict, version: str, *, strict: bool = True)
                          f"{channel.where}.defaults)")
     if "dependencies" in out:
         out["dependencies"] = [_relation(channel.kind, value) for value in out["dependencies"]]
-    if channel.kind == "maven":
+    if channel.kind in MAVEN_LAYOUT:
         out["visibility"] = "public"
     return out
 
@@ -227,6 +312,10 @@ def precheck(channel: Channel) -> str:
         return "versions with this number and a loader in common"
     if channel.kind == "maven":
         return "the files at this version"
+    if channel.kind == "central":
+        return "whether Central has published this version"
+    if channel.kind == "mirror":
+        return "every path of this version in the bucket: the same bytes are kept, other bytes refused"
     return ("files of the same name, on the Core API" if channel.settings.get("status_url")
             else "none: the upload API lists no files (set status_url and status_secret)")
 
@@ -261,6 +350,15 @@ def maven_names(channel: Channel, version: str, sources: list, *, need_pom: bool
         declared = f"{pom['group']}:{pom['artifact']}:{pom['version']}"
         if declared != f"{group}:{artifact}:{version}":
             problems.append(f"{source.local_name} is the POM of {declared}, not of {group}:{artifact}:{version}")
+    for source in (s for s in sources if s.name == f"{prefix}.module"):
+        try:
+            module = rulebook.read_module(Path(source.path).read_bytes())
+        except (ValueError, UnicodeDecodeError, OSError):
+            continue  # the rules report an unreadable module file
+        declared = f"{module['group']}:{module['module']}:{module['version']}"
+        if declared != f"{group}:{artifact}:{version}":
+            problems.append(f"{source.local_name} is the module file of {declared}, not of "
+                            f"{group}:{artifact}:{version}")
     return problems
 
 
@@ -338,7 +436,11 @@ def _now() -> str:
 
 
 def client(channel: Channel, http: Http, token: str | None, status_token: str | None = None):
-    kinds = {"github": GitHub, "modrinth": Modrinth, "curseforge": CurseForge, "maven": Maven}
+    """The kind's client; ``status_token`` is the kind's other secret (SECOND_SECRET), when it has one."""
+    from .central import Central
+    from .mirror import Mirror
+    kinds = {"github": GitHub, "modrinth": Modrinth, "curseforge": CurseForge, "maven": Maven, "central": Central,
+             "mirror": Mirror}
     return kinds[channel.kind](channel, http, token, status_token)
 
 
