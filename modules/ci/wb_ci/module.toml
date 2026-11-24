@@ -41,8 +41,10 @@ handler = "wb_ci.commands:run"
 requires = { binary = ["git"], module = ["toolchain"] }
 # Two checks of one project run side by side: each has its own clone, run folder and records, and the Store index,
 # the input cache and the Python environments are safe to write at once. Only two runs of one commit wait for each
-# other, so the second reuses the first's passes instead of building the same tree twice.
-resources = { cpu = 4, mem_gb = 8, locks = ["ci:{project}@{commit}"] }
+# other, so the second reuses the first's passes instead of building the same tree twice. The memory a run reserves
+# is read from the jobs file it will run (wb_ci/reserve.py): [project] reserve, else its largest single claim; 8 GB
+# when that file cannot be read.
+resources = { cpu = 4, mem_gb = 8, mem_from = "wb_ci.reserve:mem_gb", locks = ["ci:{project}@{commit}"] }
 timeout = "3h"
 params.project = { type = "string", summary = "a name under [modules.ci.projects]" }
 params.commit = { type = "string", default = "HEAD", summary = "the commit to run; worktree: the checkout's working tree as it would be committed" }

@@ -252,6 +252,19 @@ class Types(unittest.TestCase):
             with self.assertRaises(ManifestError):
                 parse(path, "m")
 
+    def test_a_sized_command_names_a_file_of_its_own_package_and_a_fallback(self):
+        from wb_core.manifest import ManifestError, parse
+        head = '[module]\nname = "m"\nversion = "1"\n\n[[command]]\nname = "c"\nhandler = "wb_m.x:c"\n'
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "module.toml"
+            for resources in ('{ mem_gb = 8, mem_from = "wb_other.x:size" }', '{ mem_from = "wb_m.x:size" }',
+                              '{ mem_gb = 8, mem_from = "wb_m.x" }'):
+                path.write_text(head + f"resources = {resources}\n", encoding="utf-8")
+                with self.assertRaises(ManifestError, msg=resources):
+                    parse(path, "wb_m")
+            path.write_text(head + 'resources = { mem_gb = 8, mem_from = "wb_m.size:mem_gb" }\n', encoding="utf-8")
+            self.assertEqual(parse(path, "wb_m").commands[0].resources["mem_from"], "wb_m.size:mem_gb")
+
 
     def test_an_object_says_what_it_holds(self):
         table = types.normalise_spec("t", {"type": "object", "fields": {"a": "int", "b": {"type": "bool",

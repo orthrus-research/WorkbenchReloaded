@@ -360,6 +360,118 @@ class Ci(unittest.TestCase):
         self.assertEqual((hooks / "pre-push").read_text(encoding="utf-8"), "#!/bin/sh\necho mine\n")
 
 
+SIZED = """
+[settings]
+name = "sized"
+
+[jobs.small]
+steps = [{ name = "ok", run = ["{python}", "-c", "pass"] }]
+
+[jobs.big]
+memory = 12
+steps = [{ name = "ok", run = ["{python}", "-c", "pass"] }]
+
+[jobs.on-gpu]
+gpu = true
+memory = 30
+steps = [{ name = "ok", run = ["{python}", "-c", "pass"] }]
+"""
+
+RESERVED = """schema = 1
+gate = ["small"]
+
+[project]
+name = "sized"
+reserve = 20
+
+[checks.small]
+steps = [["{python}", "-c", "pass"]]
+"""
+
+
+class Reservation(unittest.TestCase):
+    """ci.run reserves what the jobs file of the commit it runs asks for, not a fixed 8 GB: the project's declared
+    reserve, else its largest single claim (a host or GPU check is not ci.run's), at most the machine's budget."""
+
+    @classmethod
+    def setUpClass(cls):
+        root = Path(tempfile.mkdtemp(prefix="wb-reserve-"))
+        cls.repo = root / "data" / "sized"
+        cls.repo.mkdir(parents=True)
+        git(cls.repo, "init", "-q", "-b", "main")
+        (cls.repo / "actions.toml").write_text(SIZED, encoding="utf-8")
+        git(cls.repo, "add", "-A")
+        git(cls.repo, "commit", "-q", "-m", "claims")
+        cls.claims = git(cls.repo, "rev-parse", "HEAD")
+        (cls.repo / "project.toml").write_text(RESERVED, encoding="utf-8")
+        git(cls.repo, "add", "-A")
+        git(cls.repo, "commit", "-q", "-m", "a declared reserve")
+        cls.reserved = git(cls.repo, "rev-parse", "HEAD")
+        cls.d = Daemon(f"""
+            [core.budget]
+            cpu_cores = 16
+            mem_gb = 16
+
+            [modules.ci.projects.sized]
+            repo = '{cls.repo}'
+            jdk = ""
+            """, root=root).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.d.stop()
+
+    def reservation(self, params: dict) -> dict:
+        job = self.d.client.submit("ci.run", {"project": "sized", "dry_run": True, **params})
+        job.result(timeout=300)
+        found = [e["data"] for e in self.d.workbench.events(job.id) if e["kind"] == "reservation"]
+        self.assertEqual(len(found), 1)
+        return found[0]
+
+    def test_the_largest_single_claim_of_the_commits_jobs_file(self):
+        found = self.reservation({"commit": self.claims})
+        self.assertEqual(found["mem_gb"], 12.0)  # big; the GPU check's 30 is the host's
+        self.assertIn("largest claim in actions.toml: big", found["why"])
+
+    def test_a_declared_reserve_wins_and_is_held_to_the_budget(self):
+        found = self.reservation({"commit": self.reserved})
+        self.assertEqual(found["mem_gb"], 16.0)
+        self.assertIn("[project] reserve = 20 in project.toml", found["why"])
+        self.assertIn("held to the budget of 16 GB", found["why"])
+
+    def test_the_working_tree_is_read_for_commit_worktree(self):
+        found = self.reservation({"commit": "worktree"})
+        self.assertEqual(found["mem_gb"], 16.0)  # project.toml, from the checkout's files
+
+    def test_a_commit_it_cannot_read_leaves_the_manifests_eight(self):
+        found = self.reservation({"commit": "0" * 40})
+        self.assertEqual(found["mem_gb"], 8.0)
+        self.assertIn("had no answer; the manifest's 8 GB", found["why"])
+
+    def test_the_worker_is_given_the_reservation_and_a_restart_sizes_again(self):
+        job = self.d.client.submit("ci.run", {"project": "sized", "dry_run": True, "commit": self.claims})
+        job.result(timeout=300)
+        self.assertNotIn(job.id, self.d.workbench.sized)  # forgotten once the job ended
+        entry = self.d.workbench.registry["ci.run"]
+        params = {"project": "sized", "commit": self.claims}
+        spec = self.d.workbench._spec(job.id, entry, params, None, "run", entry.command.handler, None)
+        self.assertEqual(spec["reservation"], {"cpu": 4.0, "mem_gb": 12.0})  # as after a restart: read again
+        self.d.workbench.sized.pop(job.id)
+
+    def test_the_claims_match_the_engines(self):
+        sys.path.insert(0, str(REPO / "modules" / "tools" / "src"))
+        sys.path.insert(0, str(REPO / "modules" / "ci"))
+        from orthrus_tools import actions
+        from wb_ci import reserve
+        self.assertEqual(reserve.DEFAULT_MEMORY, actions.DEFAULT_MEMORY)
+        self.assertEqual(reserve.JOBS_FILES, actions.config_names())
+        config = actions.load(self.repo, self.repo / "actions.toml")
+        budget = actions.Budget(config.jobs, 0, 64.0)
+        engine = max(budget.claim(n)[1] for n, job in config.jobs.items() if not actions.on_host(job))
+        import tomllib
+        self.assertEqual(reserve.claim(tomllib.loads(SIZED), "actions.toml")[0], engine)
+
+
 CHECK = """import sys
 print("on", sys.version.split()[0], "venv" if sys.prefix != sys.base_prefix else "bare")
 sys.exit({code})

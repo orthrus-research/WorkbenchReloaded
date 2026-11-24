@@ -32,6 +32,9 @@
 - Two checks of one project run at once: `ci.run`'s lock is per commit (`ci:<project>@<commit>`), and the Store's
   index entries, its files, the engine's input cache and the Python environments are safe to write at once (an
   entry is merged under a lock of its own and every file moved into place whole).
+- `ci.run` reserves the memory the jobs file of its commit asks for, read at submit: `[project] reserve`, else the
+  largest single check's claim, at most the machine's budget (8 GB only when the file cannot be read). A command
+  sizes its reservation with `resources.mem_from`; the job's `reservation` event says what it took and why.
 - Each job calls the API with a token of its own, revoked when it ends, that can never approve a quote: approval
   takes the person's token.
 - The Set: set.json (schema 1) names each project's line (branch, commit and the SHA-256 of its files), holds
