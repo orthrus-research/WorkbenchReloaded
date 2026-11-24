@@ -511,6 +511,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reason", help="--hold: why they are held")
     p.add_argument("--source", help="--hold: where the bytes came from (a URL or a backup)")
     p.add_argument("--drop-hold", action="append", metavar="NAME", help="remove a hold")
+    p.add_argument("--third", metavar="NAME", help="land a third-party entry (--module, --repository, --third-file)")
+    p.add_argument("--module", help="--third: group:artifact:version")
+    p.add_argument("--repository", help="--third: the Maven repository's URL")
+    p.add_argument("--third-file", action="append", metavar="KIND[:CLASSIFIER]=SHA256",
+                   help="--third: a file and the SHA-256 it must have (runtime=..., dev:dev=...)")
+    p.add_argument("--licence", help="--third: its licence (SPDX id)")
+    p.add_argument("--mod-id", help="--third: the mod id it loads as")
     p = add("backup", cmd_backup, "copy the job database, the ledger and the scrub rules off this drive")
     p.add_argument("--to", help="the folder to back up into (default [paths] backup, else ~/wb-backup)")
     p = add("store", cmd_store, "what CI built: by project and commit, a kept file's path, or bytes to seed")

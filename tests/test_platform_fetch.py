@@ -108,6 +108,29 @@ class Fetch(unittest.TestCase):
         self.assertFalse((self.store / "gradle").exists())
 
 
+class Third(Fetch):
+    """A third-party entry: each file fetched from its Maven repository on an allowed host, checked, kept."""
+
+    def test_fetched_checked_and_kept(self):
+        from wb_ci import land
+        jar = zipped()
+        url = "https://repo.example.org/maven/com/example/lib/1.0/lib-1.0.jar"
+        self.bodies[url] = jar
+        wanted = {"module": "com.example:lib:1.0", "repository": "https://repo.example.org/maven",
+                  "files": {"runtime": {"sha256": hashlib.sha256(jar).hexdigest()}}, "licence": "MIT", "mod_id": "lib"}
+        with mock.patch.object(self.platform, "_open", self.serve):
+            entry, line = land._third(self.context(["example.org"]), "lib", wanted)
+        self.assertEqual(entry["files"], {"runtime": hashlib.sha256(jar).hexdigest()})
+        self.assertEqual((entry["licence"], entry["mod_id"]), ("MIT", "lib"))
+        self.assertTrue((self.store / "files" / entry["files"]["runtime"] / "lib-1.0.jar").is_file())
+        self.assertIn("third lib com.example:lib:1.0 (MIT)", line)
+        wanted["files"]["runtime"]["sha256"] = "0" * 64
+        with mock.patch.object(self.platform, "_open", self.serve), self.assertRaises(EnvironmentProblem):
+            land._third(self.context(["example.org"]), "lib", wanted)  # other bytes: refused, nothing kept
+        with self.assertRaises(ParamError):
+            land._third(self.context(["elsewhere.test"]), "lib", wanted)  # a host outside the list
+
+
 class Plugins(unittest.TestCase):
     """The Set's packed plugins go into the Store's plugins folder once, by logic id, never replaced."""
 

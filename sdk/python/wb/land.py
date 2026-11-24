@@ -148,7 +148,7 @@ class Lander:
     # -- landing ------------------------------------------------------------------------------------------------
     def land(self, targets: dict[str, str], *, urls: dict[str, str] | None = None, branch: str | None = None,
              deadline: float = 600, dry: bool = False, stop_after: str | None = None, holds: dict | None = None,
-             drop_holds: list | None = None) -> dict:
+             drop_holds: list | None = None, third: dict | None = None) -> dict:
         from wb_core import setfile
         self.fetch()
         self.reconcile()
@@ -184,8 +184,8 @@ class Lander:
                 item["url"] = urls[name]
             wanted[name] = item
         self.export(revision, text, head=True)
-        holds, drop_holds = holds or {}, list(drop_holds or [])
-        if not wanted and not holds and not drop_holds:
+        holds, drop_holds, third = holds or {}, list(drop_holds or []), third or {}
+        if not wanted and not holds and not drop_holds and not third:
             self.say(f"nothing moves: {', '.join(skipped) or 'no project'} already at its line")
             return {"state": "unchanged", "revision": revision}
         for name, hold in holds.items():
@@ -199,7 +199,7 @@ class Lander:
         landing = time.strftime("l%Y%m%d%H%M%S") + secrets.token_hex(2)
         job = self.client.submit("set.land", {"landing": landing, "base": revision, "projects": wanted,
                                              "deadline": deadline, "caller": os.environ.get("WB_CALLER", ""),
-                                             "holds": holds, "drop_holds": drop_holds})
+                                             "holds": holds, "drop_holds": drop_holds, "third": third})
         self.say(f"{job.id}  set.land {landing}  (wb show {job.id})")
         record = self._prepared(job, landing)
         if dry:  # nothing was pushed, so nothing is deleted from any remote either
@@ -296,7 +296,7 @@ class Lander:
         blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=self.home, input=record["set_json"],
                               capture_output=True, text=True, check=True).stdout.strip()
         names = (list(record["projects"]) or [h.split(":")[0].split("@")[0] for h in record.get("holds") or []]
-                 or ([SET] if record.get("change") else []))
+                 or ([SET] if record.get("change") or record.get("third") else []))
         if not names:
             raise WorkspaceError("a landing that names no project or hold has no identity to commit with")
         first = self._repo(names[0])
@@ -385,12 +385,25 @@ def main(args) -> int:
                                      "came from)")
             holds[args.hold] = {"file": args.file, "commit": args.commit, "reason": args.reason,
                                 "source": args.source or ""}
+        third = {}
+        if args.third:
+            files = {}
+            for item in args.third_file or []:
+                kind, sep, digest = item.partition("=")
+                kind, _, classifier = kind.partition(":")
+                if not sep or not kind or len(digest) != 64:
+                    raise WorkspaceError(f"--third-file {item!r}: KIND[:CLASSIFIER]=SHA256")
+                files[kind] = {"sha256": digest.lower(), **({"classifier": classifier} if classifier else {})}
+            if not (args.module and args.repository and files):
+                raise WorkspaceError("--third needs --module, --repository and at least one --third-file")
+            third[args.third] = {"module": args.module, "repository": args.repository, "files": files,
+                                 "licence": args.licence or "", "mod_id": args.mod_id or ""}
         given = list(args.targets or [])
-        targets = _targets(workspace, given) if given or not (holds or args.drop_hold) else {}
+        targets = _targets(workspace, given) if given or not (holds or args.drop_hold or third) else {}
         for name in urls:
             targets.setdefault(name, "HEAD")
         result = lander.land(targets, urls=urls, branch=args.branch, dry=args.dry, holds=holds,
-                             drop_holds=list(args.drop_hold or []))
+                             drop_holds=list(args.drop_hold or []), third=third)
         if result.get("state") == "landed" and not args.targets:
             from . import setwork  # a landing from this folder moves this folder's .set
             found = setwork.find(Path.cwd())

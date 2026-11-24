@@ -142,6 +142,44 @@ def _set_change(ctx: Context, wanted: dict, base: str, current: dict) -> tuple[s
     return sha, logic, body
 
 
+def _third(ctx: Context, name: str, wanted: dict) -> tuple[dict, str]:
+    """A third-party entry: each file is fetched from its Maven repository (from a host in store_hosts, every redirect
+    checked), checked against the SHA-256 given, and kept in the Store. Returns the entry and the body line."""
+    import tempfile
+    from . import platform
+    root = commands._store_root(ctx)
+    hosts = [str(h) for h in ctx.config.get("store_hosts") or []]
+    module = str(wanted.get("module") or "")
+    parts = module.split(":")
+    if len(parts) != 3 or not all(parts):
+        raise ParamError(f"third.{name}: module is group:artifact:version, not {module!r}")
+    group, artifact, version = parts
+    repository = str(wanted.get("repository") or "").rstrip("/")
+    files = {}
+    for kind, item in (wanted.get("files") or {}).items():
+        classifier = str(item.get("classifier") or "")
+        file_name = f"{artifact}-{version}{'-' + classifier if classifier else ''}.jar"
+        url = f"{repository}/{group.replace('.', '/')}/{artifact}/{version}/{file_name}"
+        digest = str(item.get("sha256") or "")
+        if not platform._allowed(url, hosts):
+            raise ParamError(f"third.{name}: {url} is on a host outside [modules.ci] store_hosts")
+        if not (root / "files" / digest / file_name).is_file():
+            ctx.progress("fetch", msg=f"third.{name} {kind}: {file_name}")
+            with tempfile.TemporaryDirectory(dir=root) as scratch:
+                downloaded = Path(scratch) / file_name
+                platform._download(ctx, url, digest, downloaded, hosts)
+                store.put(root, downloaded, digest, commands._folder(ctx, "pin_cache", commands._state() / "cache" / "pins"))
+        files[kind] = digest
+    if not files:
+        raise ParamError(f"third.{name}: name at least one file")
+    entry = {"module": module, "repository": repository, "files": files}
+    for key in ("licence", "mod_id"):
+        if wanted.get(key):
+            entry[key] = str(wanted[key])
+    return entry, (f"third {name} {module} ({wanted.get('licence') or 'licence not given'}): "
+                   + ", ".join(f"{k} {d[:12]}" for k, d in sorted(files.items())))
+
+
 def _hold(ctx: Context, name: str, hold: dict) -> tuple[dict, str]:
     """A hold's entry: its files must be seeded in the Store (bytes no container builds, with their source)."""
     root = commands._store_root(ctx)
@@ -162,11 +200,11 @@ def _hold(ctx: Context, name: str, hold: dict) -> tuple[dict, str]:
 
 
 def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float = 600, caller: str = "",
-         holds: dict | None = None, drop_holds: list | None = None):
-    holds, drop_holds = holds or {}, list(drop_holds or [])
+         holds: dict | None = None, drop_holds: list | None = None, third: dict | None = None):
+    holds, drop_holds, third = holds or {}, list(drop_holds or []), third or {}
     projects = dict(projects or {})
     change_wanted = projects.pop(SET, None)
-    if not projects and not holds and not drop_holds and not change_wanted:
+    if not projects and not holds and not drop_holds and not change_wanted and not third:
         raise ParamError("nothing to land: name a project, a hold or a hold to drop")
     sets = _sets(ctx)
     root = commands._store_root(ctx)
@@ -202,10 +240,14 @@ def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float 
     for name in sorted(holds):
         composed.setdefault("holds", {})[name], hold_text = _hold(ctx, name, holds[name])
         body.append(hold_text)
+    for name in sorted(third):
+        composed.setdefault("third", {})[name], third_text = _third(ctx, name, third[name])
+        body.append(third_text)
     text = setfile.dump(composed)
     moved = [n for n in sorted(lines) if (setfile.line(current, n) or {}).get("commit") != lines[n]["commit"]]
     parts = [f"{n} {lines[n]['commit'][:8]}" for n in (moved or sorted(lines))]
     parts += [f"hold {n}" for n in sorted(holds)] + [f"drop hold {n}" for n in drop_holds]
+    parts += [f"third {n}" for n in sorted(third)]
     parts = ([f"set files {change[:8]}"] if change else []) + parts
     subject = "Land " + ", ".join(parts)
     message = subject + "\n\n" + "\n".join(body) + f"\n\nLanding {landing} (job {ctx.job}).\n"
@@ -221,7 +263,7 @@ def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float 
         "id": landing, "state": "prepared", "job": ctx.job, "caller": caller, "base": base,
         "projects": {n: {"commit": lines[n]["commit"], "branch": lines[n]["branch"],
                          "old": (setfile.line(current, n) or {}).get("commit")} for n in sorted(lines)},
-        "change": change, "holds": sorted(holds) + list(drop_holds), "set_json": text, "message": message, "created": time.time(),
+        "change": change, "third": sorted(third), "holds": sorted(holds) + list(drop_holds), "set_json": text, "message": message, "created": time.time(),
         "deadline": time.time() + deadline})
     ctx.progress("publishing", msg=f"landing {landing}: waiting for wb land to publish (lock set held)")
     ctx.log.info(f"landing {landing} prepared: {subject}")
