@@ -1,21 +1,32 @@
 """``wb deploy``: brings a Workbench commit into service on this machine, daemon and host runner together.
 
-    wb deploy                       test, build, drain, restart both, check both run the commit, record it
+    wb deploy                       gate, release, image if its inputs changed, drain, restart both, check, record
+    wb deploy --commit <sha>        the same for another commit (a clean export: the checkout is never switched);
+                                    wb deploy --commit <previous> is the undo
     wb deploy --wait 20m            wait longer for running jobs to end (default 10m)
     wb deploy --now                 cancel what still runs after the wait, listing it first
-    wb deploy --override "<why>"    skip the test gate (a broken Workbench must be able to ship its own fix)
+    wb deploy --override "<why>"    skip the gate (a broken Workbench must be able to ship its own fix)
 
-The gate is the test suite of the checkout's tree, run on this machine once per tree; a pass is kept in the
-machine's deploy record, so deploying a tree that already passed runs nothing. While draining, no new root job
-starts; queued jobs stay queued and run after the restart, and nothing running is cancelled unless --now says so.
+The gate has two parts, both recorded in the release's RELEASE.json. The container pass: CI's records must show the
+commit's tree passed the checks its project.toml requires (``wb check`` at that commit runs them). The host suite:
+tests/run_all.py on this machine, once per tree; a pass is kept in the machine's deploy record, so a tree that
+already passed runs nothing.
+
+The container imports Workbench from a copy of the release in its state volume (image/code.sh), so the image is
+built only when its own inputs changed (``compose.image_inputs``, compared with the digest the image is labelled
+with); a Python-only deploy is a restart. While draining, no new root job starts; queued jobs stay queued and run
+after the restart, and nothing running is cancelled unless --now says so.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -24,6 +35,7 @@ from . import config as wbconfig
 from .client import Client, WbError
 
 TASK = "Workbench host runner"
+IMAGE = "wb-core:dev"
 
 
 def _say(text: str):
@@ -59,6 +71,138 @@ def _git(root: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=True).stdout.strip()
 
 
+# -- what is deployed -----------------------------------------------------------------------------------------------
+def target(root: Path, commit: str | None) -> dict:
+    """The commit to deploy: ``commit`` resolved in the checkout's repository, else the checkout's HEAD (``-dirty``
+    when tracked files differ from it). {commit, sha, tree, head}: head is True for the checkout's own HEAD."""
+    if commit:
+        done = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "-q", f"{commit}^{{commit}}"],
+                              capture_output=True, text=True)
+        if done.returncode != 0 or not done.stdout.strip():
+            raise ValueError(f"{commit} is not a commit in {root}'s repository (fetch it first)")
+        sha = done.stdout.strip()
+        return {"commit": sha, "sha": sha, "tree": _git(root, "rev-parse", f"{sha}^{{tree}}"), "head": False}
+    from wb_core.identity import source_commit
+    found = source_commit(root) or ""
+    sha = found.split("-")[0]
+    if not sha:
+        raise ValueError(f"{root} has no commit")
+    return {"commit": found, "sha": sha, "tree": _git(root, "rev-parse", f"{sha}^{{tree}}"), "head": True}
+
+
+# -- the gate -------------------------------------------------------------------------------------------------------
+def container_pass(config, root: Path, sha: str) -> dict:
+    """What CI's records say about ``sha``'s tree, read on the host with no daemon: {passed, project, required,
+    runs, reason}. ``runs`` names the recorded runs of that tree that passed every required check."""
+    from .workspace import Workspace, WorkspaceError
+    answer = {"passed": False, "project": None, "required": [], "runs": [], "reason": None}
+    try:
+        workspace = Workspace(config)
+        project = workspace.find(root)
+        if project is None:
+            answer["reason"] = (f"{root} is not a registered project, so CI keeps no record of its trees; register "
+                                "its repository under [modules.ci.projects]")
+            return answer
+        answer["project"] = project.name
+        actions = workspace.engine()
+        with tempfile.TemporaryDirectory(prefix="wb-deploy-") as scratch:
+            jobs = workspace.config_at(project, sha, Path(scratch))
+            if jobs is None:
+                answer["reason"] = f"{sha[:12]} has no {workspace.jobs_name(project)}, so it names no checks"
+                return answer
+            answer["required"] = list(jobs.required())
+            refused = actions.gate_check(jobs, jobs.names[0], [f"refs/heads/deploy {sha} refs/heads/deploy {'0' * 40}"])
+            runs = jobs.runs
+    except (WorkspaceError, OSError, subprocess.SubprocessError) as error:
+        answer["reason"] = f"CI's records could not be read: {error}"
+        return answer
+    except Exception as error:  # the engine's own errors (actions.ToolError): a bad jobs file
+        answer["reason"] = f"the jobs file could not be read: {error}"
+        return answer
+    if refused:
+        answer["reason"] = refused[0]["reason"]
+        return answer
+    answer["passed"] = True
+    tree = _git(root, "rev-parse", f"{sha}^{{tree}}")
+    for summary in sorted(Path(runs).glob("*/summary.json")):
+        try:
+            data = json.loads(summary.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        jobs_passed = {n for n, r in (data.get("jobs") or {}).items() if r.get("status") == "passed"}
+        if tree in (data.get("trees") or {}).values() and set(answer["required"]) <= jobs_passed:
+            answer["runs"].append(summary.parent.name)
+    return answer
+
+
+def _remove(folder: Path):
+    def writable(function, path, _):
+        os.chmod(path, stat.S_IWRITE)
+        function(path)
+    shutil.rmtree(folder, onerror=writable)
+
+
+def host_suite(root: Path, sha: str, head: bool) -> dict:
+    """Runs tests/run_all.py on this machine: in the checkout for its own HEAD, else in a shared clone at ``sha``
+    (its own folder, removed after), so the checkout's branch and files never change."""
+    started = time.time()
+    if head:
+        done = subprocess.run([sys.executable, "-u", str(root / "tests" / "run_all.py")], cwd=root)
+    else:
+        scratch = Path(tempfile.mkdtemp(prefix="wb-deploy-suite-"))
+        try:
+            clone = scratch / "workbench"
+            subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", str(root), str(clone)], check=True)
+            subprocess.run(["git", "-C", str(clone), "-c", "core.autocrlf=false", "checkout", "-q", "--detach", sha],
+                           check=True)
+            done = subprocess.run([sys.executable, "-u", str(clone / "tests" / "run_all.py")], cwd=clone)
+        finally:
+            _remove(scratch)
+    return {"passed": done.returncode == 0, "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "seconds": round(time.time() - started)}
+
+
+def gate(config, root: Path, deployed: dict, records: dict, override: str | None) -> tuple[bool, dict]:
+    """Both parts of the gate for ``deployed``: (deployable, {ci, tests}). With an override, nothing runs."""
+    tree = deployed["tree"]
+    ci = container_pass(config, root, deployed["sha"])
+    if override:
+        _say(f"the gate is skipped: {override}")
+        return True, {"ci": ci, "tests": records["tested"].get(tree)}
+    if not ci["passed"]:
+        _say(f"the container pass is missing for tree {tree[:12]}: {ci['reason']}; run `wb check` in a worktree at "
+             f"{deployed['sha'][:12]}, then deploy again (or deploy with --override)")
+        return False, {"ci": ci, "tests": records["tested"].get(tree)}
+    _say(f"tree {tree[:12]} passed {', '.join(ci['required']) or 'its checks'} in the container"
+         + (f" (run {ci['runs'][-1]})" if ci["runs"] else ""))
+    tested = records["tested"].get(tree)
+    if tested and tested.get("passed"):
+        _say(f"tree {tree[:12]} passed the host suite at {tested['at']}")
+        return True, {"ci": ci, "tests": tested}
+    _say(f"running the host suite on tree {tree[:12]} (about 15 minutes; --override skips it)")
+    tested = host_suite(root, deployed["sha"], deployed["head"])
+    records["tested"][tree] = tested
+    _save(config, records)
+    if not tested["passed"]:
+        _say("the host suite failed, so nothing was deployed; fix it, or deploy with --override")
+        return False, {"ci": ci, "tests": tested}
+    return True, {"ci": ci, "tests": tested}
+
+
+# -- the image ------------------------------------------------------------------------------------------------------
+def image_step(release: Path, tools: list[str], tag: str = IMAGE) -> dict:
+    """Builds the image from the release only when its inputs changed: {digest, built, reason, ok}."""
+    digest = compose.inputs_digest(release, tools)
+    reason = compose.build_reason(tag, digest, compose.image_label(tag))
+    if reason is None:
+        _say(f"the image's inputs are unchanged ({digest[:12]}): no image build")
+        return {"digest": digest, "built": False, "reason": None, "ok": True}
+    _say(f"building the image: {reason}")
+    ok = compose.build(tag, tools, root=release) == 0
+    return {"digest": digest, "built": True, "reason": reason, "ok": ok}
+
+
+# -- the processes --------------------------------------------------------------------------------------------------
 def _restart_host_runner() -> str:
     if os.name != "nt":
         return "not Windows: restart the host runner with `wb host serve` where it runs"
@@ -79,8 +223,49 @@ def _task_script() -> str | None:
     return done.stdout.strip().strip('"') or None
 
 
+def _point_hooks(wanted: str):
+    if subprocess.run(["git", "config", "--global", "--get", "wb.cli"], capture_output=True,
+                      text=True).stdout.strip() != wanted:
+        subprocess.run(["git", "config", "--global", "wb.cli", wanted], check=True)
+        _say(f"the hooks now run the release in service: git config --global wb.cli = {wanted}")
+
+
 def _running(client: Client) -> list:
     return [j for j in client.jobs(state="running", limit=200)]
+
+
+def drain(client: Client, wait: str, now: bool) -> bool:
+    """Holds new root jobs and waits for running ones; False (and the drain lifted) when some still run without
+    --now."""
+    try:
+        client.request("POST", "/v1/drain", {"on": True})
+    except WbError as error:
+        if error.status == 404:  # a daemon from before drains: it cannot hold new jobs, but it can list them
+            _say("the running daemon has no drain; it is restarted only when nothing runs (or with --now)")
+        else:
+            _say(f"the daemon does not answer ({error}); starting it fresh")
+            return True
+    deadline = time.time() + _duration(wait)
+    running = _running(client)
+    if running:
+        _say(f"waiting up to {wait} for {len(running)} running job(s): "
+             + ", ".join(f"{j['job']} {j['command']}" for j in running))
+    while running and time.time() < deadline:
+        time.sleep(3)
+        running = _running(client)
+    if running:
+        if not now:
+            client.request("POST", "/v1/drain", {"on": False})
+            _say("still running, so nothing was deployed: " + ", ".join(f"{j['job']} {j['command']}" for j in running)
+                 + "; deploy later, wait longer with --wait, or cancel them with --now")
+            return False
+        for job in running:
+            _say(f"cancelling {job['job']} {job['command']}")
+            client.job(job["job"]).cancel()
+        end = time.time() + 180
+        while _running(client) and time.time() < end:
+            time.sleep(2)
+    return True
 
 
 def main(args) -> int:
@@ -92,95 +277,57 @@ def main(args) -> int:
         _say(f"{root} is a release, not a checkout; run wb deploy from the Workbench checkout to deploy its commit")
         return 2
     config = wbconfig.load()
-    from wb_core.identity import short, source_commit
-    commit = source_commit(root)
-    tree = _git(root, "rev-parse", "HEAD^{tree}")
+    from wb_core.identity import short
+    try:
+        deployed = target(root, getattr(args, "commit", None))
+    except (ValueError, subprocess.CalledProcessError) as error:
+        _say(str(error))
+        return 2
+    commit, tree = deployed["commit"], deployed["tree"]
     records = _records(config)
-    _say(f"deploying {short(commit)} from {root}")
+    _say(f"deploying {short(commit)} from {root}" + ("" if deployed["head"] else " (an export; the checkout is not "
+                                                                                  "switched)"))
 
     # 1. The gate.
     override = args.override
-    if commit and commit.endswith("-dirty") and not override:
-        _say("the checkout has uncommitted changes to tracked files; commit them, or deploy with --override")
+    if commit.endswith("-dirty") and not override:
+        _say("the checkout has uncommitted changes to tracked files; commit them, deploy a commit with --commit, or "
+             "deploy with --override")
         return 2
-    tested = records["tested"].get(tree)
-    if override:
-        _say(f"the test gate is skipped: {override}")
-    elif tested and tested.get("passed"):
-        _say(f"tree {tree[:12]} passed the suite at {tested['at']}")
-    else:
-        _say(f"running the suite on tree {tree[:12]} (about 15 minutes; --override skips it)")
-        started = time.time()
-        done = subprocess.run([sys.executable, "-u", str(root / "tests" / "run_all.py")], cwd=root)
-        records["tested"][tree] = {"passed": done.returncode == 0, "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                                   "seconds": round(time.time() - started)}
-        _save(config, records)
-        if done.returncode != 0:
-            _say("the suite failed, so nothing was deployed; fix it, or deploy with --override")
-            return 1
+    deployable, results = gate(config, root, deployed, records, override)
+    if not deployable:
+        return 1
 
-    # 2. The image (Docker reuses every layer the change did not touch).
-    _say("building the image")
+    # 2. The release: an immutable copy of the commit, which the hooks, the CLI, the host runner and (copied into
+    # its state volume) the daemon run.
+    from . import releases
     tools = [str(t) for t in (config.get("core.image.tools", []) or [])]
-    if compose.build("wb-core:dev", tools) != 0:
+    sha = deployed["sha"]
+    release = releases.make(config, root, sha, {"tree": tree, "override": override, "tests": results["tests"],
+                                                "ci": results["ci"]})
+    _say(f"release {release}")
+
+    # 3. The image, only when its inputs changed.
+    image = image_step(release, tools)
+    if not image["ok"]:
         _say("the image did not build; nothing was deployed")
         return 3
 
-    # The release: an immutable copy of the commit, which the hooks, the CLI and the host runner run.
-    from . import releases
-    release = releases.make(config, root, commit.split("-")[0], {"tree": tree, "override": override,
-                                                                 "tests": records["tested"].get(tree)})
-    _say(f"release {release}")
-
-    # 3. The drain.
+    # 4. The drain.
     client = Client()
-    try:
-        client.request("POST", "/v1/drain", {"on": True})
-        drained = True
-    except WbError as error:
-        if error.status == 404:  # a daemon from before drains: it cannot hold new jobs, but it can list them
-            _say("the running daemon has no drain; it is restarted only when nothing runs (or with --now)")
-            drained = True
-        else:
-            _say(f"the daemon does not answer ({error}); starting it fresh")
-            drained = False
-    if drained:
-        deadline = time.time() + _duration(args.wait)
-        running = _running(client)
-        if running:
-            _say(f"waiting up to {args.wait} for {len(running)} running job(s): "
-                 + ", ".join(f"{j['job']} {j['command']}" for j in running))
-        while running and time.time() < deadline:
-            time.sleep(3)
-            running = _running(client)
-        if running:
-            if not args.now:
-                client.request("POST", "/v1/drain", {"on": False})
-                _say("still running, so nothing was deployed: "
-                     + ", ".join(f"{j['job']} {j['command']}" for j in running)
-                     + "; deploy later, wait longer with --wait, or cancel them with --now")
-                return 1
-            for job in running:
-                _say(f"cancelling {job['job']} {job['command']}")
-                client.job(job["job"]).cancel()
-            end = time.time() + 180
-            while _running(client) and time.time() < end:
-                time.sleep(2)
+    if not drain(client, args.wait, args.now):
+        return 1
 
-    # 4. Both processes, together.
-    _say("restarting the daemon")
+    # 5. Both processes, together.
+    _say("restarting the daemon on the release")
     compose.down(config)
     try:
-        health = compose.up(config)
+        health = compose.up(config, release=release)
     except (compose.ComposeError, wbconfig.ConfigError) as error:
         _say(f"the daemon did not come back: {error}")
         return 3
     before = releases.point(config, release)
-    wanted = releases.cli_command(config)
-    if subprocess.run(["git", "config", "--global", "--get", "wb.cli"], capture_output=True,
-                      text=True).stdout.strip() != wanted:
-        subprocess.run(["git", "config", "--global", "wb.cli", wanted], check=True)
-        _say(f"the hooks now run the release in service: git config --global wb.cli = {wanted}")
+    _point_hooks(releases.cli_command(config))
     _say(f"current release: {release.name}" + (f" (was {before.name})" if before and before != release else ""))
     task = _task_script()
     if task is not None and not task.startswith(str(releases.current(config))):
@@ -193,21 +340,23 @@ def main(args) -> int:
         try:
             health = Client().health()
             host = health.get("host") or {}
-            if host.get("commit") == commit or os.name != "nt":
+            if host.get("commit") == sha or os.name != "nt":
                 break
         except WbError:
             continue
 
-    # 5. Check and record.
+    # 6. Check and record: a release is the clean commit, whatever the checkout held.
     problems = []
-    if health.get("commit") != commit:
+    if health.get("commit") != sha:
         problems.append(f"the daemon runs {short(health.get('commit'))}")
-    if os.name == "nt" and (host or {}).get("commit") != commit:
+    if os.name == "nt" and (host or {}).get("commit") != sha:
         problems.append(f"the host runner runs {short((host or {}).get('commit'))}")
     previous = (records["releases"] or [{}])[-1].get("commit")
     records["releases"].append({"commit": commit, "tree": tree, "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                                "override": override, "previous": previous,
-                                "tests": records["tested"].get(tree), "problems": problems})
+                                "override": override, "previous": previous, "tests": results["tests"],
+                                "ci": {k: results["ci"].get(k) for k in ("passed", "runs", "reason")},
+                                "image": {k: image[k] for k in ("digest", "built", "reason")},
+                                "problems": problems})
     records["releases"] = records["releases"][-100:]
     _save(config, records)  # releases past this one and the one before it are wb gc's (class releases)
     if problems:

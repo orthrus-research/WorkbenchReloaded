@@ -377,5 +377,183 @@ class ComposeCode(unittest.TestCase):
         self.assertFalse(any(compose.RELEASE_MOUNT in v for v in self.service(None)["volumes"]))
 
 
+# -- wb deploy ------------------------------------------------------------------------------------------------------
+class ContainerPass(unittest.TestCase):
+    """The container half of the gate, read from CI's records on the host."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.base = Path(self.folder.name)
+        self.repo = workbench_repo(self.base)
+        self.sha = git(self.repo, "rev-parse", "HEAD")
+        self.records = self.base / "records"
+        values = {"modules": {"ci": {"projects_root": str(self.base), "records": str(self.records),
+                                     "projects": {"workbench": {"repo": "wb"}}}}}
+        self.config = Config(values, self.base / "config")
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def test_a_tree_ci_has_not_passed_is_named_and_a_passed_one_names_its_run(self):
+        from wb import deploy
+        answer = deploy.container_pass(self.config, self.repo, self.sha)
+        self.assertFalse(answer["passed"])
+        self.assertIn("has not passed check", answer["reason"])
+        run = self.records / "workbench" / "run-1"
+        run.mkdir(parents=True)
+        (run / "summary.json").write_text(json.dumps({
+            "trees": {"project": git(self.repo, "rev-parse", "HEAD^{tree}")}, "treesChanged": False,
+            "jobs": {"check": {"status": "passed"}}}), encoding="utf-8")
+        answer = deploy.container_pass(self.config, self.repo, self.sha)
+        self.assertEqual((answer["passed"], answer["project"], answer["required"], answer["runs"]),
+                         (True, "workbench", ["check"], ["run-1"]))
+
+    def test_an_unregistered_checkout_has_no_records(self):
+        from wb import deploy
+        answer = deploy.container_pass(Config({}, self.base / "config"), self.repo, self.sha)
+        self.assertFalse(answer["passed"])
+        self.assertIn("not a registered project", answer["reason"])
+
+
+class Deploy(unittest.TestCase):
+    """wb deploy's decisions, with docker, the daemon and the host runner replaced: what is gated, what is built,
+    what is started, and that the checkout never moves."""
+
+    def setUp(self):
+        from unittest import mock
+        from wb import compose, deploy
+        self.folder = tempfile.TemporaryDirectory()
+        base = Path(self.folder.name)
+        self.repo = workbench_repo(base)
+        (base / "config").mkdir()
+        (base / "config" / "workbench.toml").write_text("", encoding="utf-8")
+        self.env = mock.patch.dict(os.environ, {"WB_CONFIG": str(base / "config"),
+                                                "WB_RELEASES": str(base / "releases")})
+        self.env.start()
+        self.label = None
+        self.built, self.started, self.suites = [], [], []
+        self.passed = True
+
+        def build(tag, tools=None, root=None):
+            self.label = compose.inputs_digest(root, tools)
+            self.built.append(root)
+            return 0
+
+        def up(config, wait=90, release=None):
+            self.started.append(release)
+            self.serving = releases.info(release)["commit"]
+            return {"commit": self.serving}
+
+        def suite(root, sha, head):
+            self.suites.append((sha, head))
+            return {"passed": True, "at": "now", "seconds": 0}
+
+        client = mock.MagicMock()
+        client.jobs.return_value = []
+        client.health.side_effect = lambda: {"commit": self.serving, "host": {"commit": self.serving}}
+        self.patches = [
+            mock.patch.object(compose, "repo_root", return_value=self.repo),
+            mock.patch.object(compose, "image_label", side_effect=lambda tag: self.label),
+            mock.patch.object(compose, "build", side_effect=build),
+            mock.patch.object(compose, "up", side_effect=up),
+            mock.patch.object(compose, "down"),
+            mock.patch.object(deploy, "container_pass", side_effect=lambda config, root, sha: {
+                "passed": self.passed, "project": "workbench", "required": ["check"],
+                "runs": ["run-1"] if self.passed else [], "reason": None if self.passed else "has not passed check"}),
+            mock.patch.object(deploy, "host_suite", side_effect=suite),
+            mock.patch.object(deploy, "Client", return_value=client),
+            mock.patch.object(deploy, "_restart_host_runner", return_value="restarted"),
+            mock.patch.object(deploy, "_task_script", return_value=None),
+            mock.patch.object(deploy, "_point_hooks"),
+            mock.patch.object(deploy.time, "sleep"),
+        ]
+        for patch in self.patches:
+            patch.start()
+        from wb import config as wbconfig
+        self.config = wbconfig.load(base / "config")
+
+    def tearDown(self):
+        for patch in reversed(self.patches):
+            patch.stop()
+        link = releases.current(self.config)
+        if link.exists() or link.is_symlink():
+            os.rmdir(link) if os.name == "nt" else link.unlink()
+        self.env.stop()
+        self.folder.cleanup()
+
+    def deploy(self, commit=None, override=None) -> int:
+        import argparse
+        import contextlib
+        import io
+        from wb import deploy
+        with contextlib.redirect_stderr(io.StringIO()) as said:
+            code = deploy.main(argparse.Namespace(commit=commit, override=override, wait="1s", now=False))
+        self.said = said.getvalue()
+        return code
+
+    def test_a_python_only_deploy_builds_no_image_and_an_image_change_does(self):
+        first = git(self.repo, "rev-parse", "HEAD")
+        self.assertEqual(self.deploy(), 0, self.said)
+        self.assertEqual(self.built, [releases.root(self.config) / first[:12]])  # no image yet: built, from the release
+        python_only = change(self.repo, "sdk/python/wb/cli.py", "# two\n")
+        self.assertEqual(self.deploy(), 0, self.said)
+        self.assertEqual(len(self.built), 1, self.said)  # a restart on the new release, no build
+        self.assertIn("no image build", self.said)
+        self.assertEqual(self.started[-1], releases.root(self.config) / python_only[:12])
+        self.assertEqual(releases.serving(self.config).name, python_only[:12])
+        record = releases.info(releases.serving(self.config))
+        self.assertEqual((record["ci"]["passed"], record["ci"]["runs"], record["tests"]["passed"]),
+                         (True, ["run-1"], True))  # both halves of the gate, in RELEASE.json
+        image_change = change(self.repo, "image/Dockerfile", DOCKERFILE + "# a new layer\n")
+        self.assertEqual(self.deploy(), 0, self.said)
+        self.assertEqual(self.built[-1], releases.root(self.config) / image_change[:12])
+        records = json.loads((Path(self.config.folder) / "run" / "deploys.json").read_text(encoding="utf-8"))
+        self.assertEqual([r["image"]["built"] for r in records["releases"]], [True, False, True])
+
+    def test_a_tree_without_a_container_pass_is_not_deployed(self):
+        self.passed = False
+        self.assertEqual(self.deploy(), 1)
+        self.assertIn("container pass is missing", self.said)
+        self.assertEqual((self.built, self.started, self.suites), ([], [], []))
+        self.assertIsNone(releases.serving(self.config))
+
+    def test_an_override_skips_the_gate_and_is_recorded(self):
+        self.passed = False
+        self.assertEqual(self.deploy(override="fixing the gate itself"), 0, self.said)
+        self.assertEqual(self.suites, [])
+        record = releases.info(releases.serving(self.config))
+        self.assertEqual(record["override"], "fixing the gate itself")
+        self.assertFalse(record["ci"]["passed"])
+
+    def test_commit_deploys_an_export_and_never_switches_the_checkout(self):
+        old = git(self.repo, "rev-parse", "HEAD")
+        head = change(self.repo, "sdk/python/wb/cli.py", "# two\n")
+        (self.repo / "sdk" / "python" / "wb" / "cli.py").write_text("# uncommitted\n", encoding="utf-8")
+        status = git(self.repo, "status", "--porcelain")
+        self.assertEqual(self.deploy(commit=old[:8]), 0, self.said)  # a dirty checkout does not stop --commit
+        self.assertEqual((git(self.repo, "rev-parse", "HEAD"), git(self.repo, "branch", "--show-current")),
+                         (head, "main"))
+        self.assertEqual(git(self.repo, "status", "--porcelain"), status)
+        release = releases.serving(self.config)
+        self.assertEqual(release.name, old[:12])
+        self.assertEqual((release / "sdk" / "python" / "wb" / "cli.py").read_text(encoding="utf-8"), "# one\n")
+        self.assertEqual(self.suites, [(old, False)])  # the host suite ran on the export, not the checkout
+        self.assertEqual(self.deploy(commit="no-such-commit"), 2)
+        self.assertIn("is not a commit", self.said)
+
+    def test_the_host_suite_of_a_commit_runs_in_a_clone_of_it(self):
+        from wb import deploy
+        self.patches[6].stop()  # the real host suite
+        try:
+            passing = git(self.repo, "rev-parse", "HEAD")
+            failing = change(self.repo, "tests/run_all.py", "import sys\nsys.exit(1)\n")
+            self.assertTrue(deploy.host_suite(self.repo, passing, head=False)["passed"])
+            self.assertFalse(deploy.host_suite(self.repo, failing, head=False)["passed"])
+            self.assertEqual(git(self.repo, "rev-parse", "HEAD"), failing)
+            self.assertEqual(git(self.repo, "status", "--porcelain"), "")
+        finally:
+            self.patches[6].start()
+
+
 if __name__ == "__main__":
     unittest.main()

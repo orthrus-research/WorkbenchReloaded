@@ -11,6 +11,7 @@
     wb host serve | install | status
     wb gpu [run [--note T] [--limit D] [--detach] [--quiet] -- CMD | leave LANE | stuck]
     wb play [PROJECT][@REF|@set][:LAUNCH] [--from F] [--name N] [--tour F] [--measure] [--debug S] ...
+    wb deploy [--commit SHA] [--wait 10m | --now] [--override REASON]
 
 Exit codes: 0 ok, 1 finding, 2 usage, 3 environment, 4 cancelled or interrupted, 5 still pending,
 6 awaiting approval (the quote and a ready-made prompt are printed; with --json, as JSON).
@@ -598,10 +599,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="build against this project's files at a ref or worktree instead of its line (no pass recorded)")
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--timeout")
-    p = add("deploy", cmd_deploy, "test, build, drain, and restart the daemon and the host runner on this checkout")
+    p = add("deploy", cmd_deploy, "gate, release, drain, and restart the daemon and the host runner on this "
+                                  "checkout's commit (the image is built only when its inputs changed)")
+    p.add_argument("--commit", metavar="SHA", help="deploy this commit instead of HEAD, from a clean export (the "
+                                                   "undo: --commit <the previous release>)")
     p.add_argument("--wait", default="10m", help="how long running jobs may take to end (default 10m)")
     p.add_argument("--now", action="store_true", help="cancel what still runs after the wait, listing it first")
-    p.add_argument("--override", metavar="REASON", help="skip the test gate; the reason is recorded")
+    p.add_argument("--override", metavar="REASON", help="skip the gate (the container pass and the host suite); "
+                                                         "the reason is recorded in RELEASE.json")
     p = add("work", cmd_work, "worktrees with a lifecycle: the view, start, add, adopt, finish")
     p.add_argument("action", nargs="?", choices=["view", "start", "add", "adopt", "finish", "sync"])
     p.add_argument("names", nargs="*")
