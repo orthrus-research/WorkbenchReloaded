@@ -73,7 +73,8 @@
   last pure, with inputs), all four gating a push; `tests/run_all.py --part` runs one.
 - `lab.resolve`: a project's `[launch.<name>]` resolved once into launch.json, every member by SHA-256 from the
   worktree's set revision and the project itself from the Store; two builds of one mod id are refused. The
-  platform's Cleanroom files go into its `runtime.files`.
+  platform's Cleanroom files go into its `runtime.files`. Workbench keeps no copy of any base: a base project whose
+  commit has no `[launch.<name>]`, and a launch file that names no base, are refused (`lab.build base=` is gone).
 - `lab.build`: an instance built from a launch file alone (runtime, content, base, configure hook, receipt), one
   template per launch file hard-linked into each instance, with `instance.json` naming every file by SHA-256 under
   `{instance}`, `{cache}` and `{jdk:N}` and the command lines that start it. The server's port is a session's

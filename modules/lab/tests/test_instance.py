@@ -21,7 +21,7 @@ REPO = HERE.parents[2]
 sys.path[:0] = [str(REPO / "core"), str(REPO / "sdk" / "python"), str(REPO / "modules" / "lab")]
 
 from wb_core.module import Context, EnvironmentProblem, ParamError  # noqa: E402
-from wb_lab import assemble, bases, instance  # noqa: E402
+from wb_lab import assemble, instance  # noqa: E402
 
 VERSION = "0.7.14-alpha"
 BUILD = "26.0.2.1+1"
@@ -62,6 +62,42 @@ LIBRARY = jar(("org/example/Lib.class", b"lib"))
 NATIVE = jar(("game.dll", b"a native"), ("libgame.so", b"a native"))
 OBJECT = b"a texture"
 INDEX = json.dumps({"objects": {"textures/a.png": {"hash": sha1(OBJECT), "size": len(OBJECT)}}}).encode()
+
+
+# A base as a base project's [launch.standalone] carries it (Cubature's standalone world), the installer this Python.
+STANDALONE = {
+    "summary": "a local creative server on 127.0.0.1 and one offline client",
+    "runtime": "cleanroom",
+    "player": "CubicLab",
+    "installer": [sys.executable, "{installer}", "--dir", "{target}", "--version", "{version}"],
+    "memory": "8G",
+    "jvm_profile": {"name": "zgc-fixed", "collector": "ZGC", "initialHeapMiB": 8192, "maxHeapMiB": 8192,
+                    "arguments": ["-Xms8192M", "-Xmx8G", "-XX:+UseZGC"]},
+    "jvm_args_file": "# Owned lab profile: same heap and collector on server and client.\n",
+    "files": {
+        "both": {"config/forge_early.cfg": "general {\n    B:DISABLE_PATCH_MOD_CHECK=true\n}\n",
+                 "config/cubicchunks.cfg": "general {\n    I:verticalCubeLoadDistance=12\n}\n"},
+        "server": {"server.properties": "server-ip=127.0.0.1\nserver-port={port}\nlevel-name=world\n"
+                                        "level-type=DEFAULT\nlevel-seed={seed}\nview-distance=12\n",
+                   "ops.json": '[{"uuid": "{player_uuid}", "name": "{player}", "level": 4}]\n'},
+        "client": {"options.txt": "renderDistance:12\nmaxFps:120\n"},
+    },
+    "views": {"horizontal": ["server/server.properties:view-distance"],
+              "vertical": ["server/config/cubicchunks.cfg:I:verticalCubeLoadDistance",
+                           "client/config/cubicchunks.cfg:I:verticalCubeLoadDistance"],
+              "client_render": ["client/options.txt:renderDistance"]},
+    "eula": "eula=true\n",
+    "server": ["{java}", "{jvm}", "{profile}", "-Djava.io.tmpdir={game}/java-tmp", "-Dfile.encoding=UTF-8",
+               "-Djava.awt.headless=true", "@user_jvm_args.txt",
+               "@{game}/libraries/com/cleanroommc/cleanroom/{version}/{args_file}", "nogui"],
+    "client": ["{java}", "{jvm}", "{profile}", "-Djava.io.tmpdir={game}/java-tmp", "-Dfile.encoding=UTF-8",
+               "--enable-native-access=ALL-UNNAMED", "-Djava.library.path={game}/natives", "-cp", "{classpath}",
+               "{main_class}", "{tweakers}", "--username", "{player}", "--uuid", "{player_uuid}",
+               "--accessToken", "0", "--userType", "legacy", "--versionType", "custom",
+               "--version", "Cleanroom-{version}", "--gameDir", "{game}", "--assetsDir", "{assets}",
+               "--assetIndex", "{asset_index}", "--width", "1280", "--height", "720",
+               "--server", "127.0.0.1", "--port", "{port}"],
+}
 
 
 class Fixture(unittest.TestCase):
@@ -125,13 +161,12 @@ class Fixture(unittest.TestCase):
                            "runtime": {"kind": "cleanroom", "version": VERSION, "java": 26, "jdk": BUILD,
                                        "files": self.runtime},
                            "members": members, "jvm": {"client": ["-Ddraw.mode=own"], "server": []},
-                           "collect": [], "failures": [], "params": {"seed": 8675309}}
+                           "collect": [], "failures": [], "params": {"seed": 8675309},
+                           # the base as lab.resolve records it: the base project's table, with the fake installer
+                           "base": {"name": "test:standalone", "project": "test", "commit": "d" * 40,
+                                    "chosen": "line", "source": "project.toml",
+                                    "definition": json.loads(json.dumps(STANDALONE)), "overlay": None}}
         self.launch = self.write_launch(self.launch_doc)
-        # the base, with the fake installer run by this Python
-        base = json.loads(json.dumps(bases.INTERIM_BASES["cubature:standalone"]))
-        base["installer"] = [sys.executable, "{installer}", "--dir", "{target}", "--version", "{version}"]
-        bases.INTERIM_BASES["test:standalone"] = base
-        self.addCleanup(bases.INTERIM_BASES.pop, "test:standalone", None)
         self.config = {"instances": str(self.root / "instances"), "runtime_cache": str(self.cache),
                        "runtime_hosts": ["example.com"], "metadata": ""}
         self.lab = {"trusted": ["game"]}  # [lab] of the machine: the launch's project may run its hook
@@ -152,7 +187,6 @@ class Fixture(unittest.TestCase):
         ctx = Context({"job": "direct", "command": "lab.build", "module": "lab", "work": str(self.root / "work"),
                        "out": str(self.root / "out" / name), "module_config": self.config, "lab": self.lab},
                       lambda event: None)
-        params.setdefault("base", "test:standalone")
         result = instance.build(ctx, str(launch or self.launch), name, **params)
         return ctx, result
 
@@ -379,7 +413,7 @@ class ProjectBase(Fixture):
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "-m", "standalone")
         self.commit = git(self.repo, "rev-parse", "HEAD")
-        definition = {k: v for k, v in json.loads(json.dumps(bases.INTERIM_BASES["test:standalone"])).items()
+        definition = {k: v for k, v in json.loads(json.dumps(STANDALONE)).items()
                       if k != "files"}
         definition.update(overlay="standalone", player="Lab", ready="Ready now")
         self.launch_doc["base"] = {"name": "game:standalone", "project": "game", "commit": self.commit,
@@ -394,10 +428,6 @@ class ProjectBase(Fixture):
         patch = mock.patch.object(instance.Machine, "repository", lambda machine, project: self.repo)
         patch.start()
         self.addCleanup(patch.stop)
-
-    def run_build(self, name: str = "one", launch: Path | None = None, **params):
-        params.setdefault("base", "")
-        return super().run_build(name, launch, **params)
 
     def test_the_base_and_its_overlay_come_from_the_launch_file(self):
         ctx, result = self.run_build()
@@ -492,20 +522,13 @@ class ProjectBase(Fixture):
         ctx, _ = self.run_build(params={"scale": 2})  # an int is a float too
         self.assertEqual(self.receipt()["configure"]["record"], {"scale": 2.0})
 
-    def test_a_launch_file_without_a_base_takes_the_interim_copy_and_says_so(self):
+    def test_a_launch_file_without_a_base_is_refused_with_the_fix(self):
         doc = json.loads(json.dumps(self.launch_doc))
         for key in ("base", "configure", "param_types"):
             del doc[key]
-        events = []
-        ctx = Context({"job": "direct", "command": "lab.build", "module": "lab", "work": str(self.root / "work"),
-                       "out": str(self.root / "out" / "old"), "module_config": self.config, "lab": self.lab},
-                      events.append)
-        with mock.patch.dict(bases.INTERIM_BASES, {"cubature:standalone": bases.INTERIM_BASES["test:standalone"]}):
-            instance.build(ctx, str(self.write_launch(doc, "old.json")), "old")
-        warnings = [e["msg"] for e in events if e.get("kind") == "log" and e.get("level") == "WARNING"]
-        self.assertTrue(any(w.startswith("INTERIM BASE: the launch file names no base") for w in warnings), warnings)
-        self.assertEqual(self.receipt("old")["base_source"], {"name": "cubature:standalone", "source": "interim"})
-
+        with self.assertRaisesRegex(ParamError, r"names no base .* resolve it again"):
+            self.run_build(name="old", launch=self.write_launch(doc, "old.json"))
+        self.assertFalse((self.root / "instances" / "old").exists())
 
 if __name__ == "__main__":
     unittest.main()

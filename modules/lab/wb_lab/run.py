@@ -68,7 +68,6 @@ from . import desktop as desktops
 from . import instance as instances
 from . import machine as machines
 from . import process as processes
-from .bases import INTERIM_BASES
 from .store import MARKER, Store
 
 SCHEMA = "wb.lab.session/1"
@@ -392,9 +391,8 @@ class Session:
             folder = self._fresh_copy(root, folder, receipt)
             receipt = json.loads((folder / instances.RECEIPT).read_text(encoding="utf-8"))
         self.instance, self.receipt, self.launch = folder, receipt, launch
-        # The base's view keys and ready line as the receipt carries them; a receipt from before it did, the interim's.
-        session_part = receipt.get("session") or {}
-        self.base = session_part if "views" in session_part else INTERIM_BASES.get(receipt.get("base") or "", {})
+        # The base's view keys and ready line as the receipt carries them (a receipt from before it did has none).
+        self.base = receipt.get("session") or {}
         ctx.progress("session", msg=f"session {self.id}: {kind} on {folder.name}")
         ctx.log.info(f"session {self.id}  kind {kind}")
         ctx.log.info(f"launch    {launch.get('project')}:{launch.get('launch')} at {str(launch.get('commit'))[:12]} "

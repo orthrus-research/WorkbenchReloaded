@@ -20,8 +20,8 @@ resolves nothing again. It builds in stages:
    (launch.json ``configure``, exported by its blob id; an inherited one is its own project's, which must be
    trusted) or the hook the request names: a Python file whose ``configure(instance, launch, params, placed)`` makes a launched product's own changes. An
    overlay's text files are written with the platform's line ends and ``{port}``, ``{seed}``, ``{player}`` and
-   ``{player_uuid}`` filled in. A launch file that names no base, or a request naming one of ``wb_lab.bases``, takes
-   Workbench's interim copy, with a warning. Workbench names no product; the script is the product's.
+   ``{player_uuid}`` filled in (``wb_lab.bases`` lists them). A launch file that names no base is refused: Workbench
+   keeps no copy of any base, and names no product; the script is the product's.
 4. receipt: ``instance.json`` names every file by SHA-256 with its path relative to ``{instance}``, ``{cache}`` (the
    runtime cache) or ``{jdk:N}`` (the JDK of major N), the launch file's SHA-256, the builder's schema, and the
    server's and client's command lines and working folders with those placeholders.
@@ -62,7 +62,6 @@ from . import assemble
 from . import machine as machines
 from . import process as processes
 from . import resolve as resolver
-from .bases import INTERIM_BASES
 from .store import MARKER, Layout, Store, StoreError, recipe_of, remove_tree
 
 SCHEMA = "wb.lab.instance/1"
@@ -592,34 +591,21 @@ def build_template(ctx: Context, staging: Path, *, data: bytes, doc: dict, base_
     }
 
 
-INTERIM_DEFAULT = "cubature:standalone"  # the base of a launch file resolved before launches named one
-
-
-def base_of(ctx: Context, doc: dict, requested: str) -> tuple[str, dict, list[dict], dict]:
-    """(name, table, overlays, source) of the base an instance starts from: the launch file's, or the interim copy a
-    request names (``wb_lab.bases``); a launch file without one takes the interim copy, with a warning. ``overlays`` are
-    the base's folder and then the product's, each {project, tree, path}."""
+def base_of(ctx: Context, doc: dict) -> tuple[str, dict, list[dict], dict]:
+    """(name, table, overlays, source) of the base an instance starts from: the launch file's, refused when it names
+    none. ``overlays`` are the base's folder and then the product's, each {project, tree, path}."""
     launched = doc.get("base")
     own = doc.get("overlay")
     # A launch that inherits another names every launch's overlay in order (``overlays``), else only its own.
     overlays = list(doc.get("overlays") or ([own] if own else []))
-    if requested:
-        if requested not in INTERIM_BASES:
-            raise ParamError(f"base: {requested!r} is no interim base (known: {', '.join(sorted(INTERIM_BASES))}); "
-                             "leave it empty to build from the launch's base")
-        if launched:
-            ctx.log.warning(f"INTERIM BASE: base={requested} replaces the launch's base {launched['name']} with "
-                            "Workbench's interim copy")
-        return requested, INTERIM_BASES[requested], overlays, {"name": requested, "source": "interim"}
-    if not launched:
-        ctx.log.warning(f"INTERIM BASE: the launch file names no base (it was resolved before launches named one), so "
-                        f"the instance starts from Workbench's interim copy of {INTERIM_DEFAULT}; resolve it again")
-        return INTERIM_DEFAULT, INTERIM_BASES[INTERIM_DEFAULT], overlays, {"name": INTERIM_DEFAULT,
-                                                                             "source": "interim"}
-    if launched.get("source") == "interim":
-        ctx.log.warning(f"INTERIM BASE: {launched['project']} at {str(launched['commit'])[:12]} has no "
-                        f"[launch.{launched['name'].split(':', 1)[1]}], so base {launched['name']} is Workbench's "
-                        "interim copy (wb_lab/bases.py)")
+    if not launched or not isinstance(launched.get("definition"), dict):
+        raise ParamError("the launch file names no base (it was resolved before launches named one); resolve it "
+                         "again (wb run lab.resolve folder=<worktree>, or wb play) on a set whose base project "
+                         "carries its [launch.<name>]")
+    if launched.get("source") == "interim":  # resolved while Workbench kept a copy: the launch file carries it
+        ctx.log.warning(f"base {launched['name']} is the copy this launch file was resolved with, since "
+                        f"{launched['project']} at {str(launched['commit'])[:12]} had no "
+                        f"[launch.{launched['name'].split(':', 1)[1]}]; resolve the launch again")
     if launched.get("overlay"):
         overlays.insert(0, {"project": launched["project"], **launched["overlay"]})
     source = {k: launched.get(k) for k in ("name", "project", "commit", "source")}
@@ -655,7 +641,7 @@ def sourced(sources: Path, item: str, name: str | None = None) -> Path:
     return path
 
 
-def build(ctx: Context, launch: str, name: str, base: str = "", params: dict | None = None,
+def build(ctx: Context, launch: str, name: str, params: dict | None = None,
           eula: bool = False, configure: str | None = None, fresh: bool = False, store: str = "",
           sources: str = ""):
     if not NAME.match(name):
@@ -666,7 +652,7 @@ def build(ctx: Context, launch: str, name: str, base: str = "", params: dict | N
         doc = {**doc, "store": str(Path(store))}
     carried = Path(sources) if sources else None
     runtime_files(doc)  # refused with the fix before anything is made
-    base, base_doc, overlays, base_source = base_of(ctx, doc, base)
+    base, base_doc, overlays, base_source = base_of(ctx, doc)
     project = str(doc.get("project") or "")
     exports = ctx.work / "exports"
     hook, configure_from = (Path(configure) if configure else None), None

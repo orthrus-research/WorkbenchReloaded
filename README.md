@@ -234,9 +234,8 @@ the JVM profile, the view keys and an overlay folder under `launch/`). `lab.reso
 once into `launch.json`: every member by SHA-256 from the worktree's set revision (a line, a hold or a third entry),
 the project itself from the Store by the tree CI built, with the mod ids each declares; the base's table at the
 commit the set names for its project with its overlay folder's tree id, and the product's configure script and
-`launch/` tree at its own commit. A base project whose commit has no such table yet gets Workbench's interim copy
-(`wb_lab/bases.py`), with a warning. A member the set or the Store lacks, or two builds of one mod id, is
-refused before anything is written. Once the set's platform names the runtime's own files
+`launch/` tree at its own commit. A base project whose commit has no such table, a member the set or the Store
+lacks, or two builds of one mod id, is refused before anything is written. Once the set's platform names the runtime's own files
 (`platform.cleanroom.{installer,universal,prism}`), the launch file carries them too, in `runtime.files`.
 
 `lab.build launch=<launch.json> name=<name>` builds an instance from that file and nothing else: the server by the

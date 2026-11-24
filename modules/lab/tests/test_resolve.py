@@ -276,10 +276,10 @@ class Keys(unittest.TestCase):
             with self.subTest(extra=extra), self.assertRaisesRegex(launch.LaunchError, pattern):
                 launch.base_definition({**standalone, **extra}, "base")
 
-    def test_the_interim_base_is_a_base_and_the_tour_keys_are_lab_runs(self):
-        from wb_lab import bases, run
-        for name, table in bases.INTERIM_BASES.items():
-            launch.base_definition(table, name)
+    def test_the_builders_base_is_a_base_and_the_tour_keys_are_lab_runs(self):
+        from test_instance import STANDALONE
+        from wb_lab import run
+        launch.base_definition(STANDALONE, "test:standalone")
         self.assertEqual(set(launch.TOUR_KEYS), set(run.TOUR_DEFAULTS))
 
 
@@ -328,19 +328,13 @@ class Bases(Base):
                                objects=lambda *a: None)
         self.assertEqual((doc["base"]["commit"], doc["base"]["overlay"]), ("7" * 40, None))
 
-    def test_a_base_project_without_the_table_falls_back_to_the_interim_copy_with_a_warning(self):
-        from wb_lab import bases
-        bases.INTERIM_BASES["cube:standalone"] = {"installer": ["x"], "server": ["x"], "client": ["x"]}
-        self.addCleanup(bases.INTERIM_BASES.pop, "cube:standalone", None)
-        warned = []
-        doc = self.run_resolve(table={**self.table, "base": "cube:standalone"}, extras=lambda p, c: None,
-                               objects=lambda *a: None, warn=warned.append)
-        self.assertEqual((doc["base"]["source"], doc["base"]["commit"]), ("interim", "c" * 40))
-        self.assertEqual(doc["base"]["definition"], bases.INTERIM_BASES["cube:standalone"])
-        self.assertRegex(warned[0], r"^INTERIM BASE: cube at cccccccccccc has no \[launch.standalone\]")
-        with self.assertRaisesRegex(launch.LaunchError, r"cube at cccccccccccc has no \[launch.other\]"):
-            self.run_resolve(table={**self.table, "base": "cube:other"}, extras=lambda p, c: None,
-                             objects=lambda *a: None)
+    def test_a_base_project_without_the_table_is_refused(self):
+        for name in ("cube:standalone", "cube:other"):
+            with self.subTest(base=name), self.assertRaisesRegex(
+                    launch.LaunchError, rf"cube at cccccccccccc has no \[launch.{name.split(':')[1]}\], so there is no "
+                                        rf"base {name}"):
+                self.run_resolve(table={**self.table, "base": name}, extras=lambda p, c: None,
+                                 objects=lambda *a: None)
 
     def test_a_missing_overlay_or_script_is_refused(self):
         standalone = {"installer": ["x"], "server": ["x"], "client": ["x"], "overlay": "standalone"}

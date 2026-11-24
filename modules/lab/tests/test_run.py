@@ -162,6 +162,11 @@ class Sessions(unittest.TestCase):
                  "{cache}/libraries/lib.jar": self.cache / "libraries" / "lib.jar"}
         receipt = {
             "schema": instances.SCHEMA, "key": "k" + name, "base": "cubature:standalone", "system": self.system,
+            # what a session reads of the base: its view keys and the server's ready line
+            "session": {"placeholders": ["port"], "server_properties": "{instance}/server/server.properties",
+                        "default_port": 25565, "ready": "",
+                        "views": {"horizontal": ["server/server.properties:view-distance"],
+                                  "client_render": ["client/options.txt:renderDistance"]}},
             "launch": {"sha256": sha256(launch), "file": "launch.json", "project": "game", "launch": "default",
                        "commit": "a" * 40, "members": {"game:mod@both": sha256(self.mod)}},
             "jdk": {"26": {"build": BUILD}}, "player": {"name": "CubicLab", "uuid": "u"},
