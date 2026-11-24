@@ -176,6 +176,20 @@ class Rental(unittest.TestCase):
         armed = next(i for i, line in enumerate(lines) if "kill -TERM 1" in line)
         self.assertEqual([line for line in lines[:armed] if line == "run true"], ["run true"] * 5)
 
+    def test_a_host_that_refuses_the_key_gets_it_again(self):
+        os.environ[fake_vast.SSH_ENV] = ",".join(["denied"] * 5 + ["ok"] * 3)
+        self.addCleanup(os.environ.pop, fake_vast.SSH_ENV, None)
+        job = self.c.submit("vast.rent", {"offer": "777", "bundle": str(self.bundle), "max_dph": 0.1, "cap": "30m"})
+        with self.assertRaises(ApprovalRequired) as raised:
+            job.result(timeout=60)
+        before = len(fake_vast.STATE.calls)
+        job.approve(raised.exception.quote["id"], via="relayed")
+        result = job.result(timeout=120)
+        self.assertEqual(result.outcome, "ok", result.summary)
+        attaches = [c for c in fake_vast.STATE.calls[before:] if c[0] == "POST" and c[1].endswith("/ssh/")
+                    or c[0] == "POST" and c[1].endswith("/ssh")]
+        self.assertEqual(len(attaches), 2, attaches)  # the first attach, and one more after four refusals
+
     def test_an_unrounded_price_is_not_a_rise(self):
         price = 0.042222222222222223  # more decimals than a quote prints (a real offer was priced so)
         fake_vast.STATE.offers["777"]["dph_total"] = price

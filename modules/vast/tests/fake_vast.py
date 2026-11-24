@@ -147,6 +147,8 @@ class FakeTransport:
             plan = os.environ[SSH_ENV].split(",")
             if seen < len(plan) and plan[seen] == "fail":
                 raise RuntimeError("remote 'true' exited 255: Connection closed by 127.0.0.1 port 22")
+            if seen < len(plan) and plan[seen] == "denied":
+                raise RuntimeError("remote 'true' exited 255: root@127.0.0.1: Permission denied (publickey).")
         if "bootstrap.sh" in command:
             return "BOOT packages\nBOOT ready: Python 3.14.4, openjdk 26, vglrun yes\n"
         if command.startswith("tail"):
