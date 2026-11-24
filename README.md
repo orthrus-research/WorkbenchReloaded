@@ -238,6 +238,15 @@ stop waits at least 180 s for the server's own exit before the tree is killed; a
 (the launch's `failures` first), the crash report and the next command. `lab.keep session=<id> reason=<text>` keeps
 a session; what it names is a retention root (`kept.json`).
 
+`wb play [project][@set|@head][:launch]` does all of it from the folder you stand in: it resolves the launch at the
+folder's `.set` (or the head where there is none) and says which (`set <rev> (this folder, N behind)` or `set <rev>
+(head)`), submits the producing check of any member the Store lacks first (`--no-rebuild` refuses instead, naming
+it), builds or reuses the instance, and plays the session on this machine under the GPU lease in a lane of its own.
+It prints the job id, launch file, instance and session folder at once, streams both consoles, and on a failure
+prints the decisive line, the crash report and the next command. `--from <launch.json>` replays a launch file's
+exact bytes; `--tour`, `--measure`, `--driver`, `--debug`, `--fresh-world`, `--param`, `--jvm`, `--view`,
+`--window` and `--edit` pass through to the build and the session.
+
 ## Money
 
 A command that spends money (`vast.rent`, `vast.probe`) stops in `awaiting_approval` with one exact quote (card,

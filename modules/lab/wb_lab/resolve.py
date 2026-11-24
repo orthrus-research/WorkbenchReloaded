@@ -47,6 +47,14 @@ class LaunchError(Exception):
     """A launch that cannot be resolved; the message names what is missing and, where there is one, the fix."""
 
 
+class MissingBuild(LaunchError):
+    """A member the Store lacks, which ``missing`` (project, commit) builds: wb play submits that check first."""
+
+    def __init__(self, message: str, project: str, commit: str):
+        super().__init__(message)
+        self.missing = (project, commit)
+
+
 def parse_member(text: str) -> tuple[str, str | None, str]:
     """(name, artifact or kind, side) of a member spec."""
     match = MEMBER.match(str(text))
@@ -160,8 +168,9 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
             if not glob:
                 raise LaunchError(f"member {spec}: {product} has no [artifacts.{part}]")
             if product_index is None:
-                raise LaunchError(f"CI has not built {product} tree {tree[:12]} (commit {commit[:12]}), so the Store "
-                                  f"has no {product}:{part}: run wb check in the worktree, then resolve again")
+                raise MissingBuild(f"CI has not built {product} tree {tree[:12]} (commit {commit[:12]}), so the Store "
+                                   f"has no {product}:{part}: run wb check in the worktree, then resolve again",
+                                   product, commit)
             found = [(file, item) for file, item in (product_index.get("artifacts") or {}).items()
                      if fnmatch.fnmatch(str(item.get("from") or file), glob) or fnmatch.fnmatch(file, Path(glob).name)]
             if len(found) != 1:
@@ -208,6 +217,8 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
         except artifacts.StoreError as error:
             fix = (f"wb check in {source_project} at {str(source_commit)[:12]}" if source_project and
                    entry["kind"] != "hold" else "the landing that recorded it puts it there")
+            if source_project and entry["kind"] != "hold" and source_commit:
+                raise MissingBuild(f"member {spec}: {error}; {fix}", source_project, source_commit) from None
             raise LaunchError(f"member {spec}: {error}; {fix}") from None
         ids = mod_ids(path)
         if entry["kind"] == "third" and thirds[name].get("mod_id") and thirds[name]["mod_id"] not in ids:
@@ -315,6 +326,8 @@ def resolve_command(ctx, folder: str, launch: str = "default", out: str = ""):
         document = resolve(product=product, commit=commit, tree=tree, launch=launch, table=table, set_doc=set_doc,
                            revision=revision, store=store, product_artifacts=own.get("artifacts") or {},
                            product_index=artifacts.find(store, product, tree), extras=extras)
+    except MissingBuild as error:
+        raise ParamError(str(error)) from error  # wb play reads what builds it from the cause
     except LaunchError as error:
         raise ParamError(str(error)) from None
     target = Path(out) if out else top / ".local" / "launch" / f"{launch}.json"

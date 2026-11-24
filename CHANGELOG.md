@@ -63,6 +63,10 @@
   command a turn in a lane of its own, with a note, a limit, `--detach` (outlives the shell) and `--quiet`; a
   waiter started again keeps its place; `wb gpu leave` withdraws a lane. The old lock path and variable names stay
   configured aliases (`[runner] lease_file`, `token_env`, `lane_env`, `[lab] env`).
+- `wb play`: resolves a launch at the folder's set revision (or replays `--from` a launch file), builds a missing
+  member by its producing check first (or refuses with `--no-rebuild`), builds or reuses the instance and plays a
+  session on this machine under the lease, printing the job, launch, instance and session at once, streaming the
+  consoles, and naming the decisive line, crash report and next command on a failure.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,
   ledger, vast, ci, release, plan, frames, tools (the former standalone tools, 0.6.0), selftest.
 - The lab reads a profile's checkouts at a ref, each from a snapshot fixed at its commit for the whole job
