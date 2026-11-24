@@ -37,9 +37,22 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _settled_sha256(path: Path, attempts: int = 40) -> str:
+    """``sha256(path)``, retried while Windows denies the read because another writer is putting the same file in
+    place (a write-once file is replaced only by its own bytes, so the wait is short)."""
+    for attempt in range(attempts):
+        try:
+            return sha256(path)
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.02 * (attempt + 1))
+    raise AssertionError("unreachable")
+
+
 def _write_once(source: Path, target: Path, digest: str):
     if target.is_file():
-        if sha256(target) != digest:
+        if _settled_sha256(target) != digest:
             raise StoreError(f"{target} holds other bytes than {digest}; the Store never replaces a file")
         return
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -52,7 +65,7 @@ def _write_once(source: Path, target: Path, digest: str):
             filelock.replace(part, target)
         except PermissionError:
             # Another writer put the same file in place and a reader holds it open: the bytes are there already.
-            if not (target.is_file() and sha256(target) == digest):
+            if not (target.is_file() and _settled_sha256(target) == digest):
                 raise
     finally:
         part.unlink(missing_ok=True)

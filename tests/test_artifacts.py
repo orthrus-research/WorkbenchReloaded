@@ -93,14 +93,20 @@ sys.path.insert(0, sys.argv[1])
 from pathlib import Path
 from wb_core import artifacts
 store, writer = Path(sys.argv[2]), sys.argv[3]
+errors = []
 def write(thread):
-    for n in range(10):
-        name = f"{writer}-{thread}-{n}"
-        artifacts.put(store, Path(sys.argv[4]), None, Path(sys.argv[5]))  # one file, every writer at once
-        artifacts.record(store, "demo", "t1", f"c-{name}", {f"{name}.jar": {"sha256": "a", "job": "build"}})
+    try:
+        for n in range(10):
+            name = f"{writer}-{thread}-{n}"
+            artifacts.put(store, Path(sys.argv[4]), None, Path(sys.argv[5]))  # one file, every writer at once
+            artifacts.record(store, "demo", "t1", f"c-{name}", {f"{name}.jar": {"sha256": "a", "job": "build"}})
+    except BaseException as error:  # a thread's error must fail the writer, not only lose its commits
+        errors.append(f"{type(error).__name__}: {error}")
 threads = [threading.Thread(target=write, args=(t,)) for t in range(4)]
 for t in threads: t.start()
 for t in threads: t.join()
+if errors:
+    sys.exit("; ".join(errors))
 """
 
 
