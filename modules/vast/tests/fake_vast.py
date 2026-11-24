@@ -122,6 +122,7 @@ def serve() -> tuple[ThreadingHTTPServer, str]:
 
 
 RESULTS_ENV = "WB_VAST_FAKE_RESULTS"  # {member: text} as JSON: what every fetched .tar holds
+SSH_ENV = "WB_VAST_FAKE_SSH"  # "ok,fail,ok": how the rental's successive `true` probes over SSH go
 
 
 class FakeTransport:
@@ -139,6 +140,13 @@ class FakeTransport:
 
     def run(self, command, timeout=600, check=True):
         self._note(f"run {command}")
+        if command == "true" and os.environ.get(SSH_ENV):
+            counter = self.ctx.work / "fake-ssh-count"
+            seen = int(counter.read_text()) if counter.exists() else 0
+            counter.write_text(str(seen + 1))
+            plan = os.environ[SSH_ENV].split(",")
+            if seen < len(plan) and plan[seen] == "fail":
+                raise RuntimeError("remote 'true' exited 255: Connection closed by 127.0.0.1 port 22")
         if "bootstrap.sh" in command:
             return "BOOT packages\nBOOT ready: Python 3.14.4, openjdk 26, vglrun yes\n"
         if command.startswith("tail"):

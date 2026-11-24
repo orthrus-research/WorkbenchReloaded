@@ -252,6 +252,8 @@ def _check_offer(ctx: Context, offer: dict | None, offer_id: str, max_dph: float
                          f"{ram_gb} GB (its server's and client's heaps and their overhead); nothing rented")
 
 
+SSH_SETTLED = 3  # answers in a row before a rental's SSH counts as settled
+
 # Vast states prices to a few decimals; a bill this close to the quote is the same price, not a rise. It is at most
 # $0.00015 over a 90-minute rental.
 BILLING_SLACK = 1e-4
@@ -381,16 +383,22 @@ def rent(ctx: Context, offer: str, bundle: str, max_dph: float, cap: float, min_
         vast.call("POST", f"/instances/{instance}/ssh", {"ssh_key": _public_key(ctx)}, purpose="attach")
         link = _transport(ctx, host, port)
         ctx.progress("ssh", msg=f"ssh {host}:{port}")
-        for attempt in range(30):
+        # SSH has settled when it answers several times in a row: a container's sshd often restarts once just after
+        # it first answers (the key Vast attaches), and the next command then loses its connection.
+        answered, last = 0, None
+        for attempt in range(40):
             ctx.check_cancel()
             try:
                 link.run("true", timeout=60)
-                break
+                answered += 1
+                if answered >= SSH_SETTLED:
+                    break
+                ctx.sleep(float(ctx.config.get("ssh_settle_seconds", 5)))
             except Exception as error:  # noqa: BLE001
-                last = error
+                answered, last = 0, error
                 ctx.sleep(float(ctx.config.get("ssh_retry_seconds", 10)))
         else:
-            raise EnvironmentProblem(f"SSH never answered: {last}")
+            raise EnvironmentProblem(f"SSH never answered {SSH_SETTLED} times in a row: {last}")
         marks["ssh"] = time.time()
         link.run(remote.deadman(int(deadline - time.time()) + 300), timeout=60)
         ctx.log.info("dead man's switch armed: the container stops itself 5 min after the cap")

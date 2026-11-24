@@ -14,6 +14,7 @@ daily_rows = { type = "int", default = 20000, summary = "Vast's daily search-row
 market_share = { type = "float", default = 0.3, min = 0.0, max = 1.0, summary = "the market's share of the daily quota, paced over the UTC day; the rest is reserved for work" }
 market_limit = { type = "int", default = 25, min = 5, max = 500, summary = "rows per card per snapshot; cards rotate across snapshots" }
 ssh_retry_seconds = { type = "float", default = 10, min = 0.01 }
+ssh_settle_seconds = { type = "float", default = 5, min = 0.01, summary = "the pause between the answers a rental's SSH must give in a row before it counts as settled" }
 cards = { type = "list", items = "string", default = [], summary = "the cards offer lookups search and vast.market rotates through; none are built in" }
 templates = { type = "object", default = {}, summary = "retired: read by nothing since vast.bundle-launch makes a rental bundle from a launch file alone (the template route is gone); remove it from this machine's config" }
 root = { type = "string", default = "", summary = "retired: read by nothing since vast.bundle-launch makes a rental bundle from a launch file alone (the template route is gone); remove it from this machine's config" }

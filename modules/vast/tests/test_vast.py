@@ -49,6 +49,7 @@ def make_daemon(api_url: str, root: Path | None = None, vast: str = "", extra: s
         api = "{api_url}"
         poll_seconds = 0.02
         ssh_retry_seconds = 0.02
+        ssh_settle_seconds = 0.02
         cards = ["RTX 3060"]
         """) + textwrap.dedent(vast) + textwrap.dedent(extra)
     return Daemon(config, root=root, files=files)
@@ -159,6 +160,21 @@ class Rental(unittest.TestCase):
         self.assertTrue(any(r["job"] == job.id for r in costs.data.rentals))
         label = [c for c in fake_vast.STATE.calls if c[0] == "PUT" and c[1] == "/asks/777/"][-1][2]["label"]
         self.assertEqual(label, f"wb-{self.d.workbench.install_id}-{job.id}")
+
+    def test_ssh_must_answer_three_times_in_a_row_before_the_rental_is_armed(self):
+        # A container's sshd often restarts once just after it first answers; the next command then loses its
+        # connection. The rental waits until SSH answers three times in a row before it arms anything.
+        os.environ[fake_vast.SSH_ENV] = "ok,fail,ok,ok,ok"
+        self.addCleanup(os.environ.pop, fake_vast.SSH_ENV, None)
+        job = self.c.submit("vast.rent", {"offer": "777", "bundle": str(self.bundle), "max_dph": 0.1, "cap": "30m"})
+        with self.assertRaises(ApprovalRequired) as raised:
+            job.result(timeout=60)
+        job.approve(raised.exception.quote["id"], via="relayed")
+        result = job.result(timeout=120)
+        self.assertEqual(result.outcome, "ok", result.summary)
+        lines = (self.d.state / "jobs" / job.id / "work" / "fake-remote.log").read_text(encoding="utf-8").splitlines()
+        armed = next(i for i, line in enumerate(lines) if "kill -TERM 1" in line)
+        self.assertEqual([line for line in lines[:armed] if line == "run true"], ["run true"] * 5)
 
     def test_an_unrounded_price_is_not_a_rise(self):
         price = 0.042222222222222223  # more decimals than a quote prints (a real offer was priced so)
