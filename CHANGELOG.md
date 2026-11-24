@@ -128,7 +128,10 @@
   session headless, writing `session.json`. Every load of such a bundle (`vast.bundle-check`, the quote,
   `vast.rent`) refuses one whose member or JDK archive is missing or other bytes, and the quote refuses one
   without the EULA's acceptance. A tour for a launch with no tour rules (its own or inherited) is refused when the
-  bundle is made, naming the `[launch.<name>.tour]` to write, instead of failing on the rental. `lab.build` takes `store` and `sources`, the copies a bundle carries.
+  bundle is made, naming the `[launch.<name>.tour]` to write, instead of failing on the rental. A launch bundle
+  needs a display (`needs.display`): its bootstrap installs Xvfb and the client's libraries, and without a GPU
+  Mesa's software OpenGL (llvmpipe), all from the image's apt snapshot; its run script stops with a RUN line when
+  Xvfb does not start, and records the software renderer in `results/display.txt`. `lab.build` takes `store` and `sources`, the copies a bundle carries.
 - The template rental route is retired: `vast.bundle` (a bundle from a template in config) and `vast.lab-inputs`
   (its input archives) answer `vast.bundle-launch` for one release, and a plan with `machine = "rental"` or a
   `[rental]` table is refused with the same pointer; `plan.check` and `plan.run` lose `machine`. `[modules.vast]

@@ -7,6 +7,7 @@ written by hand::
     [needs]
     jdk = ["26"]                       # the JDKs the bootstrap installs (none given: 26)
     gpu = true
+    display = false                    # true: it draws without a GPU too (Xvfb and Mesa's software OpenGL)
     own_jdk = false                    # true: the bundle carries its JDK (a launch bundle), the bootstrap installs none
     [[upload]]
     path = "/srv/inputs/app.tar"        # a host path under a root, or relative to the bundle
@@ -82,6 +83,7 @@ class Bundle:
     own_jdk: bool = False
     launch: dict | None = None   # a launch bundle's bundle-launch.json
     ram_gb: int = 0              # the system memory the run needs; an offer with less is refused
+    display: bool = False        # it draws (a game client): the bootstrap installs a display, and Mesa without a GPU
 
     def upload_bytes(self) -> int:
         total = 0
@@ -149,7 +151,7 @@ def load(folder: Path, resolve, *, verify_uploads: bool = True) -> Bundle:
                   stop=run.get("stop") or f"pkill -f '/root/{script.name}'",
                   partial=run.get("partial"),
                   own_jdk=bool(needs.get("own_jdk", False)), launch=launched,
-                  ram_gb=int(needs.get("ram_gb", 0)))
+                  ram_gb=int(needs.get("ram_gb", 0)), display=bool(needs.get("display", False)))
 
 
 # ---------------------------------------------------------------------------------------------

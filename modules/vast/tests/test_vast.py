@@ -500,6 +500,50 @@ class LaunchBundles(unittest.TestCase):
         ctx, _, _ = self.make({**inherited, "tour": {"captured": "view captured"}})  # inherited rules are enough
         self.assertEqual(ctx.outcome, "ok", ctx.findings)
 
+    def test_a_bundle_without_a_gpu_installs_a_display_and_software_opengl(self):
+        """A launch bundle draws: its bootstrap installs Xvfb and the client's libraries, and without a GPU Mesa's
+        software OpenGL (llvmpipe) instead of VirtualGL."""
+        _, _, out = self.make(gpu=False)
+        toml = tomllib.loads((out / "bundle.toml").read_text(encoding="utf-8"))
+        self.assertEqual((toml["needs"]["gpu"], toml["needs"]["display"]), (False, True))
+        software = self.check(out)["bootstrap"]
+        for package in ("xvfb", "libgl1", "libgl1-mesa-dri", "libglx-mesa0", "libegl-mesa0"):
+            self.assertRegex(software, rf"apt-get install .* {package}( |$)", package)
+        self.assertNotIn("vgl.deb", software)  # no VirtualGL
+        _, _, out = self.make(gpu=True)
+        gpu = self.check(out)["bootstrap"]
+        self.assertIn(" xvfb ", gpu)
+        self.assertIn("vgl.deb", gpu)
+        self.assertNotIn("libgl1-mesa-dri", gpu)  # the driver's own GL, through VirtualGL
+
+    def test_run_sh_stops_with_a_run_line_when_the_display_does_not_start(self):
+        """run.sh starts Xvfb and stops with a RUN line naming its last word when it does not start, instead of
+        playing on a display that is not there."""
+        import subprocess
+        bash = shutil.which("bash")
+        if not bash or os.name == "nt":
+            self.skipTest("needs bash and a POSIX shell's tools")
+        _, _, out = self.make(gpu=False)
+        files = out / "files"
+        jdk = files / "store" / "jdks" / self.BUILD / "linux"
+        jdk.mkdir(parents=True)
+        (jdk / "release").write_text("JAVA_VERSION=26", encoding="utf-8")  # already unpacked
+        stubs = self.root / "stubs"
+        stubs.mkdir()
+        for name, body in (("pgrep", "exit 1"),  # no display running yet, whatever this machine has
+                           ("Xvfb", "echo '(EE) Fatal server error: stub cannot open the screen' >&2; exit 1"),
+                           ("python3", "echo 'RUN built rental from template k (new)'; exit 0")):
+            (stubs / name).write_text(f"#!/bin/bash\n{body}\n", encoding="utf-8", newline="\n")
+            (stubs / name).chmod(0o755)
+        done = subprocess.run([bash, str(files / "run.sh"), str(files)], capture_output=True, text=True,
+                              env={**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ.get('PATH', '')}",
+                                   "WB_BUNDLE_LAB": str(self.root / "lab")}, timeout=120)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("RUN session failed: the display did not start (Xvfb :1): (EE) Fatal server error: stub "
+                      "cannot open the screen", done.stdout)
+        self.assertNotIn("RUN session tour", done.stdout)
+        self.assertTrue((files / "results.tar").is_file())
+
     def test_the_runner_takes_the_bundles_store_and_sources(self):
         # the runner calls lab.build with the bundle's own Store copy and trees, and nothing of this machine
         _, _, out = self.make()
