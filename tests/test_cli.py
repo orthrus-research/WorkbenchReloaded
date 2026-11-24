@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness import Daemon  # noqa: E402
+from harness import REPO, Daemon  # noqa: E402
 
 from wb import cli  # noqa: E402
 
@@ -94,6 +94,80 @@ class Verbs(unittest.TestCase):
             self.assertEqual(json.loads(out)["caller"], "session-a")
         finally:
             os.environ.pop("WB_CALLER", None)
+
+    def test_wb_dev_runs_the_working_tree_on_purpose_past_the_version_handshake(self):
+        from unittest import mock
+        from wb import WbError, client
+        saved = os.getcwd()
+        os.chdir(REPO)
+        try:
+            with mock.patch.object(client, "_COMMIT", ["0" * 40]), mock.patch.dict(os.environ, {}):
+                os.environ.pop("WB_DEV", None)
+                with self.assertRaises(WbError) as raised:  # a CLI on other code than the daemon's
+                    self.wb("run", "selftest.echo", "text=refused", "--quiet")
+                self.assertIn("wb dev", str(raised.exception))
+                code, out, _ = self.wb("dev", "run", "selftest.echo", "text=dev", "--json", "--quiet")
+                self.assertEqual((code, json.loads(out)["outcome"]), (0, "ok"))
+                self.assertEqual(os.environ.get("WB_DEV"), "1")
+        finally:
+            os.chdir(saved)
+
+
+class Dev(unittest.TestCase):
+    """wb dev: the working tree's own CLI, found from the folder you stand in."""
+
+    def setUp(self):
+        import subprocess
+        import tempfile
+        self.folder = tempfile.TemporaryDirectory()
+        self.tree = Path(self.folder.name) / "wb-topic"
+        for name in ("sdk/python/wb/cli.py", "core/wb_core/__init__.py"):
+            (self.tree / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.tree / name).write_text("", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(self.tree)], check=True)
+        self.saved = os.getcwd()
+
+    def tearDown(self):
+        os.chdir(self.saved)
+        self.folder.cleanup()
+
+    def test_the_tree_is_a_workbench_checkout_or_worktree_and_nothing_else(self):
+        self.assertEqual(cli.dev_tree(self.tree / "sdk").resolve(), self.tree.resolve())
+        self.assertEqual(cli.dev_tree(REPO / "tests").resolve(), REPO.resolve())
+        other = Path(self.folder.name) / "other"
+        other.mkdir()
+        import subprocess
+        subprocess.run(["git", "init", "-q", str(other)], check=True)
+        self.assertIsNone(cli.dev_tree(other))
+
+    def test_another_working_tree_runs_its_own_cli_with_wb_dev_set(self):
+        import subprocess
+        from unittest import mock
+        real, started = subprocess.run, []
+
+        def run(command, **kwargs):  # git answers for real; the working tree's CLI is only recorded
+            if command[0] == "git":
+                return real(command, **kwargs)
+            started.append((command, kwargs["env"]))
+            return subprocess.CompletedProcess(command, 0)
+
+        os.chdir(self.tree)
+        with mock.patch("subprocess.run", side_effect=run), mock.patch.object(cli, "main") as in_process, \
+                mock.patch.dict(os.environ, {}):
+            args = cli.build_parser().parse_args(["dev", "status", "--json"])
+            self.assertEqual(args.function(args), 0)
+        in_process.assert_not_called()  # not this CLI: the tree's own
+        [(command, env)] = started
+        self.assertEqual(command[1:], ["-m", "wb", "status", "--json"])
+        self.assertEqual((env["WB_DEV"], Path(env["WB_REPO"]).resolve()), ("1", self.tree.resolve()))
+        self.assertEqual(Path(env["PYTHONPATH"].split(os.pathsep)[0]).resolve(),
+                         (self.tree / "sdk" / "python").resolve())
+
+    def test_no_verb_is_a_usage_error(self):
+        args = cli.build_parser().parse_args(["dev"])
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(args.function(args), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

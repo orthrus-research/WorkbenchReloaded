@@ -13,7 +13,7 @@ Old releases are wb gc's class ``releases``: every release but the one in servic
 <releases> is WB_RELEASES, else [paths] releases in machine config, else ~/.local/share/wb/releases (never the config
 folder, whose folders are all read as config, and not AppData, which a packaged app redirects). git config
 wb.cli names <releases>/current/bin/wb, so a hook always runs the deployed release, never a working tree; a working
-tree runs only when started as such (its own bin/wb, with WB_DEV=1)."""
+tree runs only when started as such: `wb dev <verb>` (WB_DEV=1)."""
 
 from __future__ import annotations
 

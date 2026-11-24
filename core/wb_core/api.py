@@ -259,10 +259,10 @@ def _same_code(h: Handler):
     if not theirs or not wb.commit or theirs == wb.commit or h.headers.get("X-Wb-Parent"):
         return
     detail = f"this CLI runs Workbench {short(theirs)} and the daemon {short(wb.commit)}"
-    raise ApiError(409, f"{detail}: run wb deploy to bring them together, or set WB_DEV=1 to use this working "
-                        "tree on purpose",
+    raise ApiError(409, f"{detail}: run wb deploy to bring them together, or wb dev <verb> (WB_DEV=1) to use this "
+                        "working tree on purpose",
                    {"reasons": [{"kind": "version", "name": "workbench", "detail": detail,
-                                 "fix": "wb deploy (or WB_DEV=1 for a working tree on purpose)"}]})
+                                 "fix": "wb deploy (or wb dev, WB_DEV=1, for a working tree on purpose)"}]})
 
 
 @route("POST", r"/v1/jobs/(j_\w+)/call")

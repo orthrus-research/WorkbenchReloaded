@@ -12,6 +12,7 @@
     wb gpu [run [--note T] [--limit D] [--detach] [--quiet] -- CMD | leave LANE | stuck]
     wb play [PROJECT][@REF|@set][:LAUNCH] [--from F] [--name N] [--tour F] [--measure] [--debug S] ...
     wb deploy [--commit SHA] [--wait 10m | --now] [--override REASON]
+    wb dev VERB ...                      the CLI of the Workbench working tree you stand in, on purpose (WB_DEV=1)
 
 Exit codes: 0 ok, 1 finding, 2 usage, 3 environment, 4 cancelled or interrupted, 5 still pending,
 6 awaiting approval (the quote and a ready-made prompt are printed; with --json, as JSON).
@@ -272,6 +273,40 @@ def cmd_setup(args) -> int:
 def cmd_deploy(args) -> int:
     from . import deploy
     return deploy.main(args)
+
+
+def dev_tree(folder: Path) -> Path | None:
+    """The Workbench working tree ``folder`` is in (a checkout or a linked worktree of Workbench), or None."""
+    import subprocess
+    done = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=folder, capture_output=True, text=True)
+    top = Path(done.stdout.strip()) if done.returncode == 0 and done.stdout.strip() else None
+    if top is not None and (top / "sdk" / "python" / "wb" / "cli.py").is_file() \
+            and (top / "core" / "wb_core" / "__init__.py").is_file():
+        return top
+    return None
+
+
+def cmd_dev(args) -> int:
+    """``wb dev VERB ...``: runs the CLI of the Workbench working tree you stand in (else this CLI's own checkout),
+    on purpose: as WB_DEV=1, it sends no commit, so the daemon's version handshake lets it through. The CLI on PATH
+    is a release; this is how a working tree's CLI runs beside it."""
+    import subprocess
+    from .workspace import REPO
+    if not args.rest:
+        print("wb dev runs a verb with the working tree's CLI: wb dev status, wb dev run ci.run ...", file=sys.stderr)
+        return 2
+    tree = dev_tree(Path.cwd()) or (REPO if (REPO / ".git").exists() else None)
+    if tree is None:
+        print(f"wb: wb dev runs a Workbench working tree, and {Path.cwd()} is in none (this CLI is the release "
+              f"{REPO.name}); cd into the Workbench checkout or one of its worktrees", file=sys.stderr)
+        return 2
+    os.environ["WB_DEV"] = "1"
+    if tree.resolve() == REPO.resolve():
+        return main(args.rest)
+    paths = [str(tree / "sdk" / "python"), str(tree / "core"), str(tree / "host")]
+    env = {**os.environ, "WB_REPO": str(tree),
+           "PYTHONPATH": os.pathsep.join(paths + [p for p in [os.environ.get("PYTHONPATH")] if p])}
+    return subprocess.run([sys.executable, "-m", "wb", *args.rest], env=env).returncode
 
 def cmd_work(args) -> int:
     from . import work
@@ -680,6 +715,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-rebuild", action="store_true", help="build no missing member: refuse, naming the check")
     p.add_argument("--desktop", choices=["hidden"], help="hidden: the client on a hidden Windows desktop that never "
                    "takes the input")
+    p = add("dev", cmd_dev, "run a verb with the CLI of the Workbench working tree you stand in (as WB_DEV=1)")
+    p.add_argument("rest", nargs=argparse.REMAINDER, metavar="VERB ...")
     p = add("host", cmd_host, "the Windows host runner")
     p.add_argument("action", choices=["serve", "install", "uninstall", "status"])
     p.add_argument("rest", nargs=argparse.REMAINDER)
