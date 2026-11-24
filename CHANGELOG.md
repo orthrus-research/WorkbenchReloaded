@@ -73,6 +73,10 @@
   command a turn in a lane of its own, with a note, a limit, `--detach` (outlives the shell) and `--quiet`; a
   waiter started again keeps its place; `wb gpu leave` withdraws a lane. The old lock path and variable names stay
   configured aliases (`[runner] lease_file`, `token_env`, `lane_env`, `[lab] env`).
+- Host checks: `ci.host-run` runs a project's `on = "host"` checks natively from a clean clone, only for a project
+  in `[lab] trusted`, the `gpu = true` ones under a turn of the GPU lease whose token their steps get, and records
+  their passes beside `ci.run`'s; `wb check` sends the host checks it is asked for there and the rest to `ci.run`,
+  printing which ran where, and `ci.run` leaves host checks out.
 - `wb play`: resolves a launch at the folder's set revision (or replays `--from` a launch file), builds a missing
   member by its producing check first (or refuses with `--no-rebuild`), builds or reuses the instance and plays a
   session on this machine under the lease, printing the job, launch, instance and session at once, streaming the

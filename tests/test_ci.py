@@ -559,5 +559,256 @@ class Matrix(unittest.TestCase):
                 self.assertFalse((self.root / "usage" / "work" / "tree").exists())
 
 
+HOST_PROJECT = """schema = 1
+gate = ["plain"]
+
+[project]
+name = "demo"
+
+[checks.plain]
+steps = [["{python}", "-c", "import pathlib; print(pathlib.Path('src/a.txt').read_text())"]]
+
+[checks.native]
+on = "host"
+steps = [["{python}", "-c", "import os, sys; sys.exit(3 if os.environ.get('WB_TURN_TOKEN') else 0)"]]
+
+[checks.glcheck]
+on = "host"
+gpu = true
+steps = [["{python}", "-B", "turn.py", "{run_dir}/turn.json"]]
+"""
+
+# A gpu check's step, standing in for a launcher that joins a held turn (RivenShaders' gpu_guard): the token it was
+# given must be the one the lock's holder wrote, under the default name and the machine's alias.
+TURN_STEP = """import json, os, sys
+from pathlib import Path
+token, lock = os.environ.get("WB_TURN_TOKEN"), os.environ.get("WB_LEASE_FILE")
+with open(lock, "rb", buffering=0) as stream:
+    stream.seek(1)
+    owner = json.loads(stream.read(65536).decode("utf-8"))
+Path(sys.argv[1]).parent.mkdir(parents=True, exist_ok=True)
+Path(sys.argv[1]).write_text(json.dumps({"token": token, "owner": owner.get("turnToken"),
+                                         "alias": os.environ.get("OLD_TURN"), "lane": os.environ.get("WB_TURN_LANE")}))
+sys.exit(0 if token and token == owner.get("turnToken") == os.environ.get("OLD_TURN") else 4)
+"""
+
+
+class HostChecks(unittest.TestCase):
+    """ci.host-run: a trusted project's host checks from a clean clone on the host, the gpu ones under a turn of the
+    GPU lease that their steps join, recorded where ci.run records; an untrusted project is refused first."""
+
+    @classmethod
+    def setUpClass(cls):
+        for folder in ("modules/tools", "modules/build", "modules/lab", "modules/ci", "host"):
+            sys.path.insert(0, str(REPO / folder))
+        from wb_ci import commands, host
+        cls.commands, cls.host = commands, host
+        cls.root = Path(tempfile.mkdtemp(prefix="wb-host-checks-"))
+        cls.repo = cls.root / "Demo"
+        (cls.repo / "src").mkdir(parents=True)
+        git(cls.repo, "init", "-q", "-b", "main")
+        (cls.repo / "src" / "a.txt").write_text("hello", encoding="utf-8")
+        (cls.repo / "project.toml").write_text(HOST_PROJECT, encoding="utf-8")
+        (cls.repo / "turn.py").write_text(TURN_STEP, encoding="utf-8")
+        git(cls.repo, "add", "-A")
+        git(cls.repo, "commit", "-q", "-m", "demo")
+        cls.head = git(cls.repo, "rev-parse", "HEAD")
+        cls.config = cls.root / "machine-config"  # an empty machine config: paths are taken as given
+        cls.config.mkdir()
+
+    @classmethod
+    def tearDownClass(cls):
+        import shutil
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def setUp(self):
+        from unittest import mock
+        self.base = Path(tempfile.mkdtemp(prefix="run-", dir=self.root))
+        self.records = self.base / "records"
+        self.lab = {"home": str(self.base / "lab"), "trusted": ["demo"], "env": {"OLD_TURN": "token"}}
+        patcher = mock.patch.dict(os.environ, {"WB_CONFIG": str(self.config),
+                                               "WB_LEASE_FILE": str(self.base / "lease" / "gpu.lock"),
+                                               "WB_COORDINATION_DIR": str(self.base / "coordination")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def context(self, job="h1"):
+        from wb_core.module import Context
+        config = {"projects": {"demo": {"repo": str(self.repo), "jdk": ""}}, "records": str(self.records),
+                  "store": str(self.base / "out" / "store")}
+        return Context({"job": job, "command": "ci.host-run", "module": "ci", "machine": "host", "lab": self.lab,
+                        "work": str(self.base / job / "work"), "out": str(self.base / job / "out"),
+                        "module_config": config}, lambda *a, **k: None)
+
+    def host_run(self, checks, job="h1", **params):
+        ctx = self.context(job)
+        return ctx, self.host.host_run(ctx, "demo", checks, commit=self.head, **params)
+
+    def test_an_untrusted_project_is_refused_before_anything_runs(self):
+        from wb_core.module import ParamError
+        self.lab["trusted"] = ["other"]
+        with self.assertRaisesRegex(ParamError, r"demo is not in \[lab\] trusted"):
+            self.host_run(["native"])
+        self.assertFalse(self.records.exists())                       # no record folder made
+        self.assertFalse((self.base / "lab" / "wb-state").exists())   # no clone, no Gradle home, no environment
+        self.assertFalse((self.base / "lease").exists())              # no turn asked for
+
+    def test_gpu_checks_run_under_the_lease_and_the_others_without_it(self):
+        from unittest import mock
+        turns = []
+        fake = self.base / "fake.lock"  # what a holder writes from byte 1: the turn's token
+        fake.write_bytes(b" " + json.dumps({"turnToken": "t1"}).encode())
+
+        @__import__("contextlib").contextmanager
+        def turn(ctx, project, checks):
+            turns.append(list(checks))
+            yield {"WB_TURN_TOKEN": "t1", "OLD_TURN": "t1", "WB_LEASE_FILE": str(fake), "WB_TURN_LANE": "check-demo"}
+        with mock.patch.object(self.host, "_turn", turn), \
+                mock.patch.dict(os.environ, {"WB_TURN_TOKEN": ""}):
+            ctx, result = self.host_run(["native"])
+            self.assertEqual((ctx.outcome, result["passed"], result["leased"]), ("ok", ["native"], []))
+            self.assertEqual(turns, [])                                # no gpu check: no turn
+            ctx, result = self.host_run(["native", "glcheck"], job="h2", if_needed=False)
+        self.assertEqual(turns, [["glcheck"]])                         # one turn, for the gpu check alone
+        self.assertEqual(ctx.outcome, "ok", (ctx.findings, ctx.reasons))
+        self.assertEqual(result["runs"], ["h2", "h2-gpu"])
+        self.assertEqual(sorted(result["passed"]), ["glcheck", "native"])
+        self.assertEqual(result["leased"], ["glcheck"])
+        with mock.patch.object(self.host, "_turn", turn):
+            ctx, result = self.host_run(["glcheck"], job="h3")
+        self.assertEqual(turns, [["glcheck"]])                         # passed for this tree: no turn taken again
+        self.assertEqual((ctx.outcome, result["passed"]), ("ok", []))
+
+    def test_a_gpu_checks_steps_join_the_turn_and_the_records_keep_the_pass(self):
+        from wb_host import lease as leases
+        ctx, result = self.host_run(["native", "glcheck"])
+        self.assertEqual(ctx.outcome, "ok", (ctx.findings, ctx.reasons))
+        self.assertEqual(sorted(result["passed"]), ["glcheck", "native"])
+        self.assertEqual(result["commit"], self.head)
+        joined = json.loads((self.records / "demo" / "h1-gpu" / "turn.json").read_text(encoding="utf-8"))
+        self.assertEqual(joined["token"], joined["owner"])             # the token of the turn that held the lock
+        self.assertEqual(joined["lane"], "check-demo")
+        lock = self.base / "lease" / "gpu.lock"
+        self.assertFalse(leases.occupied(lock))                        # released after the run
+        self.assertIn("releasedUtc", leases.owner(lock))
+        for run in ("h1", "h1-gpu"):
+            self.assertTrue((self.records / "demo" / run / "summary.json").is_file())
+        self.assertFalse((self.base / "lab" / "wb-state" / "ci" / "trees" / "demo-h1").exists())  # the clone is gone
+        again = self.host_run(["native", "glcheck"], job="h3")[1]
+        self.assertEqual(again["passed"], [])                          # recorded by tree: both already passed
+
+    def test_a_container_check_is_left_to_ci_run(self):
+        from wb_core.module import ParamError
+        with self.assertRaisesRegex(ParamError, "plain run.* in the container"):
+            self.host_run(["plain"])
+        with self.assertRaisesRegex(ParamError, "no check nope"):
+            self.host_run(["nope"])
+
+    def test_the_container_run_leaves_host_checks_out(self):
+        from wb_core.module import ParamError
+        from orthrus_tools import actions
+        config = actions.load(self.repo)
+        ctx = self.context("c1")
+        self.assertEqual(self.commands._container_targets(ctx, config, ["all"]), ["plain"])
+        self.assertEqual(self.commands._container_targets(ctx, config, ["gate"]), ["gate"])  # as asked
+        with self.assertRaisesRegex(ParamError, "run.* on the host"):
+            self.commands._container_targets(ctx, config, ["glcheck"])
+
+    def test_records_must_be_a_folder_the_host_reaches(self):
+        from wb_core.module import EnvironmentProblem
+        ctx = self.context("r1")
+        ctx.config.pop("records")
+        with self.assertRaisesRegex(EnvironmentProblem, "records is not set"):
+            self.commands._records(ctx, "demo")
+
+
+class CheckSplit(unittest.TestCase):
+    """wb check: the container checks it is asked for go to ci.run, the host checks to ci.host-run; no names is the
+    gate, as before."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(REPO / "sdk" / "python"))
+        from wb import check, workspace
+        cls.check, cls.workspace = check, workspace
+        cls.root = Path(tempfile.mkdtemp(prefix="wb-check-split-"))
+        cls.repo = cls.root / "Demo"
+        cls.repo.mkdir()
+        git(cls.repo, "init", "-q", "-b", "main")
+        (cls.repo / "project.toml").write_text(HOST_PROJECT, encoding="utf-8")
+        git(cls.repo, "add", "-A")
+        git(cls.repo, "commit", "-q", "-m", "demo")
+        cls.head = git(cls.repo, "rev-parse", "HEAD")
+        space = workspace.Workspace.__new__(workspace.Workspace)
+        space.values, space.ci = {}, {"records": str(cls.root / "records")}
+        space._projects = None
+        cls.space = space
+        cls.project = workspace.Project("demo", {}, cls.repo, workspace.common_dir(cls.repo))
+
+    @classmethod
+    def tearDownClass(cls):
+        import shutil
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def split(self, *names):
+        return self.check.split(self.space, self.project, self.head, list(names))
+
+    def test_names_split_by_where_their_checks_run(self):
+        self.assertEqual(self.split("all"), {"container": ["plain"], "host": ["native", "glcheck"]})
+        self.assertEqual(self.split("plain", "glcheck"), {"container": ["plain"], "host": ["glcheck"]})
+        self.assertEqual(self.split("native"), {"container": [], "host": ["native"]})
+        self.assertEqual(self.split("gate"), {"container": ["gate"], "host": []})  # no host check: as given
+        self.assertEqual(self.split(), {"container": [], "host": []})                # the gate, as before
+        self.assertEqual(self.split("nope"), {"container": ["nope"], "host": []})    # ci.run says what is wrong
+
+    def test_wb_check_submits_each_part_where_it_runs(self):
+        import argparse
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from unittest import mock
+        from wb import cli
+        from wb.client import Envelope
+        submitted = []
+
+        class Job:
+            def __init__(self, command, params):
+                self.id = f"j{len(submitted)}"
+                self.command = command
+
+            def wait(self, timeout=None):
+                return Envelope(state="settled", outcome="ok", code=0, command=self.command, job=self.id)
+
+        class Client:
+            def submit(self, command, params):
+                submitted.append((command, params))
+                return Job(command, params)
+
+        space = self.space
+        space.project_for = lambda folder: (self.project, self.repo)
+        space.would_be = lambda top: {"commit": self.head, "tree": "t" * 40, "dirty": False, "head": self.head}
+
+        def check(*names):
+            submitted.clear()
+            args = argparse.Namespace(names=list(names), stand_in=None, quiet=True, timeout=None, json=False)
+            err = io.StringIO()
+            with mock.patch.object(self.workspace, "Workspace", return_value=space), \
+                    mock.patch("wb.setwork.resolve", return_value=""), \
+                    mock.patch.object(cli, "_client", return_value=Client()), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(err):
+                code = cli.cmd_check(args)
+            return code, list(submitted), err.getvalue()
+
+        code, runs, said = check("plain", "glcheck")
+        self.assertEqual(code, 0)
+        self.assertEqual([(c, p.get("workflow"), p.get("jobs"), p.get("checks")) for c, p in runs],
+                         [("ci.run", "plain", [], None), ("ci.host-run", None, None, ["glcheck"])])
+        self.assertIn("in the container: plain (ok); on the host: glcheck (ok)", said)
+        code, runs, _ = check()
+        self.assertEqual([(c, sorted(p)) for c, p in runs], [("ci.run", ["commit", "project"])])  # the gate, as before
+        code, runs, said = check("native")
+        self.assertEqual([c for c, _ in runs], ["ci.host-run"])
+        self.assertIn("on the host: native", said)
+
+
 if __name__ == "__main__":
     unittest.main()

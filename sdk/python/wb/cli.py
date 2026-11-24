@@ -324,7 +324,9 @@ def _stand_ins(workspace, given: list, args) -> dict:
 
 def cmd_check(args) -> int:
     """ci.run for the worktree you stand in: its project from the repository, the commit from HEAD, or the tree
-    the host's git would commit when the worktree has changes. No commit= or checkout= to type."""
+    the host's git would commit when the worktree has changes. No commit= or checkout= to type. The host checks among
+    the names (``on = "host"``, ``gpu = true``) go to ci.host-run instead, which runs them natively."""
+    from . import check
     from .workspace import Workspace, WorkspaceError
     try:
         workspace = Workspace()
@@ -335,26 +337,48 @@ def cmd_check(args) -> int:
     except WorkspaceError as error:
         print(f"wb: {error}", file=sys.stderr)
         return 2
-    params = {"project": project.name, "commit": tree["commit"], **({"set": revision} if revision else {})}
+    common = {"project": project.name, "commit": tree["commit"], **({"set": revision} if revision else {})}
     if args.stand_in:
         try:
-            params["stand_ins"] = _stand_ins(workspace, args.stand_in, args)
+            common["stand_ins"] = _stand_ins(workspace, args.stand_in, args)
         except WorkspaceError as error:
             print(f"wb: {error}", file=sys.stderr)
             return 2
-    if args.names:
-        params["workflow"] = args.names[0]
-        params["jobs"] = args.names[1:]
+    where = check.split(workspace, project, tree["commit"], args.names)
+    runs = []  # (where, command, params, names)
+    if where["container"] or not where["host"]:
+        params = dict(common)
+        if where["container"]:
+            params["workflow"] = where["container"][0]
+            params["jobs"] = where["container"][1:]
+        runs.append(("in the container", "ci.run", params, where["container"]))
+    if where["host"]:
+        runs.append(("on the host", "ci.host-run", {**common, "checks": where["host"]}, where["host"]))
     what = (f"the working tree of {top} (tree {tree['tree'][:12]}, on {tree['head'][:12]})" if tree["dirty"]
             else f"{top} at {tree['commit'][:12]}")
     client = _client()
-    job = client.submit("ci.run", params)
-    if not args.quiet:
-        print(f"wb: {job.id}  check {project.name}: {what}  (wb show {job.id})", file=sys.stderr)
-        _follow(client, job.id)
-    env = job.wait(_duration(args.timeout))
-    print_envelope(env, args.json)
-    return env.exit_code
+    jobs = []
+    for place, command, params, names in runs:
+        try:
+            job = client.submit(command, params)
+        except WbError as error:
+            print(f"wb: {command} for {', '.join(names) or 'the gate'} {place}: {error}", file=sys.stderr)
+            return 2
+        jobs.append((place, names, job))
+        if not args.quiet:
+            listed = f" {place}: {', '.join(names)}" if where["host"] else ""
+            print(f"wb: {job.id}  check {project.name}: {what}{listed}  (wb show {job.id})", file=sys.stderr)
+            _follow(client, job.id)
+    envelopes = [(place, names, job.wait(_duration(args.timeout))) for place, names, job in jobs]
+    if args.json and len(envelopes) > 1:
+        print(json.dumps([env for _, _, env in envelopes], indent=1, default=str))
+    else:
+        for _, _, env in envelopes:
+            print_envelope(env, args.json)
+    if len(envelopes) > 1 or where["host"]:
+        print("wb: ran " + "; ".join(f"{place}: {', '.join(names)} ({env.get('outcome') or env.get('state')})"
+                                     for place, names, env in envelopes), file=sys.stderr)
+    return next((env.exit_code for _, _, env in envelopes if env.exit_code), 0)
 
 
 def cmd_job(args) -> int:
@@ -540,8 +564,10 @@ def build_parser() -> argparse.ArgumentParser:
     add("status", cmd_status, "health of the daemon")
     p = add("build", cmd_build, "build the image from this checkout")
     p.add_argument("--tag", default="wb-core:dev")
-    p = add("check", cmd_check, "run CI's checks on the worktree you stand in (its changes included)")
-    p.add_argument("names", nargs="*", help="a workflow or check, then more (default: the jobs file's workflow)")
+    p = add("check", cmd_check, "run CI's checks on the worktree you stand in (its changes included); named host "
+                                "checks run on the host")
+    p.add_argument("names", nargs="*", help="a workflow or check, then more (default: the jobs file's workflow); "
+                                            "host checks among them (on = \"host\") run on the host, for a trusted project")
     p.add_argument("--with", dest="stand_in", action="append", metavar="PROJECT=REF|FOLDER",
                    help="build against this project's files at a ref or worktree instead of its line (no pass recorded)")
     p.add_argument("--quiet", action="store_true")

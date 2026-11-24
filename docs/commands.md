@@ -32,6 +32,7 @@ Run a project's jobs, gate pushes on them, and keep commits clean. (modules/ci/w
 | Command | Runs on | Summary |
 |---|---|---|
 | `ci.run` | container | Run a project's jobs from a clean clone (pinned repositories at their pins), keeping the records in Workbench; their Gradle builds get toolchain's rescue repository. |
+| `ci.host-run` | host | Run a project's host checks (on = "host", gpu = true) natively from a clean clone of its commit, only for a project in [lab] trusted: the gpu checks under one turn of the GPU lease, which their steps join; the records go where ci.run keeps them. |
 | `ci.gate` | container | The push gate: refuse pushed commits whose trees have not passed every required job in Workbench's records. |
 | `ci.status` | container | What a project's commit has passed, and what it still needs before the gate lets it through. |
 | `ci.hook` | host | Install (or remove) the pre-push hook that asks ci.gate, in the project's own checkout on the host. |

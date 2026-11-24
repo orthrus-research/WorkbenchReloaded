@@ -119,6 +119,34 @@ identity (`WB_SET_IDENTITY`: a digest of the platform and of the lines, holds an
 platform's JDK digest (`WB_JDK_IDENTITY`), which joins a pure check's key, so a JDK move reruns it and a line
 move alone does not. The push gate judges a commit by its tree, whatever set it passed on.
 
+### Host checks
+
+A check with `on = "host"` runs natively on the host, never in the container; `gpu = true` means the same and also
+that it needs the GPU. A host check is never in the gate, so it runs only when named: `wb check gl`, or a workflow
+that takes it in (`wb check all`). `wb check` splits what it is asked for: the container checks go to `ci.run`, the
+host checks to `ci.host-run`, and it prints which ran where; with no names it runs the gate, as before. `ci.run`
+itself leaves host checks out of the workflows it is given.
+
+`ci.host-run` runs only for a project the machine's `[lab] trusted` lists, and refuses any other before it clones
+anything: a manifest cannot widen what the host runs. It clones the commit (or, with `commit=worktree`, the
+checkout's working tree) on the host, lays out the files another project lends the checks, and gives the steps
+what `ci.run` gives them: the set's identities, `{gradle}` on the set's Gradle and Store, and `{python}` from the
+project's requirements, with the configured folders as the host names them. The checks without a GPU run first,
+without the lease. The `gpu = true` checks then run under one turn of the GPU lease, in the lane
+`check-<project>`; their steps get the turn token in `WB_TURN_TOKEN`, the lane in `WB_TURN_LANE`, the lock file in
+`WB_LEASE_FILE` and the coordination folder in `WB_COORDINATION_DIR` (and in the names `[lab] env` and
+`[runner] token_env` add), so a launcher under them joins the held turn instead of waiting on it. No turn is taken
+when those checks already passed for the tree. The run records go into the project's records folder, beside
+`ci.run`'s, so a pass is recorded by tree the same way; nothing is kept in the Store.
+
+```toml
+[checks.gl]
+description = "The OpenGL tests in a hidden window"
+on = "host"
+gpu = true
+steps = [["{python}", "-B", "tools/gl_tests.py", "--out", "{run_dir}/gl"]]
+```
+
 ```toml
 schema = 1
 gate = ["build"]

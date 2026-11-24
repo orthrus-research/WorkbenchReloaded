@@ -147,6 +147,12 @@ def config_names() -> tuple[str, str]:
     return PROJECT_FILE, DEFAULT_CONFIG
 
 
+def on_host(job: dict) -> bool:
+    """Whether a check runs on the host: ``on = "host"``, or ``gpu = true`` (only the host has the GPU). Such a check
+    never runs in a container and cannot be in the gate."""
+    return job.get("on") == "host" or bool(job.get("gpu"))
+
+
 # project.toml (schema 1): what a repository says about its checks and the files they make.
 PROJECT_KEYS = {"schema", "project", "uses", "artifacts", "checks", "gate", "launch", "settings"}
 PROJECT_TABLE_KEYS = {"name", "python", "branch", "own", "reserve"}
@@ -217,7 +223,7 @@ def from_project(data: dict, name: str) -> dict:
     if not isinstance(gate, list) or not all(g in jobs for g in gate):
         refuse("gate lists checks by name")
     for check in gate:
-        if jobs[check].get("on") == "host" or jobs[check].get("gpu"):
+        if on_host(jobs[check]):
             refuse(f"gate: {check} runs on the host or the GPU, so a push cannot wait for it")
     settings = {"name": project["name"], "workflow": "gate",
                 "identity_files": ["{env.JAVA_HOME}/release"], **(data.get("settings") or {})}

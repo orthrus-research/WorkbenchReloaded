@@ -43,6 +43,29 @@ result.passed = { type = "list" }
 result.failed = { type = "list" }
 
 [[command]]
+name = "host-run"
+summary = "Run a project's host checks (on = \"host\", gpu = true) natively from a clean clone of its commit, only for a project in [lab] trusted: the gpu checks under one turn of the GPU lease, which their steps join; the records go where ci.run keeps them."
+handler = "wb_ci.host:host_run"
+runs_on = ["host"]
+requires = { binary = ["git"] }
+resources = { cpu = 1 }
+timeout = "3h"
+params.project = { type = "string", summary = "a name under [modules.ci.projects], listed in [lab] trusted" }
+params.checks = { type = "list", items = "string", summary = "the host checks to run, by name (wb check splits them out of what it is asked)" }
+params.commit = { type = "string", default = "HEAD", summary = "the commit to run; worktree: the checkout's working tree as it would be committed" }
+params.if_needed = { type = "bool", default = true, summary = "skip checks that already passed for these trees" }
+params.keep_going = { type = "bool", default = false }
+params.keep = { type = "bool", default = false, summary = "keep the clean tree after the run" }
+params.dry_run = { type = "bool", default = false }
+params.checkout = { type = "path.in", optional = true, digest = "git", summary = "with commit=worktree: another checkout of the project's repository (a linked worktree) whose working tree to run" }
+params.set = { type = "string", default = "", summary = "the Set revision {gradle} builds against; empty: the head wb last exported" }
+params.stand_ins = { type = "object", default = {}, summary = "{project: tree}: stand-ins, as for ci.run; a run with stand-ins records no pass" }
+result.commit = { type = "string" }
+result.passed = { type = "list" }
+result.failed = { type = "list" }
+result.leased = { type = "list" }
+
+[[command]]
 name = "gate"
 summary = "The push gate: refuse pushed commits whose trees have not passed every required job in Workbench's records."
 handler = "wb_ci.commands:gate"

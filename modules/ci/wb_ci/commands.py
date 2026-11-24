@@ -62,8 +62,40 @@ def _state() -> Path:
 
 
 def _folder(ctx: Context, key: str, default: Path) -> Path:
+    """A folder ``[modules.ci]`` names, else its default in Workbench's state. On the host (ci.host-run) a configured
+    container path is translated back through the machine's roots, and a default is under the lab home's
+    ``wb-state``, since the container's state is not the host's to write; the records must be reachable from both."""
     value = ctx.config.get(key)
-    return Path(value) if value else default
+    if ctx.machine != "host":
+        return Path(value) if value else default
+    found = _host_form(str(value)) if value else None
+    if found is not None:
+        return found
+    if key == "records":
+        where = f"= {str(value)!r} is under no root this host has" if value else "is not set"
+        raise EnvironmentProblem(f"[modules.ci] records {where}, so a host check's pass would be kept where ci.run "
+                                 "never looks; set it to a folder in an rw root (the out root's ci/records)")
+    return _host_state(ctx) / default.relative_to(_state())
+
+
+def _host_form(value: str) -> Path | None:
+    """A configured path as this host names it: a container path under a root is translated back; a container path
+    under no root (the daemon's own state) has no host form here."""
+    try:
+        from wb.workspace import Workspace
+        path = Workspace().host_path(value)
+    except Exception:  # noqa: BLE001 - no machine config (a test, a bare checkout): the path as given
+        path = Path(value)
+    if os.name == "nt" and str(path) == str(Path(value)) and value.startswith("/"):
+        return None
+    return path
+
+
+def _host_state(ctx: Context) -> Path:
+    """Where ci.host-run keeps what it makes for itself (clean trees, the host's Gradle home, Python environments):
+    the lab home's ``wb-state``."""
+    from wb_lab import machine
+    return machine.home(ctx) / "wb-state"
 
 
 def _records(ctx: Context, project: str) -> Path:
@@ -231,6 +263,11 @@ def _gradle_home(ctx: Context) -> tuple[Path, dict]:
     cold = home / "init.d" / COLD_SCRIPT
     if not cold.is_file() or cold.read_bytes() != COLD_INIT:
         write_atomic(cold, COLD_INIT)
+    if ctx.machine == "host":
+        # toolchain.repo-init writes the rescue repository for builds in the container, which a host job cannot ask;
+        # a host check's {gradle} builds on the set's Gradle and Store alone.
+        (home / "init.d" / REPOSITORY_SCRIPT).unlink(missing_ok=True)
+        return home, {"script": None, "versions": 0, "substitutions": 0, "host": True}
     return home, _serve_repository(ctx, home)
 
 
@@ -307,11 +344,13 @@ def _config_at(ctx: Context, entry: dict, records: Path, sha: str) -> engine.Con
     return config
 
 
-def _engine(ctx: Context, root: Path, jobs_file: Path, argv: list[str], env: dict, python: str) -> dict:
-    """The actions runner, under the project's interpreter: its ``{python}`` is the interpreter running it."""
+def _engine(ctx: Context, root: Path, jobs_file: Path, argv: list[str], env: dict, python: str,
+            names: tuple = STEP_ENV) -> dict:
+    """The actions runner, under the project's interpreter: its ``{python}`` is the interpreter running it. Its
+    steps get ``names`` of this worker's environment and ``env``."""
     args = [python, "-m", "orthrus_tools", "actions", *argv, "--root", str(root), "--config", str(jobs_file),
             "--json"]
-    base = {key: value for key, value in os.environ.items() if key.upper() in STEP_ENV}
+    base = {key: value for key, value in os.environ.items() if key.upper() in names}
     env = {**base, **GIT_SAFE, **env, "PYTHONPATH": str(TOOLS_SRC)}
     done = ctx.run(args, cwd=root, env=env, timeout=None, log_output=False, inherit=False)
     text = done.stdout
@@ -510,9 +549,10 @@ def _gradle_launcher(ctx: Context, work: Path, revision: str, extra: list | None
     return launcher, revision, opts
 
 
-def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_needed: bool, keep_going: bool,
-        keep: bool, dry_run: bool, checkout=None, cold: bool = False, set: str = "", stand_ins: dict | None = None):
-    entry = _project(ctx, project)
+def _checkout(ctx: Context, project: str, entry: dict, commit: str, checkout, work: Path) -> dict:
+    """The clean tree a run tests, under ``work``: the project cloned at ``commit`` (with its working tree laid over it
+    for commit=worktree) and each repository its jobs file pins, at its pin. Returns the clone's root, the commit,
+    the engine's config with the run records' folder and the pinned commits."""
     source = entry["source"]
     tree_source = Path(checkout) if checkout else source  # whose working tree commit=worktree runs
     if checkout:
@@ -523,70 +563,122 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
             raise ParamError(f"{checkout} is not a checkout of {project}'s repository")
     records = _records(ctx, project)
     records.mkdir(parents=True, exist_ok=True)
-    work = _folder(ctx, "workdir", _state() / "ci" / "trees") / f"{project}-{ctx.job}"
     root = work / source.name
     worktree = commit == "worktree"
     sha = _resolve(ctx, tree_source, "HEAD" if worktree else commit)
     ctx.progress("clone", msg=f"{project} at {sha[:12]}" + (" with its working tree" if worktree else ""))
-    try:
-        _clone(ctx, source, root, sha)
-        if worktree:
+    _clone(ctx, source, root, sha)
+    if worktree:
+        if ctx.machine == "host":  # the host's git reads its own excludes and config
+            _overlay_worktree(ctx, tree_source, root, [], {})
+        else:
             _overlay_worktree(ctx, tree_source, root, list(ctx.config.get("excludes") or []),
                               dict(ctx.config.get("git_config") or {}))
-        if not any((root / name).is_file() for name in _jobs_names(entry)):
-            raise ParamError(f"{project} {sha[:12]} has no {_jobs_name(entry)}, so there are no jobs to run"
-                             + ("" if commit != "HEAD" else "; that is the checkout's HEAD, so name another with "
-                                "commit=<sha or branch>"))
-        config = _load(root, entry, records)
-        pinned = {}
-        for repository in config.repositories[1:]:
-            relative = os.path.relpath(repository.path, root)
-            other = (source / relative).resolve()
-            at = "HEAD"
-            if repository.pin_file:
-                try:
-                    lock = json.loads((root / repository.pin_file).read_text(encoding="utf-8"))
-                    pin = engine.pin_value(lock, repository.pin_key)
-                except (OSError, ValueError, KeyError, TypeError):
-                    raise EnvironmentProblem(f"{repository.pin_file} names no {repository.name} commit") from None
-                at = str(pin)
-            other_sha = _resolve(ctx, other, at)
-            ctx.progress("clone", msg=f"{repository.name} at {other_sha[:12]}")
-            _clone(ctx, other, (root / relative).resolve(), other_sha)
-            pinned[repository.name] = other_sha
+    if not any((root / name).is_file() for name in _jobs_names(entry)):
+        raise ParamError(f"{project} {sha[:12]} has no {_jobs_name(entry)}, so there are no jobs to run"
+                         + ("" if commit != "HEAD" else "; that is the checkout's HEAD, so name another with "
+                            "commit=<sha or branch>"))
+    config = _load(root, entry, records)
+    pinned = {}
+    for repository in config.repositories[1:]:
+        relative = os.path.relpath(repository.path, root)
+        other = (source / relative).resolve()
+        at = "HEAD"
+        if repository.pin_file:
+            try:
+                lock = json.loads((root / repository.pin_file).read_text(encoding="utf-8"))
+                pin = engine.pin_value(lock, repository.pin_key)
+            except (OSError, ValueError, KeyError, TypeError):
+                raise EnvironmentProblem(f"{repository.pin_file} names no {repository.name} commit") from None
+            at = str(pin)
+        other_sha = _resolve(ctx, other, at)
+        ctx.progress("clone", msg=f"{repository.name} at {other_sha[:12]}")
+        _clone(ctx, other, (root / relative).resolve(), other_sha)
+        pinned[repository.name] = other_sha
+    return {"root": root, "commit": sha, "worktree": worktree, "config": config, "pinned": pinned,
+            "records": records}
+
+
+def _environment(ctx: Context, entry: dict, config, root: Path, work: Path, set: str, stand_ins: dict | None,
+                 cold: bool) -> dict:
+    """What a run's steps get: the JDKs, the Gradle home, the pin cache, the {gradle} launcher on the set, the files
+    another project's tree lends its checks, the set's identities and the project's env; and {python}."""
+    major = str(entry["jdk"] if "jdk" in entry else ctx.config.get("jdk", "26"))  # "": no JAVA_HOME
+    pins = _folder(ctx, "pin_cache", _state() / "cache" / "pins")
+    pins.mkdir(parents=True, exist_ok=True)
+    gradle_home, served = _gradle_home(ctx)
+    launcher, set_revision, gradle_opts = _gradle_launcher(ctx, work, set, _stand_ins(ctx, work, stand_ins or {}))
+    tools = _tools(ctx, config, work, set_revision or set)
+    identity = _set_identity(ctx, config, set_revision or set)
+    if tools:  # a pure check's key covers the files it reads from another project, as laid out here
+        identity["WB_TOOLS_ROOTS"] = json.dumps({p: str(work / _project(ctx, p)["source"].name) for p in tools})
+    env = {**_jdk_env(ctx, major), "GRADLE_USER_HOME": str(gradle_home), "WB_PIN_CACHE": str(pins),
+           "WB_GRADLE": str(launcher), **({"GRADLE_OPTS": gradle_opts} if gradle_opts else {}),
+           **{k: str(v) for k, v in (entry.get("env") or {}).items()}, **({"WB_COLD": "1"} if cold else {}),
+           **identity}
+    python = _python(ctx, root, [str(r) for r in entry.get("python") or config.data.get("project", {}).get("python")
+                                 or []])
+    return {"env": env, "python": python, "served": served, "set": set_revision, "tools": tools}
+
+
+def _engine_argv(ctx: Context, targets: list[str], run_id: str, records: Path, if_needed: bool, keep_going: bool,
+                 dry_run: bool, cold: bool = False) -> list[str]:
+    # The engine runs inside this job's reservation: the job id names its run, and its budget is what the
+    # scheduler holds for the job, not the machine.
+    argv = ["run", *targets, "--run-id", run_id, "--runs", str(records)]
+    if ctx.reservation.get("mem_gb"):
+        argv += ["--memory", str(ctx.reservation["mem_gb"])]
+    # Cold: every job runs, none vouched for by an earlier pass or its input cache, and no build cache is read.
+    argv += ["--no-cache"] if cold else (["--if-needed"] if if_needed else [])
+    argv += ["--keep-going"] if keep_going else []
+    argv += ["--dry-run"] if dry_run else []
+    return argv
+
+
+def _container_targets(ctx: Context, config, targets: list[str]) -> list[str]:
+    """The targets a container run is given: as asked, unless they take in host checks (``on = "host"`` or
+    ``gpu = true``; ``all`` names every check), which only ci.host-run runs. Then the container checks they take in,
+    by name, and a log line naming the host checks left out; nothing else left is refused."""
+    try:
+        ordered = engine.resolve(config, targets)
+    except engine.ToolError:
+        return targets  # the engine says what is wrong with them
+    host = [name for name in ordered if engine.on_host(config.jobs[name])]
+    if not host:
+        return targets
+    rest = [name for name in ordered if name not in host]
+    needing = [name for name in rest if set(config.jobs[name].get("needs") or []) & set(host)]
+    if needing:
+        raise ParamError(f"{', '.join(needing)} need(s) {', '.join(host)}, which run(s) on the host; a container "
+                         "check cannot wait for a host check")
+    if not rest:
+        raise ParamError(f"{', '.join(host)} run(s) on the host, not in the container: wb check {' '.join(host)} "
+                         "runs them there (ci.host-run)")
+    ctx.log.info(f"left to the host: {', '.join(host)} (wb check {' '.join(host)} runs them there)")
+    return rest
+
+
+def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_needed: bool, keep_going: bool,
+        keep: bool, dry_run: bool, checkout=None, cold: bool = False, set: str = "", stand_ins: dict | None = None):
+    entry = _project(ctx, project)
+    work = _folder(ctx, "workdir", _state() / "ci" / "trees") / f"{project}-{ctx.job}"
+    try:
+        tree = _checkout(ctx, project, entry, commit, checkout, work)
+        root, sha, worktree, config, pinned = (tree[k] for k in ("root", "commit", "worktree", "config", "pinned"))
+        records = tree["records"]
         jobs_file = _jobs_copy(root, entry, records, work)
-        major = str(entry["jdk"] if "jdk" in entry else ctx.config.get("jdk", "26"))  # "": no JAVA_HOME
-        pins = _folder(ctx, "pin_cache", _state() / "cache" / "pins")
-        pins.mkdir(parents=True, exist_ok=True)
-        gradle_home, served = _gradle_home(ctx)
-        launcher, set_revision, gradle_opts = _gradle_launcher(ctx, work, set, _stand_ins(ctx, work, stand_ins or {}))
-        tools = _tools(ctx, config, work, set_revision or set)
-        identity = _set_identity(ctx, config, set_revision or set)
-        if tools:  # a pure check's key covers the files it reads from another project, as laid out here
-            identity["WB_TOOLS_ROOTS"] = json.dumps({p: str(work / _project(ctx, p)["source"].name) for p in tools})
+        prepared = _environment(ctx, entry, config, root, work, set, stand_ins, cold)
+        served, set_revision, tools = prepared["served"], prepared["set"], prepared["tools"]
         if stand_ins:
             # Against stand-in bytes a run vouches for nothing: its records go one level down, where the gate, which
             # reads <records>/<run>/summary.json, never counts them, and its step logs stay readable.
             records = records / "stand-ins"
             records.mkdir(parents=True, exist_ok=True)
-        env = {**_jdk_env(ctx, major), "GRADLE_USER_HOME": str(gradle_home), "WB_PIN_CACHE": str(pins),
-               "WB_GRADLE": str(launcher), **({"GRADLE_OPTS": gradle_opts} if gradle_opts else {}),
-               **{k: str(v) for k, v in (entry.get("env") or {}).items()}, **({"WB_COLD": "1"} if cold else {}),
-               **identity}
-        python = _python(ctx, root, [str(r) for r in entry.get("python") or config.data.get("project", {}).get("python")
-                                     or []])
         targets = [*([workflow] if workflow else []), *[str(j) for j in jobs]] or [config.workflow]
-        # The engine runs inside this job's reservation: the job id names its run, and its budget is what the
-        # scheduler holds for the job, not the machine.
-        argv = ["run", *targets, "--run-id", ctx.job, "--runs", str(records)]
-        if ctx.reservation.get("mem_gb"):
-            argv += ["--memory", str(ctx.reservation["mem_gb"])]
-        # Cold: every job runs, none vouched for by an earlier pass or its input cache, and no build cache is read.
-        argv += ["--no-cache"] if cold else (["--if-needed"] if if_needed else [])
-        argv += ["--keep-going"] if keep_going else []
-        argv += ["--dry-run"] if dry_run else []
+        targets = _container_targets(ctx, config, targets)
+        argv = _engine_argv(ctx, targets, ctx.job, records, if_needed, keep_going, dry_run, cold)
         ctx.progress("jobs", msg=" ".join([*targets, *argv[len(targets) + 3:]]))
-        document = _engine(ctx, root, jobs_file, argv, env, python)
+        document = _engine(ctx, root, jobs_file, argv, prepared["env"], prepared["python"])
         _failing_tails(ctx, (document.get("result") or {}).get("jobs") or {})
     finally:
         if not keep:
@@ -606,6 +698,17 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
     failed = [n for n, j in jobs_done.items() if j.get("status") == "failed"]
     passed = [n for n, j in jobs_done.items() if j.get("status") == "passed"]
     trees = result.get("trees") or {}
+    _conclude(ctx, project, sha, document, jobs_done, passed)
+    return {"project": project, "commit": sha, "worktree": worktree, "pinned": pinned, "run": run_id,
+            "trees": trees, "passed": passed, "failed": failed, "repository": served, "stored": stored,
+            "engine": result, "set": set_revision, "stand_ins": dict(stand_ins or {}), "tools": tools}
+
+
+def _conclude(ctx: Context, project: str, sha: str, document: dict, jobs_done: dict, passed: list):
+    """The run's outcome from the engine's document: a failed job is a finding, a refusal a usage or environment
+    problem, else a summary of what passed."""
+    status = document.get("status")
+    failed = [n for n, j in jobs_done.items() if j.get("status") == "failed"]
     if status == "finding" or failed:
         ctx.finding(f"{project}: {', '.join(failed) or 'a job'} failed at {sha[:12]}")
     elif status == "usage":
@@ -617,9 +720,6 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
         ctx.summary(f"{project} at {sha[:12]}: {len(passed)} job(s) passed"
                     + (f", {len(jobs_done) - len(passed)} skipped" if len(jobs_done) > len(passed) else "")
                     + ("" if jobs_done else f" ({document.get('summary') or 'nothing to run'})"))
-    return {"project": project, "commit": sha, "worktree": worktree, "pinned": pinned, "run": run_id,
-            "trees": trees, "passed": passed, "failed": failed, "repository": served, "stored": stored,
-            "engine": result, "set": set_revision, "stand_ins": dict(stand_ins or {}), "tools": tools}
 
 
 def _store_artifacts(ctx: Context, project: str, sha: str, trees: dict, records: Path, run_id: str | None,

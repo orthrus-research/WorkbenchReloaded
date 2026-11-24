@@ -56,7 +56,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 |---|---|---|
 | `assets` | Assets and resource packs: content JSON generated from one manifest, reference blockstates copied from the client JAR into a pack complete but for its textures, and texture readability metrics. | `generate`, `blockstates`, `texture-metrics` |
 | `build` | Builds with receipts and reproducible archives. | `receipt`, `archive` |
-| `ci` | Run a project's jobs, gate pushes on them, and keep commits clean. | `run`, `gate`, `status`, `hook`, `actions`, `scrub`, `matrix`, `store-verify`, `store-export`, `store-import`, `land`, `store-platform` |
+| `ci` | Run a project's jobs, gate pushes on them, and keep commits clean. | `run`, `host-run`, `gate`, `status`, `hook`, `actions`, `scrub`, `matrix`, `store-verify`, `store-export`, `store-import`, `land`, `store-platform` |
 | `content` | Content and data: modpack scripts, recipes and placement data, read without running the game. | `scripts`, `recipe-graph`, `placement` |
 | `drive` | Workload drivers: what a game session is made to do and see. Tours checked before a session plays them, camera paths made from keyframes and checked against the frames captured along them, and block galleries laid out for review. | `tour-lint`, `path`, `path-check`, `gallery`, `send` |
 | `frames` | Score captured frames: pass or fail against references, capture noise, wrong-view checks, and PSNR/SSIM quality (from Quadrature's frames.py). | `compare`, `measure`, `check`, `quality` |
@@ -90,6 +90,12 @@ file names checked out at the commit the project pins. The checkouts are only re
 (below), and the Python environments the project names, built once per set of requirements. The run records stay in Workbench, where `ci.gate` reads them:
 `ci.hook project=NAME` installs a pre-push hook that refuses a commit whose tree has not passed. `commit=worktree`
 runs the checkout's working tree as it would be committed. Projects are declared in `[modules.ci.projects]`.
+
+Host checks (`on = "host"`, `gpu = true` in project.toml) run only when named and only for a project in the machine's
+`[lab] trusted`: `wb check gl` sends them to `ci.host-run`, which runs them natively from a clean clone on the host,
+the GPU ones under a turn of the GPU lease that their steps join, and records their passes beside `ci.run`'s. The
+container checks among the names still go to `ci.run`; `wb check` prints which ran where
+(see [modules/tools/docs/actions.md](modules/tools/docs/actions.md#host-checks)).
 
 `ci.matrix` is a portability lane: on a host (Windows, macOS or Linux, no GPU needed, so it runs beside a game) it
 clones a checkout's commit clean and runs one command per Python, `{python}` standing for each interpreter:
