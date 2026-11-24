@@ -311,14 +311,19 @@ class Sessions(unittest.TestCase):
         root.mkdir()
         (root / "driver.py").write_text(
             "import json, os, sys\n"
-            "json.dump({k: os.environ.get(k) for k in ('WB_TURN_TOKEN', 'OLD_TURN', 'WB_INSTANCE', 'WB_SESSION')}"
+            "json.dump({k: os.environ.get(k) for k in ('WB_TURN_TOKEN', 'OLD_TURN', 'WB_INSTANCE', 'WB_SESSION',"
+            " 'CACHE_HERE', 'WB_RUNTIME_CACHE')} | {'cwd': os.getcwd()}"
             " | {'arg': sys.argv[1], 'id': sys.argv[2]},"
             " open(os.path.join(os.environ['WB_SESSION'], 'seen.json'), 'w'))\n",
             encoding="utf-8")
+        self.lab["env"] = {"OLD_TURN": "token", "CACHE_HERE": "cache"}
         ctx, result, record = self.play(kind="driver", driver="probe", driver_root=str(root))
         self.assertEqual(ctx.outcome, "ok", ctx.findings)
         seen = json.loads((Path(result["folder"]) / "seen.json").read_text())
         self.assertEqual((seen["WB_TURN_TOKEN"], seen["OLD_TURN"]), ("a-token", "a-token"))
+        self.assertEqual(seen["CACHE_HERE"], str(self.cache))  # the cache only by the name [lab] env gives it
+        self.assertIsNone(seen["WB_RUNTIME_CACHE"])
+        self.assertEqual(Path(seen["cwd"]).resolve(), root.resolve())  # {root} is the project's tree
         self.assertEqual(seen["WB_INSTANCE"], str(self.instance() / "instance.json"))
         self.assertEqual(seen["arg"], seen["WB_INSTANCE"])
         self.assertEqual(seen["id"], record["id"])

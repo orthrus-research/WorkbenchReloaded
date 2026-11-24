@@ -7,7 +7,9 @@
 Without a project it plays the worktree you stand in; a project named while you stand in one of its worktrees is
 that worktree. The revision every line resolves at is the folder's .set, or the head where the folder has none
 ('set <rev> (this folder, N behind)' or 'set <rev> (head)'). --from replays a launch file's exact bytes and resolves
-nothing. A member the Store lacks is built first by submitting its producing check (ci.run) to the daemon; with
+nothing. A driver (--driver) runs from the project's tree the launch was resolved from, its {root}: the worktree you
+stand in, or the registered checkout at the line; with --from, a worktree of the launch's project you stand in at
+its commit. A member the Store lacks is built first by submitting its producing check (ci.run) to the daemon; with
 --no-rebuild the play refuses instead, naming the check, and the session is not evidence.
 
 The instance is built from the launch file (lab.build: one template per launch file, base and params, reused when it
@@ -126,8 +128,9 @@ def tail(path: Path, label: str, stop: threading.Event):
 # --- resolving ------------------------------------------------------------------------------------------------------
 
 
-def resolve_launch(host: Host, target: dict, job: str, folder: Path, rebuild: bool) -> Path:
-    """lab.resolve at the folder's .set (or the head), building a member the Store lacks first, unless not asked."""
+def resolve_launch(host: Host, target: dict, job: str, folder: Path, rebuild: bool) -> tuple[Path, Path]:
+    """lab.resolve at the folder's .set (or the head), building a member the Store lacks first, unless not asked.
+    Returns the launch file and the project's tree it was resolved from (a driver's {root})."""
     from wb_core.module import ParamError
     from wb_lab import resolve as resolver
 
@@ -172,7 +175,7 @@ def resolve_launch(host: Host, target: dict, job: str, folder: Path, rebuild: bo
         ctx = host.context(job, "lab.resolve", {}, folder / f"resolve-{attempt}")
         try:
             result = resolver.resolve_command(ctx, str(top), launch=target["launch"], out=str(out))
-            return Path(result["launch"])
+            return Path(result["launch"]), Path(top)
         except ParamError as error:
             missing = getattr(error.__cause__, "missing", None)
             if missing is None or attempt == 2:
@@ -183,6 +186,30 @@ def resolve_launch(host: Host, target: dict, job: str, folder: Path, rebuild: bo
                                  "then play again") from None
             build_member(name, commit)
     raise AssertionError("unreachable")
+
+
+def replay_root(doc: dict) -> Path | None:
+    """For --from: the worktree you stand in when it is one of the launch's project, else None."""
+    from .workspace import Workspace, WorkspaceError
+    try:
+        project, top = Workspace().project_for(Path.cwd())
+    except WorkspaceError:
+        return None
+    return Path(top) if project is not None and project.name == doc.get("project") else None
+
+
+def driver_root(doc: dict, top: Path | None, head: str | None) -> Path:
+    """The tree a driver runs from ({root} and its working folder): the project's worktree the launch describes.
+    Refused when there is none, or when its HEAD is another commit than the launch's (the driver's code would not
+    be the commit the session records)."""
+    if top is None:
+        raise ValueError(f"--driver runs the program from {doc.get('project')}'s tree: play from a worktree of "
+                         f"{doc.get('project')} at {str(doc.get('commit'))[:12]}")
+    commit = str(doc.get("commit") or "")
+    if commit and head and head != commit:
+        raise ValueError(f"--driver: {top} has {head[:12]} checked out, and the launch describes {commit[:12]}; "
+                         "play from a worktree at the launch's commit")
+    return top
 
 
 def build_member(project: str, commit: str):
@@ -224,9 +251,14 @@ def main(args) -> int:
         if args.from_file:
             launch = Path(args.from_file).resolve()
             say(f"launch {launch} (replayed as it is; nothing resolved)")
+            doc = json.loads(launch.read_text(encoding="utf-8"))
+            top = replay_root(doc) if args.driver else None
         else:
-            launch = resolve_launch(host, target, job, folder, rebuild=not args.no_rebuild)
-        doc = json.loads(launch.read_text(encoding="utf-8"))
+            launch, top = resolve_launch(host, target, job, folder, rebuild=not args.no_rebuild)
+            doc = json.loads(launch.read_text(encoding="utf-8"))
+        if args.driver:
+            from .workspace import git
+            root = driver_root(doc, top, git(top, "rev-parse", "HEAD", check=False) if top else None)
     except (ParamError, EnvironmentProblem, ValueError, OSError) as error:
         say(f"refused: {error}")
         return 2 if isinstance(error, (ParamError, ValueError)) else 3
@@ -241,6 +273,7 @@ def main(args) -> int:
         run_params["launch"] = str(launch)
     if args.driver:
         run_params["driver"] = args.driver
+        run_params["driver_root"] = str(root)
     ctx = host.context(job, "lab.run", run_params, folder / "run")
     sessions = runs.sessions_root(ctx)
     print(f"job       {job}")

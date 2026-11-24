@@ -113,8 +113,8 @@ def lab_questions(values: dict | None) -> list[str]:
     asks = {"home": "where instances, sessions and the lease live (empty: [runner] lab_home)",
             "trusted": "which projects' configure hooks and drivers may run here, e.g. ['riven', 'cubature']",
             "eula": "true if you accept the Minecraft EULA for the instances built here",
-            "env": "more variable names a driver gets the turn token or lease in, e.g. "
-                   "{ CUBIC_LAB_TURN_LEASE = 'token' }"}
+            "env": "more variable names a driver gets the turn token, lease or runtime cache in, e.g. "
+                   "{ CUBIC_LAB_TURN_LEASE = 'token', WB_RUNTIME_CACHE = 'cache' }"}
     return [f"[lab] {key}: not set; {what}" for key, what in asks.items() if key not in values]
 
 

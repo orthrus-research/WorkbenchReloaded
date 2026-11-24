@@ -245,7 +245,9 @@ is refused, the same build at another path (`jdk=`) is accepted. A tour is drive
 was captured), view by view, and filed as `tour/NN-<label>.png`; `measure` is such a tour that is evidence: quiet, on
 a fresh copy of the template, and only for the launch file it names. `driver` runs a trusted project's declared
 driver (`[launch.<name>.drivers]`) with the turn token, the lease and the instance.json path in `WB_TURN_TOKEN`,
-`WB_LEASE_FILE`, `WB_INSTANCE` and the names `[lab] env` adds. What a session chooses (`port`, `jvm`, `window`,
+`WB_LEASE_FILE`, `WB_INSTANCE` and the names `[lab] env` adds; the runtime cache the receipt's `{cache}` paths are
+under goes only in the name `[lab] env` gives `cache` (`WB_RUNTIME_CACHE = 'cache'` for Cubature's lab tools). Its
+`{root}` is the project's tree: `wb play --driver <name>` runs it from the worktree the launch was resolved from. What a session chooses (`port`, `jvm`, `window`,
 `view`, `edits`, `debug`) goes into its `session.json`, beside the member hashes, the JDK build and the GPU and its
 driver, and never into the template: edited files are put back when it ends. `debug=client|server|both` opens JDWP
 on loopback, writes `attach/launch.json` (VS Code) and `attach/jdb.txt`, and marks the session as not evidence. A

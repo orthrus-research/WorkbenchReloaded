@@ -35,7 +35,9 @@ lab_home = '../Lab'    # relative to the Workbench checkout
 # home = ''              # instances, sessions, the lease and lanes; empty: [runner] lab_home
 trusted = []             # projects whose configure hooks and drivers may run here, e.g. ['riven', 'cubature']
 eula = false             # true: you accept the Minecraft EULA for the instances built here (eula.txt is written)
-# Old tools join a held lease by their own variable names; a session's driver gets the values in these too:
+# Old tools join a held lease by their own variable names; a session's driver gets the values in these too, and the
+# runtime cache the receipt's {cache} paths are under only by a name given here:
 # [lab.env]
 # CUBIC_LAB_TURN_LEASE = 'token'
 # GPU_QUEUE_LANE = 'lane'
+# WB_RUNTIME_CACHE = 'cache'

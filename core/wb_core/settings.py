@@ -111,11 +111,12 @@ LAB = {
              "summary": "true records that you accept the Minecraft EULA for the instances built here (eula.txt)"},
     "env": {"type": "object", "default": {},
             "summary": "more variable names a session's driver gets a value in, NAME = one of " + ", ".join(
-                ("token", "lane", "lease", "coordination", "instance", "session", "launch"))
+                ("token", "lane", "lease", "coordination", "instance", "session", "launch", "cache"))
             + " (WB_TURN_TOKEN, WB_TURN_LANE, WB_LEASE_FILE, WB_COORDINATION_DIR, WB_INSTANCE, WB_SESSION and "
-              "WB_LAUNCH always)"},
+              "WB_LAUNCH always; cache, the runtime cache the receipt's {cache} paths are under, only by a name "
+              "given here)"},
 }
-LAB_VALUES = ("token", "lane", "lease", "coordination", "instance", "session", "launch")
+LAB_VALUES = ("token", "lane", "lease", "coordination", "instance", "session", "launch", "cache")
 TOP_LEVEL = {"core", "paths", "secrets", "schedules", "modules", "runner", "workspace", "lab"}
 
 

@@ -26,6 +26,15 @@ class Play(unittest.TestCase):
         self.assertEqual(play.set_line("b" * 40, "b" * 40, 0, True), "set bbbbbbb (head)")
         self.assertEqual(play.set_line("b" * 40, "b" * 40, None, False), "set bbbbbbb (head)")
 
+    def test_a_driver_runs_from_the_launch_project_tree_at_its_commit(self):
+        doc = {"project": "riven", "commit": "a" * 40}
+        top = Path("/work/riven")
+        self.assertEqual(play.driver_root(doc, top, "a" * 40), top)
+        with self.assertRaisesRegex(ValueError, "play from a worktree of riven"):
+            play.driver_root(doc, None, None)
+        with self.assertRaisesRegex(ValueError, "bbbbbbbbbbbb checked out"):
+            play.driver_root(doc, top, "b" * 40)
+
     def test_key_value_inputs_keep_their_types(self):
         self.assertEqual(play.pairs(["seed=42", "mode=fast", "on=true"], "--param"),
                          {"seed": 42, "mode": "fast", "on": True})

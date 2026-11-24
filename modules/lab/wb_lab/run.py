@@ -13,8 +13,10 @@ Kinds:
   launch file the request names.
 - ``driver``: the launch's declared driver (``drivers.<name>`` in the launch file), a trusted project's program
   that starts its own JVMs from the instance; it gets the turn token, the lease, the instance.json path, the session
-  folder and the launch file in the variables ``[lab] env`` adds to Workbench's own. Its command line may name
-  ``{python}``, ``{root}``, ``{instance}``, ``{instance_json}``, ``{session}`` (the folder), ``{session_id}`` and
+  folder and the launch file in Workbench's own variables and the names ``[lab] env`` adds, and the runtime cache the
+  receipt's ``{cache}`` paths are under by the name ``[lab] env`` gives ``cache``. Its command line may name
+  ``{python}``, ``{root}`` (the project's tree it runs from: ``driver_root``, which wb play sets to the worktree the
+  launch was resolved from), ``{instance}``, ``{instance_json}``, ``{session}`` (the folder), ``{session_id}`` and
   ``{launch}``.
 
 Before anything starts the session checks the instance against its receipt: every file under ``{cache}`` and
@@ -702,7 +704,7 @@ class Session:
         values = {"token": os.environ.get("WB_TURN_TOKEN", ""), "lane": os.environ.get("WB_TURN_LANE", ""),
                   "lease": os.environ.get("WB_LEASE_FILE", ""), "coordination": os.environ.get("WB_COORDINATION_DIR", ""),
                   "instance": str(self.instance / instances.RECEIPT), "session": str(self.folder),
-                  "launch": str(self.folder / "launch.json")}
+                  "launch": str(self.folder / "launch.json"), "cache": str(self.roots["cache"])}
         out = {name: values[key] for key, name in ENV.items()}
         for name, key in (machines.lab(self.ctx)["env"] or {}).items():
             out[name] = values[key]
