@@ -249,6 +249,17 @@ def make(ctx: Context, launch: str, tour: str, name: str | None, window: str, gp
         json.loads(tour_path.read_text(encoding="utf-8"))
     except ValueError as error:
         raise ParamError(f"tour: {tour_path.name} is not JSON ({error})") from None
+    if not (doc.get("tour") or {}).get("captured"):
+        # lab.run plays a tour only by the launch's tour rules (wb_lab.run, "the launch has no tour rules"), which
+        # lab.resolve carries into launch.json from the launch and every launch it inherits: refused here, before a
+        # rental is spent finding out.
+        chain = ", ".join(f"{s.get('name')} at {str(s.get('commit'))[:12]}" for s in doc.get("inherits") or [])
+        raise ParamError(f"tour: launch {doc.get('project')}:{doc.get('launch')} has no tour rules (tour.captured: "
+                         "the client's line for a captured view)"
+                         + (f", and none of the launches it inherits gives them ({chain})" if chain else "")
+                         + f", so lab.run on the rental would refuse to play {tour_path.name}; name them in "
+                         f"[launch.{doc.get('launch')}.tour] of {doc.get('project')}'s project.toml (or of a launch "
+                         "it inherits), then resolve the launch again (wb run lab.resolve)")
     if window and not re.match(r"^[0-9]+x[0-9]+$", window):
         raise ParamError(f"window: {window!r} is not WIDTHxHEIGHT")
     store = readable(str(doc["store"]))

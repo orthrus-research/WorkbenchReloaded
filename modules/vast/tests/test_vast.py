@@ -353,7 +353,8 @@ class LaunchBundles(unittest.TestCase):
                     "runtime": {"kind": "cleanroom", "version": "0.7.14-alpha", "java": 26, "jdk": self.BUILD,
                                 "files": runtime},
                     "members": members, "jvm": {"client": [], "server": []}, "collect": [], "failures": [],
-                    "params": {"seed": 1}, "param_types": {"seed": {"type": "int"}}}
+                    "params": {"seed": 1}, "param_types": {"seed": {"type": "int"}},
+                    "tour": {"captured": "view captured"}}
         self.tour = self.root / "views.json"
         self.tour.write_text('[{"label": "a", "x": 0, "y": 80, "z": 0, "yaw": 0, "pitch": 0}]', encoding="utf-8")
         self.lab = {"trusted": [], "eula": True}
@@ -481,6 +482,23 @@ class LaunchBundles(unittest.TestCase):
                        "out": str(self.root / "co")}, lambda event: None)
         commands.bundle_check(ctx, str(out))
         return ctx.summary_text
+
+    def test_a_tour_for_a_launch_without_tour_rules_is_refused_naming_the_fix(self):
+        """lab.run plays a tour only by the launch's tour rules, which launch.json carries from the launch and every
+        launch it inherits: a bundle of a tour for a launch with none is refused here, not on the rental."""
+        doc = {k: v for k, v in self.doc.items() if k != "tour"}
+        with self.assertRaisesRegex(ParamError, r"tour: launch game:default has no tour rules \(tour.captured: .*"
+                                                r"would refuse to play views.json; name them in "
+                                                r"\[launch.default.tour\] of game's project.toml .*lab.resolve"):
+            self.make(doc)
+        self.assertFalse((self.root / "bundle" / "bundle.toml").exists())
+        inherited = {**doc, "tour": {"setup": ["time set 6000"]},
+                     "inherits": [{"name": "base:default", "commit": "d" * 40, "chosen": "line"}]}
+        with self.assertRaisesRegex(ParamError, r"none of the launches it inherits gives them "
+                                                r"\(base:default at dddddddddddd\)"):
+            self.make(inherited)
+        ctx, _, _ = self.make({**inherited, "tour": {"captured": "view captured"}})  # inherited rules are enough
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
 
     def test_the_runner_takes_the_bundles_store_and_sources(self):
         # the runner calls lab.build with the bundle's own Store copy and trees, and nothing of this machine

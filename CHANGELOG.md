@@ -127,7 +127,8 @@
   Workbench's own lab code, and a run script that builds the instance with `lab.build`'s code and plays one tour
   session headless, writing `session.json`. Every load of such a bundle (`vast.bundle-check`, the quote,
   `vast.rent`) refuses one whose member or JDK archive is missing or other bytes, and the quote refuses one
-  without the EULA's acceptance. `lab.build` takes `store` and `sources`, the copies a bundle carries.
+  without the EULA's acceptance. A tour for a launch with no tour rules (its own or inherited) is refused when the
+  bundle is made, naming the `[launch.<name>.tour]` to write, instead of failing on the rental. `lab.build` takes `store` and `sources`, the copies a bundle carries.
 - The template rental route is retired: `vast.bundle` (a bundle from a template in config) and `vast.lab-inputs`
   (its input archives) answer `vast.bundle-launch` for one release, and a plan with `machine = "rental"` or a
   `[rental]` table is refused with the same pointer; `plan.check` and `plan.run` lose `machine`. `[modules.vast]
