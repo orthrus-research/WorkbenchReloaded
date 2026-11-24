@@ -130,6 +130,8 @@ def sync(workspace: Workspace, folder: Path) -> int:
     before = found[1]["set"] if found else None
     write(place, revision)
     _say(f"set {revision[:7]} (head)" + (f", was {before[:7]}" if before and before != revision else ""))
+    from . import gradlehome  # hand builds and IDE syncs resolve the set through the Gradle home's block
+    gradlehome.ensure(workspace, _say)
     try:
         project, top = workspace.project_for(folder)
     except WorkspaceError:

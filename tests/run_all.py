@@ -41,6 +41,7 @@ SUITES = [
     ["modules/lab/tests/test_template_paths.py"],
     ["tests/test_land.py"],
     ["tests/test_platform_fetch.py"],
+    ["tests/test_gradlehome.py"],
     ["modules/lab/tests/test_assemble.py"],
     ["modules/lab/tests/test_session.py"],
     ["modules/lab/tests/test_install.py"],
