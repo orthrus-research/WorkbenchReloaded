@@ -102,5 +102,280 @@ class Releases(unittest.TestCase):
         self.assertEqual([i.path for i in gc.release_folders(places, gc.roots(places))], [str(one)])
         self.assertTrue(two.is_dir())
 
+    def test_serving_names_the_release_current_points_at(self):
+        self.assertIsNone(releases.serving(self.config))
+        one = releases.make(self.config, self.repo, self.first, {"tree": "t"})
+        releases.point(self.config, one)
+        self.assertEqual(releases.serving(self.config), one)
+        self.assertEqual(releases.info(one)["commit"], self.first)
+
+
+# -- the image holds no code: what decides a build ------------------------------------------------------------------
+DOCKERFILE = ("FROM scratch\nCOPY image/entrypoint.sh image/code.sh /opt/wb/\nCOPY requirements.txt /tmp/\n"
+              "COPY --from=other /opt/x /opt/x\n")
+ACTIONS = '[workflows]\nci = ["check"]\n\n[jobs.check]\nsteps = [{ name = "ok", run = ["python", "-c", "0"] }]\n'
+
+
+def workbench_repo(base: Path) -> Path:
+    """A small Workbench-shaped checkout: an image folder, code, a jobs file and a suite that passes."""
+    repo = base / "wb"
+    files = {"image/Dockerfile": DOCKERFILE, "image/entrypoint.sh": "#!/bin/sh\n", "image/code.sh": "# code\n",
+             "requirements.txt": "nothing\n", ".dockerignore": ".git\n", "core/wb_core/__init__.py": "",
+             "sdk/python/wb/__init__.py": "", "sdk/python/wb/cli.py": "# one\n", "actions.toml": ACTIONS,
+             "tests/run_all.py": "import sys\nsys.exit(0)\n"}
+    for name, text in files.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(text, encoding="utf-8", newline="\n")
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "one")
+    return repo
+
+
+def change(repo: Path, name: str, text: str) -> str:
+    (repo / name).write_text(text, encoding="utf-8", newline="\n")
+    git(repo, "commit", "-q", "-am", f"change {name}")
+    return git(repo, "rev-parse", "HEAD")
+
+
+class ImageInputs(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.repo = workbench_repo(Path(self.folder.name))
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def test_the_inputs_are_the_image_folder_its_copied_sources_and_dockerignore(self):
+        from wb import compose
+        names = [p.as_posix() for p in compose.image_inputs(self.repo)]
+        self.assertEqual(names, [".dockerignore", "image/Dockerfile", "image/code.sh", "image/entrypoint.sh",
+                                 "requirements.txt"])  # no code, and nothing from another stage
+
+    def test_a_python_only_change_leaves_the_digest_and_an_image_input_changes_it(self):
+        from wb import compose
+        digest = compose.inputs_digest(self.repo)
+        (self.repo / "sdk" / "python" / "wb" / "cli.py").write_text("# two\n", encoding="utf-8")
+        (self.repo / "core" / "wb_core" / "new.py").write_text("x = 1\n", encoding="utf-8")
+        self.assertEqual(compose.inputs_digest(self.repo), digest)
+        for name in ("image/Dockerfile", "requirements.txt", "image/code.sh"):
+            with self.subTest(name=name):
+                before = (self.repo / name).read_bytes()
+                (self.repo / name).write_bytes(before + b"# changed\n")
+                self.assertNotEqual(compose.inputs_digest(self.repo), digest)
+                (self.repo / name).write_bytes(before)
+        self.assertEqual(compose.inputs_digest(self.repo), digest)
+        self.assertNotEqual(compose.inputs_digest(self.repo, ["node"]), digest)  # the tools built in count
+
+    def test_an_image_is_built_only_when_its_recorded_digest_differs(self):
+        from wb import compose
+        self.assertIn("no image", compose.build_reason("wb-core:dev", "abc", None))
+        self.assertIn("records no inputs digest", compose.build_reason("wb-core:dev", "abc", ""))
+        self.assertIn("inputs changed", compose.build_reason("wb-core:dev", "abc", "def"))
+        self.assertIsNone(compose.build_reason("wb-core:dev", "abc", "abc"))
+
+    def test_the_label_is_read_from_the_image(self):
+        from unittest import mock
+        from wb import compose
+        with mock.patch.object(compose.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, json.dumps({compose.INPUTS_LABEL: "d1", "x": "y"}), "")
+            self.assertEqual(compose.image_label("wb-core:dev"), "d1")
+            run.return_value = subprocess.CompletedProcess([], 0, "null\n", "")
+            self.assertEqual(compose.image_label("wb-core:dev"), "")  # an image from before the label
+            run.return_value = subprocess.CompletedProcess([], 1, "", "no such image")
+            self.assertIsNone(compose.image_label("wb-core:dev"))
+
+
+# -- image/code.sh: which code the container runs -------------------------------------------------------------------
+def _sh() -> str | None:
+    import shutil
+    found = shutil.which("sh")
+    if found:
+        return found
+    exec_path = subprocess.run(["git", "--exec-path"], capture_output=True, text=True).stdout.strip()
+    for parent in Path(exec_path).parents:  # Git for Windows: <git>/mingw64/libexec/git-core
+        for candidate in (parent / "usr" / "bin" / "sh.exe", parent / "bin" / "sh.exe"):
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+SH = _sh()
+CODE_SCRIPT = (Path(harness.REPO) / "image" / "code.sh").as_posix()
+ENTRYPOINT = (Path(harness.REPO) / "image" / "entrypoint.sh").as_posix()
+
+
+def code_tree(folder: Path, commit: str | None = None) -> Path:
+    for name in ("core/wb_core/__init__.py", "sdk/python/wb/__init__.py", "host/wb_host/__init__.py"):
+        (folder / name).parent.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_text("", encoding="utf-8")
+    if commit:
+        (folder / "RELEASE.json").write_text(json.dumps({"tests": {"commit": "not this"}, "commit": commit}),
+                                             encoding="utf-8")
+    return folder
+
+
+@unittest.skipIf(SH is None, "no POSIX sh on this machine")
+class CodeScript(unittest.TestCase):
+    """The entrypoint's choice of code, run in a POSIX sh with the container's folders moved into a temp folder."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        base = Path(self.folder.name)
+        self.state, self.mount, self.baked = base / "state", base / "mount", base / "baked"
+        self.state.mkdir()
+        self.mount.mkdir()
+        self.name = "abcdef012345"
+        self.commit = self.name + "6789" * 7
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def run_script(self, script: str, **env) -> subprocess.CompletedProcess:
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("WB_")}
+        clean.update({"WB_STATE_DIR": self.state.as_posix(), "WB_RELEASE_MOUNT": self.mount.as_posix(),
+                      "WB_BAKED_CODE": self.baked.as_posix(), "WB_PYTHON": Path(sys.executable).as_posix(),
+                      "WB_CODE_SCRIPT": CODE_SCRIPT, "MSYS_NO_PATHCONV": "1"})
+        clean.update(env)
+        return subprocess.run([SH, "-c", script], env=clean, capture_output=True, text=True)
+
+    def pick(self, mode: str = "copy", **env) -> tuple[str, str, str]:
+        done = self.run_script(f'. "{CODE_SCRIPT}"; wb_pick_code {mode} || exit 1; '
+                               'printf "%s\\n%s\\n%s\\n" "$WB_CODE" "$PYTHONPATH" "$WB_COMMIT"', **env)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        code, path, commit = (done.stdout.splitlines() + ["", "", ""])[:3]
+        return code, path, commit
+
+    def test_the_first_start_copies_the_release_into_the_volume_and_runs_the_copy(self):
+        code_tree(self.mount, self.commit)
+        code, path, commit = self.pick(WB_RELEASE=self.name)
+        copy = self.state / "releases" / self.name
+        self.assertEqual(code, copy.as_posix())
+        self.assertTrue(path.startswith(f"{copy.as_posix()}/sdk/python:"), path)
+        self.assertTrue(path.endswith(f"{self.name}/host"), path)
+        self.assertEqual(commit, self.commit)  # the release's own commit, not one nested in its record
+        self.assertTrue((copy / "core" / "wb_core" / "__init__.py").is_file())
+        self.assertEqual((self.state / "releases" / "last").read_text(encoding="utf-8").strip(), self.name)
+        # Later starts run the copy even with nothing mounted: nothing on the host reaches it.
+        import shutil
+        shutil.rmtree(self.mount)
+        self.mount.mkdir()
+        self.assertEqual(self.pick(WB_RELEASE=self.name)[0], copy.as_posix())
+
+    def test_a_half_made_copy_is_never_run(self):
+        code_tree(self.mount, self.commit)
+        broken = self.state / "releases" / self.name
+        (broken / "core").mkdir(parents=True)  # a copy cut short: no RELEASE.json
+        (self.state / "releases" / f"{self.name}.part").mkdir()
+        self.assertEqual(self.pick("read", WB_RELEASE=self.name)[0], self.mount.as_posix())  # read never copies
+        self.assertEqual(self.pick(WB_RELEASE=self.name)[0], broken.as_posix())
+        self.assertTrue((broken / "RELEASE.json").is_file())
+        self.assertFalse((self.state / "releases" / f"{self.name}.part").exists())
+
+    def test_a_checkout_is_read_in_place_with_the_commit_wb_up_gave(self):
+        code_tree(self.mount)
+        code, _, commit = self.pick(WB_RELEASE="", WB_SOURCE_COMMIT="feedface-dirty")
+        self.assertEqual((code, commit), (self.mount.as_posix(), "feedface-dirty"))
+        self.assertFalse((self.state / "releases").exists())  # a checkout is never copied as a release
+
+    def test_without_a_mount_the_last_release_then_an_image_with_code_then_nothing(self):
+        last = code_tree(self.state / "releases" / self.name, self.commit)
+        (self.state / "releases" / "last").write_text(self.name + "\n", encoding="utf-8")
+        self.assertEqual(self.pick()[0], last.as_posix())
+        (self.state / "releases" / "last").unlink()
+        code_tree(self.baked)
+        code, _, commit = self.pick(WB_COMMIT="baked-commit")
+        self.assertEqual((code, commit), (self.baked.as_posix(), "baked-commit"))  # an older image keeps its own
+        import shutil
+        shutil.rmtree(self.baked)
+        done = self.run_script(f'. "{CODE_SCRIPT}"; wb_pick_code copy')
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("no Workbench code to run", done.stderr)
+
+    def test_a_release_name_is_hex_only(self):
+        code_tree(self.mount, self.commit)
+        done = self.run_script(f'. "{CODE_SCRIPT}"; wb_pick_code copy && printf "%s" "$WB_CODE"', WB_RELEASE="../x")
+        self.assertIn("is not a release name", done.stderr)
+        self.assertEqual(done.stdout, self.mount.as_posix())  # read in place, nothing written outside releases/
+        self.assertFalse((self.state / "x").exists())
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "as root the entrypoint drops privileges")
+    def test_the_entrypoint_starts_its_command_on_the_chosen_code(self):
+        code_tree(self.mount, self.commit)
+        done = self.run_script(f'exec sh "{ENTRYPOINT}" sh -c \'printf "%s %s" "$WB_CODE" "$WB_COMMIT"\'',
+                               WB_RELEASE=self.name)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, f"{(self.state / 'releases' / self.name).as_posix()} {self.commit}")
+        again = self.run_script(f'exec sh "{ENTRYPOINT}" sh -c \'printf "%s" "$WB_CODE"\'',
+                                WB_RELEASE_MOUNT=(self.state / "none").as_posix())
+        self.assertEqual(again.stdout, (self.state / "releases" / self.name).as_posix())  # the release it ran last
+        empty = self.run_script(f'exec sh "{ENTRYPOINT}" true', WB_RELEASE_MOUNT=(self.state / "none").as_posix(),
+                                WB_STATE_DIR=(self.state / "fresh").as_posix())
+        self.assertEqual(empty.returncode, 1)  # no code anywhere: it says so instead of starting a broken daemon
+        self.assertIn("no Workbench code to run", empty.stderr)
+
+
+class ComposeCode(unittest.TestCase):
+    """wb up mounts the code it starts and names the release; with no release, the checkout is read in place."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        base = Path(self.folder.name)
+        (base / "config").mkdir()
+        (base / "config" / "workbench.toml").write_text("[core.api]\nport = 7377\n", encoding="utf-8")
+        self.run_dir = base / "config" / "run"
+        self.run_dir.mkdir()
+        (self.run_dir / "token").write_text("t", encoding="ascii")
+        self.repo = workbench_repo(base)
+        self.saved = os.environ.get("WB_RELEASES")
+        os.environ["WB_RELEASES"] = str(base / "releases")
+        from wb import config as wbconfig
+        self.config = wbconfig.load(base / "config")
+
+    def tearDown(self):
+        link = releases.current(self.config)
+        if link.exists() or link.is_symlink():
+            os.rmdir(link) if os.name == "nt" else link.unlink()
+        if self.saved is None:
+            os.environ.pop("WB_RELEASES", None)
+        else:
+            os.environ["WB_RELEASES"] = self.saved
+        self.folder.cleanup()
+
+    def service(self, code):
+        from wb import compose, platform
+        return compose.generate(self.config, self.run_dir, platform.Profile("windows", "desktop"), code=code)[
+            "services"]["wb"]
+
+    def test_the_release_in_service_is_mounted_read_only_and_named(self):
+        from unittest import mock
+        from wb import compose
+        sha = git(self.repo, "rev-parse", "HEAD")
+        release = releases.make(self.config, self.repo, sha, {"tree": "t"})
+        releases.point(self.config, release)
+        with mock.patch.object(compose, "repo_root", return_value=self.repo):
+            code = compose.code_source(self.config)
+        self.assertEqual((code.host, code.release), (release, sha[:12]))
+        service = self.service(code)
+        self.assertIn(f"{release}:{compose.RELEASE_MOUNT}:ro", service["volumes"])
+        self.assertEqual(service["environment"]["WB_RELEASE"], sha[:12])
+        self.assertNotIn("WB_SOURCE_COMMIT", service["environment"])
+        other = Path(self.folder.name) / "other"
+        self.assertEqual(compose.code_source(self.config, other).release, "other")  # what wb deploy starts
+
+    def test_with_no_release_the_checkout_is_read_in_place(self):
+        from unittest import mock
+        from wb import compose
+        with mock.patch.object(compose, "repo_root", return_value=self.repo):
+            code = compose.code_source(self.config)
+        self.assertEqual((code.host, code.release, code.commit), (self.repo, "", git(self.repo, "rev-parse", "HEAD")))
+        service = self.service(code)
+        self.assertEqual(service["environment"]["WB_RELEASE"], "")
+        self.assertEqual(service["environment"]["WB_SOURCE_COMMIT"], code.commit)
+        with mock.patch.object(compose, "repo_root", return_value=None):
+            self.assertIsNone(compose.code_source(self.config))
+        self.assertFalse(any(compose.RELEASE_MOUNT in v for v in self.service(None)["volumes"]))
+
+
 if __name__ == "__main__":
     unittest.main()

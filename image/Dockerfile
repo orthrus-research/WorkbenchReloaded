@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
-# Workbench Reloaded: wb-core (spec 13). Built from the checkout root: `wb build` or
-#   docker build -f image/Dockerfile -t wb-core:dev .
+# Workbench Reloaded: wb-core (spec 13). Built from a checkout or release root: `wb build`, wb deploy when the image's
+# inputs changed (wb.compose.image_inputs), or docker build -f image/Dockerfile -t wb-core:dev .
 # Every input is pinned: the base by digest, apt by a snapshot.ubuntu.com instant, each JDK by SHA-256
 # (image/pins.toml, compiled into image/jdks.lock, image/apt-image.txt and image/tools.lock by
 # `python image/pins.py lock`).
@@ -80,22 +80,16 @@ COPY --from=jdks /opt/jdk /opt/jdk
 COPY --from=tools /opt/tools /opt/tools
 RUN useradd --create-home --uid 1000 --shell /bin/bash wb 2>/dev/null || useradd --create-home --shell /bin/bash wb; \
     mkdir -p /var/lib/wb /etc/wb && chown wb:wb /var/lib/wb
-COPY --chown=wb:wb sdk/python /opt/wb/src/sdk/python
-COPY --chown=wb:wb core /opt/wb/src/core
-COPY --chown=wb:wb host /opt/wb/src/host
-COPY --chown=wb:wb modules /opt/wb/src/modules
-COPY --chown=wb:wb schema /opt/wb/src/schema
-COPY --chown=wb:wb image /opt/wb/src/image
-COPY --chown=wb:wb config.example /opt/wb/src/config.example
-COPY image/entrypoint.sh /opt/wb/entrypoint.sh
+# No Workbench code: wb up and wb deploy mount the release they start, and the entrypoint copies it into the state
+# volume and runs it there (image/code.sh). So the image is built only when what is above, or this folder, changes.
+COPY image/entrypoint.sh image/code.sh /opt/wb/
 # Mounted checkouts belong to the host's user; Workbench only reads them (ci clones them first).
 RUN git config --system --add safe.directory '*'
-RUN printf '#!/bin/sh\nexec python3 -m wb.cli "$@"\n' > /usr/local/bin/wb && chmod +x /usr/local/bin/wb /opt/wb/entrypoint.sh \
- && find /opt/wb/src -name '__pycache__' -prune -exec rm -rf {} + \
- && PYTHONPATH=/opt/wb/src/sdk/python:/opt/wb/src/core python3 -c "import wb, wb_core.service" \
+RUN printf '#!/bin/sh\n. /opt/wb/code.sh\nwb_pick_code read || exit 3\nexec python3 -m wb.cli "$@"\n' > /usr/local/bin/wb \
+ && chmod +x /usr/local/bin/wb /opt/wb/entrypoint.sh \
+ && python3 -c "import json, sqlite3, ssl" \
  && du -sh /opt/jdk | sed 's/^/jdks: /'
-ENV PYTHONPATH=/opt/wb/src/sdk/python:/opt/wb/src/core:/opt/wb/src/host \
-    PATH=/opt/tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+ENV PATH=/opt/tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     PYTHONDONTWRITEBYTECODE=1 \
     WB_CONFIG=/etc/wb \
     WB_IN_CONTAINER=1 \
@@ -106,10 +100,8 @@ ENV PYTHONPATH=/opt/wb/src/sdk/python:/opt/wb/src/core:/opt/wb/src/host \
     JAVA_HOME_25_X64=/opt/jdk/25 \
     JAVA_HOME_26_X64=/opt/jdk/26 \
     JAVA_HOME_27_X64=/opt/jdk/27
-# No USER: the entrypoint drops to the host's user (WB_UID, WB_GID; default 1000) before Workbench starts.
-# Which commit this image's Workbench code is (wb build passes it); the daemon reports it and the CLI checks it.
-ARG WB_COMMIT=""
-ENV WB_COMMIT=${WB_COMMIT}
+# No USER: the entrypoint drops to the host's user (WB_UID, WB_GID; default 1000) before Workbench starts. The
+# daemon's commit is the release's (its RELEASE.json), which the entrypoint exports as WB_COMMIT.
 WORKDIR /var/lib/wb
 VOLUME ["/var/lib/wb"]
 EXPOSE 7377
