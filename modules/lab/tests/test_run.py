@@ -486,7 +486,7 @@ class Sessions(unittest.TestCase):
         self.assertEqual(ctx.outcome, "ok", ctx.findings)
         self.assertEqual((record["world"]["from"], record["world"]["label"]), ("restored", world["kept"]))
         self.assertEqual(self.level(Path(result["instance"])), "2")  # the copy's server loaded the kept world
-        self.assertIsNone(record["world"]["kept"])  # a measure never writes the world store
+        self.assertIsNone(record["world"]["kept"])  # a measure never keeps its world
         # the instance plays on its own world; the store keeps the latest settled one
         _, _, record = self.play(kind="tour", tour=str(self.tour), label="again")
         self.assertEqual((record["world"]["from"], self.level(self.instance())), ("instance", "2"))

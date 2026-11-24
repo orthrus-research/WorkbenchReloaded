@@ -168,6 +168,19 @@ class Members(Base):
         self.assertEqual(doc["tour"]["captured"], "view captured")
         self.assertEqual(doc["drivers"]["pipeline"]["command"][0], "{python}")
 
+    def test_a_priming_start_is_carried_into_the_launch_file(self):
+        self.assertNotIn("prime", self.run_resolve(table={"members": ["game:mod@both"]}))
+        doc = self.run_resolve(table={"members": ["game:mod@both"], "prime": True})
+        self.assertEqual(doc["prime"], {"commands": [], "seconds": 0})
+        doc = self.run_resolve(table={"members": ["game:mod@both"],
+                                      "prime": {"commands": ["forceload add 0 0"], "seconds": 30, "timeout": 600}})
+        self.assertEqual(doc["prime"], {"commands": ["forceload add 0 0"], "seconds": 30, "timeout": 600})
+        self.assertNotIn("prime", self.run_resolve(table={"members": ["game:mod@both"], "prime": False}))
+        for prime, pattern in (("yes", "prime is true, false or a table"), ({"ticks": 5}, "unknown key prime.ticks"),
+                               ({"commands": "stop"}, "a list of console lines"), ({"seconds": -1}, "0 or more")):
+            with self.subTest(prime=prime), self.assertRaisesRegex(launch.LaunchError, pattern):
+                launch.definition({"launch": {"default": {"members": ["a:mod@both"], "prime": prime}}}, "default")
+
     def test_a_file_the_store_lacks_names_the_check_that_makes_it(self):
         doc = json.loads(json.dumps(self.set_doc))
         doc["projects"]["cube"]["artifacts"]["mod"]["sha256"] = "0" * 64
@@ -548,6 +561,12 @@ class Inheritance(Base):
         self.assertNotIn("drivers", doc)  # a driver runs from its own product's tree
         self.assertEqual((doc["collect"], doc["failures"]), (["host/*.log"], []))
         self.assertEqual(doc["definition"], {"commit": COMMIT, "launch_tree": "b1" * 20})
+
+    def test_a_priming_start_is_inherited_unless_the_launch_names_its_own(self):
+        self.host_launch["prime"] = {"commands": ["say primed"], "seconds": 5}
+        self.assertEqual(self.derive()["prime"], {"commands": ["say primed"], "seconds": 5})
+        self.assertEqual(self.derive(table={**self.derived, "prime": True})["prime"], {"commands": [], "seconds": 0})
+        self.assertNotIn("prime", self.derive(table={**self.derived, "prime": False}))
 
     def test_a_base_on_its_line_says_so(self):
         set_doc = json.loads(json.dumps(self.set_doc))

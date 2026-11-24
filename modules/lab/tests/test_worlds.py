@@ -1,4 +1,4 @@
-"""The world store: a world is known by its world key (seed, layout scale, definitions' SHA-256) and writer build;
+"""Kept worlds: a world is known by its world key (seed, layout scale, definitions' SHA-256) and writer build;
 a settled world is kept once per key and writer, restored into an instance without one, given way to by a template's
 primed world, set aside when another build wrote it, and a fresh world is removed link-first. A world lab.freeze
 imported is found by the same key."""

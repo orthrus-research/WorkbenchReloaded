@@ -91,13 +91,18 @@
   JDWP on loopback and writes an attach configuration. A stop waits at least 180 s for the server; a failure names
   the decisive line, the crash report and the next command. `lab.keep` keeps a session as a retention root.
   `lab.resolve` carries a launch's `tour` rules and `drivers` into launch.json.
-- The world store: a world is known by its world key (seed, layout scale, the definitions' SHA-256) and the build
+- Kept worlds: a world is known by its world key (seed, layout scale, the definitions' SHA-256) and the build
   that wrote it (the base project's member, Cubature's JAR). An open or tour session whose server stopped by itself
   keeps its world under `<instances>/.store/worlds`, as `lab.build` does before it replaces an instance; a measure's
   fresh copy and an instance without a world start on that world. A world another build wrote is set aside, and
   `wb play --keep-world` (`lab.run keep_world`) plays on it; `--fresh-world` removes every world part link-first.
   session.json's `world` names the world played and kept, and `wb play` replaces an instance built from another
   launch file instead of refusing it.
+- A launch may ask for a priming start (`prime = true`, or `{ commands, seconds, timeout }`, inherited from a base
+  launch): `lab.build` starts the template's server once on a free port, sends the commands, stops it with `stop`
+  and keeps the world it generated in the template, so every instance starts warm; the receipt's `world` names its
+  key and writer, and a settled world in the store takes its place. `lab.build prime=yes|no` decides instead; it
+  needs the EULA accepted, and a template without one keeps the key it had.
 - `lab.freeze` keeps the old route's instances as read-only evidence (a manifest, the world by world key, tours/
   and runs/ as a kept session), never following a link; `lab.thaw` undoes it. lab.build finds its instances under
   `[lab] home` when `[modules.lab] instances` is not set, as lab.run does its sessions.

@@ -63,6 +63,24 @@ NATIVE = jar(("game.dll", b"a native"), ("libgame.so", b"a native"))
 OBJECT = b"a texture"
 INDEX = json.dumps({"objects": {"textures/a.png": {"hash": sha1(OBJECT), "size": len(OBJECT)}}}).encode()
 
+# A server for a priming start: it listens on its port, generates a world, rewrites server.properties as the game
+# does, says it is ready and records the console lines it gets until stop. (No braces: a base file's text is filled.)
+PRIME_SERVER = """import pathlib, socket, sys
+here = pathlib.Path.cwd()
+values = dict(line.split("=", 1) for line in (here / "server.properties").read_text().splitlines() if "=" in line)
+listener = socket.socket()
+listener.bind(("127.0.0.1", int(values["server-port"])))
+world = here / "world"
+world.mkdir(exist_ok=True)
+(world / "level.dat").write_text("spawn at " + values["server-port"])
+(here / "server.properties").write_text((here / "server.properties").read_text() + "written-by-the-server=true\\n")
+print("[Server thread/INFO]: Done (0.1s)! For help, type help", flush=True)
+for line in sys.stdin:
+    with open(world / "commands.log", "a") as log:
+        log.write(line.strip() + "\\n")
+    if line.strip() == "stop":
+        break
+"""
 
 # A base as a base project's [launch.standalone] carries it (Cubature's standalone world), the installer this Python.
 STANDALONE = {
@@ -322,6 +340,57 @@ class Build(Fixture):
         chosen = worlds.choose(worlds.store_of(self.root / "instances"), one,
                                worlds.identity(self.receipt(), doc))
         self.assertEqual((chosen["from"], (one / "server" / "world" / "level.dat").read_text()), ("restored", "played"))
+
+    def primed_launch(self, prime) -> Path:
+        doc = json.loads(json.dumps(self.launch_doc))
+        doc["base"]["definition"]["server"] = [sys.executable, "{game}/prime_server.py", "{jvm}", "nogui"]
+        doc["base"]["definition"]["files"]["server"]["prime_server.py"] = PRIME_SERVER
+        if prime is not None:
+            doc["prime"] = prime
+        return self.write_launch(doc, "primed.json")
+
+    def test_a_priming_start_leaves_its_world_in_the_template_and_every_instance_starts_on_it(self):
+        launch = self.primed_launch({"commands": ["say primed"], "seconds": 0})
+        with self.assertRaisesRegex(ParamError, "EULA accepted"):
+            self.run_build("cold", launch=launch)
+        ctx, warm = self.run_build("warm", launch=launch, eula=True)
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        folder = Path(warm["instance"])
+        self.assertTrue((folder / "server" / "world" / "level.dat").read_text().startswith("spawn at "))
+        self.assertEqual((folder / "server" / "world" / "commands.log").read_text().splitlines(), ["say primed", "stop"])
+        properties = (folder / "server" / "server.properties").read_text()
+        self.assertIn(f"server-port={instance.DEFAULT_PORT}", properties)  # put back as the base wrote it
+        self.assertNotIn("written-by-the-server", properties)
+        receipt = self.receipt("warm")
+        self.assertEqual((receipt["world"]["from"], receipt["world"]["played"]), ("primed", False))
+        self.assertEqual(receipt["world"]["key"]["seed"], 8675309)
+        self.assertEqual(receipt["world"]["prime"]["commands"], ["say primed"])
+        self.assertIn("{instance}/server/world/level.dat", receipt["files"])
+        self.assertTrue((self.root / "out" / "warm" / "prime-server.log").is_file())
+        _, again = self.run_build("again", launch=launch, eula=True)
+        self.assertEqual((again["built"], again["template"]), (False, warm["template"]))
+        other = Path(again["instance"]) / "server" / "world" / "level.dat"
+        self.assertFalse(os.path.samefile(other, folder / "server" / "world" / "level.dat"))  # the game writes it
+        _, plain = self.run_build("plain", launch=launch, eula=True, prime="no")
+        self.assertNotEqual(plain["template"], warm["template"])
+        self.assertFalse((Path(plain["instance"]) / "server" / "world").exists())
+        self.assertIsNone(self.receipt("plain")["world"])
+
+    def test_a_launch_without_a_priming_start_keeps_its_template_key(self):
+        inputs = instance.template_inputs("a" * 64, "test:standalone", STANDALONE, None, {}, True, "linux", "x86_64")
+        self.assertNotIn("prime", inputs)
+        _, plain = self.run_build("plain", launch=self.primed_launch(None), eula=True)
+        _, asked = self.run_build("asked", launch=self.primed_launch(None), eula=True, prime="yes")
+        self.assertNotEqual(plain["template"], asked["template"])
+        self.assertTrue((Path(asked["instance"]) / "server" / "world" / "level.dat").is_file())
+
+    def test_a_priming_start_that_never_gets_ready_stops_the_build(self):
+        launch = self.primed_launch({"timeout": 1})
+        doc = json.loads(launch.read_text())
+        doc["base"]["definition"]["ready"] = "never says this"
+        with self.assertRaisesRegex(EnvironmentProblem, "no ready line within"):
+            self.run_build("stuck", launch=self.write_launch(doc, "stuck.json"), eula=True)
+        self.assertFalse((self.root / "instances" / "stuck").exists())
 
     def test_the_eula_comes_from_the_machine(self):
         _, plain = self.run_build("plain")

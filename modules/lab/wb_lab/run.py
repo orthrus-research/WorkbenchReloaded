@@ -39,10 +39,10 @@ tour. Edited files are put back when the session ends. ``debug`` opens JDWP on l
 or both, writes an attach configuration (``attach/launch.json``, for VS Code) and marks the session as not evidence.
 
 The world is chosen by ``wb_lab.worlds``: by default the instance's own when its world key (seed, layout scale,
-definitions) and writer build are the session's, else the world store's settled world of that key and writer, else a
+definitions) and writer build are the session's, else the settled world kept for that key and writer, else a
 fresh one; ``keep_world`` plays on a world set aside or written by another build, ``fresh_world`` on a fresh one
-(every world part removed link-first). An open or tour session whose server stopped by itself keeps its world in the
-store as the world of its key and writer; session.json's ``world`` says which world was played and what was kept.
+(every world part removed link-first). An open or tour session whose server stopped by itself keeps its world as the
+kept world of its key and writer; session.json's ``world`` says which world was played and what was kept.
 
 A stop sends the server ``stop`` and waits at least 180 s for its own exit before the tree is killed. On a failure
 the session names the decisive line (the launch's ``failures`` patterns first, then Workbench's), the crash report

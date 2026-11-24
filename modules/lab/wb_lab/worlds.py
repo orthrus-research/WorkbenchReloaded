@@ -1,4 +1,4 @@
-"""Worlds: a played world kept in the lab's world store by its world key and writer build, and restored into a fresh
+"""Worlds: a played world kept among the lab's worlds by its world key and writer build, and restored into a fresh
 instance, so a session starts on a settled world instead of generating one.
 
 A world's **key** is what it was generated from: the seed (the launch's ``seed`` param), the layout scale (the
@@ -76,7 +76,7 @@ def same(one: dict | None, other: dict) -> bool:
 
 
 def store_of(root: Path) -> Store:
-    """The world store of a lab's instances folder (the store lab.build keeps its templates in)."""
+    """Where a lab's instances folder keeps its worlds (the store lab.build keeps its templates in)."""
     return Store(Path(root) / ".store", Layout(world_parts=list(WORLD_PARTS)))
 
 
@@ -260,7 +260,7 @@ def after(store: Store, instance: Path, ident: dict, chosen: dict, *, session: s
     mark(instance, {"key": ident["key"], "writer": ident["writer"], "played": True, "session": session,
                     "from": chosen.get("from"), "label": chosen.get("label"), "set_aside": set_aside})
     if not keeps:
-        out["why"] = "a measure or driver session never writes the world store"
+        out["why"] = "a measure or driver session never keeps its world"
     elif not settled:
         out["why"] = "the server did not stop by itself, so its world may be half written"
     else:

@@ -15,8 +15,8 @@ its commit. A member the Store lacks is built first by submitting its producing 
 
 The instance is built from the launch file (lab.build: one template per launch file, base and params, reused when it
 is already built; an instance of the name built from another launch file is replaced, its played world kept in the
-world store first). The session plays the instance's world when its world key (seed, layout scale, definitions) and
-writer build are the launch's, else the world store's settled world of them, else a fresh one (wb_lab.worlds); a
+lab's kept worlds first). The session plays the instance's world when its world key (seed, layout scale, definitions) and
+writer build are the launch's, else the settled world kept for them, else a fresh one (wb_lab.worlds); a
 world written by another build is set aside, and the play prints the --keep-world command that plays on it.
 --fresh-world starts a fresh world. Then the session runs (lab.run) under the GPU lease in a lane of its own, on this machine, as
 wb-host would run them: the job id, launch file, instance and session folder are printed at once, the consoles are
