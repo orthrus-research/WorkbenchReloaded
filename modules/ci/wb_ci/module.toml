@@ -35,6 +35,7 @@ params.keep_going = { type = "bool", default = false }
 params.keep = { type = "bool", default = false, summary = "keep the clean trees after the run" }
 params.checkout = { type = "path.in", optional = true, digest = "git", summary = "with commit=worktree: another checkout of the project's repository (a linked worktree) whose working tree to run" }
 params.dry_run = { type = "bool", default = false }
+params.stand_ins = { type = "object", default = {}, summary = "{project: tree}: stand-ins, each project's files as CI built them for that tree; a run with stand-ins records no pass" }
 params.set = { type = "string", default = "", summary = "the Set revision {gradle} builds against (the worktree's .set); empty: the head wb last exported" }
 params.cold = { type = "bool", default = false, summary = "build every job again: no earlier pass, input cache or Gradle build cache stands in (store.verify's rebuild)" }
 result.commit = { type = "string" }

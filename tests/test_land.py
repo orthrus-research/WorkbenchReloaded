@@ -388,6 +388,25 @@ class Land(unittest.TestCase):
         self.assertEqual(_targets(workspace, [], tree), {"lib": mine})
         self.assertEqual(_targets(workspace, ["two=HEAD"], tree), {"two": "HEAD"})  # another project: its own HEAD
 
+    def test_9f_stand_ins_reach_gradle_and_vouch_for_nothing(self):
+        from wb_core import artifacts
+        lib_tree = git(self.lib, "rev-parse", "HEAD~1^{tree}")  # a tree CI built and kept (test_9b's hold landed after)
+        kept = [p.stem for p in (self.store / "index" / "lib").glob("*.json")]
+        lib_tree = lib_tree if lib_tree in kept else kept[0]
+        records = self.root / "out" / "records" / "gradled"
+        before = sorted(p.parent.name for p in records.glob("*/summary.json"))
+        envelope = self.c.submit("ci.run", {"project": "gradled", "set": "b" * 40, "stand_ins": {"lib": lib_tree},
+                                            "if_needed": False}).result(timeout=300)
+        self.assertEqual(envelope.outcome, "ok", envelope.summary)
+        log = Path(envelope.data["engine"]["jobs"]["build"]["steps"][0]["log"]).read_text(encoding="utf-8")
+        self.assertIn("-Pset.with.lib=", log)
+        folder = log.split("-Pset.with.lib=")[1].split()[0]
+        self.assertTrue(folder.endswith(str(Path("stand-ins") / "lib")) or folder.endswith("stand-ins/lib"))
+        after = sorted(p.parent.name for p in records.glob("*/summary.json"))
+        self.assertEqual(after, before)  # against stand-in bytes the run vouches for nothing
+        self.assertEqual(envelope.data["stand_ins"], {"lib": lib_tree})
+        self.assertTrue(artifacts.find(self.store, "lib", lib_tree))
+
     def test_y_the_backup_keeps_the_set_and_the_seeded_bytes(self):
         from wb import backup
         folder = Path(tempfile.mkdtemp(prefix="wb-backup-"))

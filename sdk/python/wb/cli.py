@@ -286,6 +286,29 @@ def cmd_land(args) -> int:
     from . import land
     return land.main(args)
 
+def _stand_ins(workspace, given: list, args) -> dict:
+    """Each --with name=<ref|folder>: that project's checks run first on the commit (a folder: its would-be tree, as
+    wb check takes one), so the Store holds its files; returns {name: tree} for the run that stands them in."""
+    from .workspace import WorkspaceError, git
+    client = _client()
+    wanted = {}
+    for item in given:
+        name, sep, where = item.partition("=")
+        project = workspace.projects().get(name)
+        if not sep or project is None:
+            raise WorkspaceError(f"--with {item!r}: name a registered project as <project>=<ref or folder>")
+        folder = Path(where)
+        commit = workspace.would_be(folder)["commit"] if folder.is_dir() else \
+            git(project.repo, "rev-parse", "--verify", f"{where}^{{commit}}")
+        print(f"wb: {name} stands in at {commit[:12]}: its checks first", file=sys.stderr)
+        envelope = client.submit("ci.run", {"project": name, "commit": commit}).wait(_duration(args.timeout))
+        if envelope.get("outcome") != "ok":
+            raise WorkspaceError(f"{name} at {commit[:12]} did not pass its checks, so it cannot stand in: "
+                                 f"{envelope.get('summary')}")
+        wanted[name] = git(project.repo, "rev-parse", f"{commit}^{{tree}}")
+    return wanted
+
+
 def cmd_check(args) -> int:
     """ci.run for the worktree you stand in: its project from the repository, the commit from HEAD, or the tree
     the host's git would commit when the worktree has changes. No commit= or checkout= to type."""
@@ -300,6 +323,12 @@ def cmd_check(args) -> int:
         print(f"wb: {error}", file=sys.stderr)
         return 2
     params = {"project": project.name, "commit": tree["commit"], **({"set": revision} if revision else {})}
+    if args.stand_in:
+        try:
+            params["stand_ins"] = _stand_ins(workspace, args.stand_in, args)
+        except WorkspaceError as error:
+            print(f"wb: {error}", file=sys.stderr)
+            return 2
     if args.names:
         params["workflow"] = args.names[0]
         params["jobs"] = args.names[1:]
@@ -489,6 +518,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tag", default="wb-core:dev")
     p = add("check", cmd_check, "run CI's checks on the worktree you stand in (its changes included)")
     p.add_argument("names", nargs="*", help="a workflow or check, then more (default: the jobs file's workflow)")
+    p.add_argument("--with", dest="stand_in", action="append", metavar="PROJECT=REF|FOLDER",
+                   help="build against this project's files at a ref or worktree instead of its line (no pass recorded)")
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--timeout")
     p = add("deploy", cmd_deploy, "test, build, drain, and restart the daemon and the host runner on this checkout")

@@ -365,7 +365,29 @@ sys.exit(subprocess.call([*args, *sys.argv[1:]]))
 """
 
 
-def _gradle_launcher(ctx: Context, work: Path, revision: str) -> tuple[Path, str]:
+def _stand_ins(ctx: Context, work: Path, wanted: dict) -> list[str]:
+    """Gradle arguments for stand-ins: each project's files, as CI built them for the tree given, laid out in a folder at
+    the paths its build left them (so set.base finds each by its glob) and named with -Pset.with.<name>."""
+    import shutil as copier
+    from wb_core import artifacts as store
+    root = _store_root(ctx)
+    args = []
+    for name, tree in sorted((wanted or {}).items()):
+        kept = store.find(root, name, str(tree))
+        if not kept or not kept.get("artifacts"):
+            raise EnvironmentProblem(f"the Store holds nothing of {name} built at tree {str(tree)[:12]}: run its checks "
+                                     "first (wb check does, for --with)")
+        folder = work / "stand-ins" / name
+        for file_name, item in kept["artifacts"].items():
+            target = folder / (item.get("from") or file_name).replace("\\", "/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            copier.copyfile(store.path_of(root, item["sha256"], file_name), target)
+        args.append(f"-Pset.with.{name}={folder}")
+        ctx.log.info(f"{name} stands in from tree {str(tree)[:12]}: {len(kept['artifacts'])} file(s)")
+    return args
+
+
+def _gradle_launcher(ctx: Context, work: Path, revision: str, extra: list | None = None) -> tuple[Path, str]:
     """The launcher {gradle} runs: the Gradle distribution the set's platform names, from the Store, with -Pset.dir
     (the run's export of the set), -Pset.store, -Pset.plugins, -Pset.exact=true and the platform's JDK builds as
     Gradle's only installations. Without that Gradle in the Store, the launcher says what fetches it."""
@@ -397,6 +419,7 @@ def _gradle_launcher(ctx: Context, work: Path, revision: str) -> tuple[Path, str
             "-Porg.gradle.java.installations.auto-download=false"]
     if jdks:
         args.append(f"-Porg.gradle.java.installations.paths={','.join(jdks)}")
+    args += list(extra or [])
     launcher.write_text(GRADLE_LAUNCHER.format(args=args), encoding="utf-8")
     # The same values for a ./gradlew a step script starts: Gradle reads org.gradle.project.* system properties from
     # GRADLE_OPTS as the build's properties, so that build resolves the same set, Store and JDKs.
@@ -405,7 +428,7 @@ def _gradle_launcher(ctx: Context, work: Path, revision: str) -> tuple[Path, str
 
 
 def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_needed: bool, keep_going: bool,
-        keep: bool, dry_run: bool, checkout=None, cold: bool = False, set: str = ""):
+        keep: bool, dry_run: bool, checkout=None, cold: bool = False, set: str = "", stand_ins: dict | None = None):
     entry = _project(ctx, project)
     source = entry["source"]
     tree_source = Path(checkout) if checkout else source  # whose working tree commit=worktree runs
@@ -453,7 +476,12 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
         pins = _folder(ctx, "pin_cache", _state() / "cache" / "pins")
         pins.mkdir(parents=True, exist_ok=True)
         gradle_home, served = _gradle_home(ctx)
-        launcher, set_revision, gradle_opts = _gradle_launcher(ctx, work, set)
+        launcher, set_revision, gradle_opts = _gradle_launcher(ctx, work, set, _stand_ins(ctx, work, stand_ins or {}))
+        if stand_ins:
+            # Against stand-in bytes a run vouches for nothing: its records go one level down, where the gate, which
+            # reads <records>/<run>/summary.json, never counts them, and its step logs stay readable.
+            records = records / "stand-ins"
+            records.mkdir(parents=True, exist_ok=True)
         env = {**_jdk_env(ctx, major), "GRADLE_USER_HOME": str(gradle_home), "WB_PIN_CACHE": str(pins),
                "WB_GRADLE": str(launcher), **({"GRADLE_OPTS": gradle_opts} if gradle_opts else {}),
                **{k: str(v) for k, v in (entry.get("env") or {}).items()}, **({"WB_COLD": "1"} if cold else {})}
@@ -485,7 +513,7 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
     run_id = result.get("runId")
     if run_id and (records / run_id).is_dir():
         ctx.output("run", records / run_id)
-    stored = {} if result.get("treesChanged") else _store_artifacts(ctx, project, sha, result.get("trees") or {},
+    stored = {} if result.get("treesChanged") or stand_ins else _store_artifacts(ctx, project, sha, result.get("trees") or {},
                                                                      records, run_id, jobs_done)
     failed = [n for n, j in jobs_done.items() if j.get("status") == "failed"]
     passed = [n for n, j in jobs_done.items() if j.get("status") == "passed"]
@@ -503,7 +531,7 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
                     + ("" if jobs_done else f" ({document.get('summary') or 'nothing to run'})"))
     return {"project": project, "commit": sha, "worktree": worktree, "pinned": pinned, "run": run_id,
             "trees": trees, "passed": passed, "failed": failed, "repository": served, "stored": stored,
-            "engine": result, "set": set_revision}
+            "engine": result, "set": set_revision, "stand_ins": dict(stand_ins or {})}
 
 
 def _store_artifacts(ctx: Context, project: str, sha: str, trees: dict, records: Path, run_id: str | None,
