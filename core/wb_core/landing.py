@@ -86,9 +86,21 @@ def with_refs(store: Path) -> list[dict]:
     return found
 
 
-def naming(store: Path, project: str, commit: str, states=("refs-pushed", "set-pushed")) -> dict | None:
-    """The open landing that names ``commit`` for ``project``, when one is publishing; else None."""
-    for record in unfinished(store):
+def _every(store: Path) -> list[dict]:
+    found = []
+    for item in sorted(folder(store).glob("*.json")):
+        try:
+            found.append(json.loads(item.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            continue
+    return found
+
+
+def naming(store: Path, project: str, commit: str, states=("refs-pushed", "set-pushed"),
+           finished: bool = False) -> dict | None:
+    """The open landing that names ``commit`` for ``project``, when one is publishing; else None. With
+    ``finished``, a landing that has landed counts too (``states`` then may name ``landed``)."""
+    for record in (_every(store) if finished else unfinished(store)):
         member = (record.get("projects") or {}).get(project) or {}
         if record.get("state") in states and member.get("commit") == commit:
             return record

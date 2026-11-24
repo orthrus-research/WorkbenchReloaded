@@ -407,6 +407,68 @@ class Land(unittest.TestCase):
         self.assertEqual(envelope.data["stand_ins"], {"lib": lib_tree})
         self.assertTrue(artifacts.find(self.store, "lib", lib_tree))
 
+    def test_9g_only_lands_one_of_what_was_asked_and_tag_tags_its_commit(self):
+        lib_commit, two_before = advance(self.lib, "v7"), self.set_json()["projects"]["two"]["commit"]
+        advance(self.two, "v7")
+        with self.assertRaises(WorkspaceError) as raised:
+            self.lander().land({"lib": "HEAD"}, only=["nosuch"])
+        self.assertIn("--only nosuch", str(raised.exception))
+        result = self.lander().land({"lib": "HEAD", "two": "HEAD"}, only=["lib"], tag="rel-1")
+        self.assertEqual(result["state"], "landed", self.said)
+        lines = self.set_json()["projects"]
+        self.assertEqual((lines["lib"]["commit"], lines["two"]["commit"]), (lib_commit, two_before))
+        self.assertEqual(git(self.lib_remote, "rev-parse", "refs/tags/rel-1^{commit}"), lib_commit)
+        self.assertFalse(git(self.two_remote, "tag", "--list", "rel-1"))
+        self.assertIn("tag rel-1 on lib", git(self.home, "log", "-1", "--format=%B", "main"))
+        workspace = Workspace(self.d.config)
+        lib = workspace.projects()["lib"]
+        self.assertEqual(workspace.landing_rule(lib, lib_commit, "refs/tags/rel-2"), "")  # the line: taken
+        refused = workspace.landing_rule(lib, advance(self.lib, "v8"), "refs/tags/rel-2")
+        self.assertIn("--tag rel-2", refused)  # never a line: wb land names the way
+        with self.assertRaises(WorkspaceError) as raised:  # a scrub refusal on the tag publishes nothing
+            self.lander().land({"lib": "HEAD"}, tag="forbiddenword-1")
+        self.assertIn("scrub", str(raised.exception))
+        self.assertFalse(git(self.lib_remote, "tag", "--list", "forbiddenword-1"))
+
+    def test_9h_a_pass_writes_its_record_and_the_gate_record_in_the_store(self):
+        from wb_core import passes
+        line = self.set_json()["projects"]["lib"]
+        tree = git(self.lib, "rev-parse", f"{line['commit']}^{{tree}}")
+        found = list((self.store / "passes" / "lib" / tree).glob("build.*.json"))
+        self.assertEqual(len(found), 1, found)
+        record = json.loads(found[0].read_text(encoding="utf-8"))
+        self.assertEqual((record["check"], record["tree"], record["commit"]), ("build", tree, line["commit"]))
+        self.assertEqual(record["key"], passes.key("build", tree, record["identity"]))
+        self.assertEqual(record["artifacts"]["lib-1.jar"]["sha256"], line["artifacts"]["mod"]["sha256"])
+        gate = passes.read_gate(self.store, "lib", tree)
+        self.assertEqual(gate["checks"], {"build": record["key"]})
+        # The push gate reads that record: no run summary is needed for the tree any more.
+        workspace = Workspace(self.d.config)
+        verdict = workspace.gate(workspace.projects()["lib"],
+                                 [f"refs/heads/feat/x {line['commit']} refs/heads/feat/x {'0' * 40}"])
+        self.assertEqual((verdict["refused"], verdict["notes"]), ([], []))
+
+    def test_9i_a_killed_publisher_holds_lock_set_until_its_deadline_then_the_next_lands(self):
+        advance(self.lib, "v9")
+        deadline = 12
+        # The publisher is killed with its landing refs pushed: its set.land job holds lock set to the deadline.
+        killed = self.lander().land({"lib": "HEAD"}, deadline=deadline, stop_after="refs")
+        self.assertEqual(killed["state"], "refs-pushed")
+        stopped_at = time.time()
+        commit = advance(self.two, "v9")
+        self.said.clear()
+        result = self.lander().land({"two": "HEAD"})
+        waited = time.time() - stopped_at
+        self.assertEqual(result["state"], "landed", self.said)
+        self.assertEqual(self.set_json()["projects"]["two"]["commit"], commit)
+        self.assertTrue(any("lock set held by" in s for s in self.said), self.said)
+        self.assertGreaterEqual(waited, deadline - 1)  # it waited for the deadline, not a moment less
+        record = landings.read(self.store, killed["landing"])
+        self.assertEqual(record["state"], "abandoned")
+        self.assertIn("deadline", record["why"])
+        self.lander().reconcile()  # the killed landing's refs go with the next landing's reconcile
+        self.assertFalse([r for r in self.remote_refs(self.lib_remote) if "refs/landed/" in r])
+
     def test_y_the_backup_keeps_the_set_and_the_seeded_bytes(self):
         from wb import backup
         folder = Path(tempfile.mkdtemp(prefix="wb-backup-"))
@@ -435,6 +497,198 @@ class Land(unittest.TestCase):
         landed = json.loads(git(remote, "show", "main:set.json"))
         self.assertEqual((landed["projects"]["lib"]["commit"], landed["doctor"]), (commit, {"exempt": ["evidence/**"]}))
         self.assertTrue(any("moved elsewhere" in s for s in self.said), self.said)
+
+
+# A consumer's check that resolves its producer's file the way set.jar does: from the set the run builds against
+# (-Pset.dir, which ci.run hands a step's ./gradlew in GRADLE_OPTS) and the Store, and that needs a symbol in it.
+CONSUMER_CHECK = """import json, os, pathlib, sys
+values = dict(a[len("-Dorg.gradle.project."):].split("=", 1) for a in os.environ.get("GRADLE_OPTS", "").split()
+              if a.startswith("-Dorg.gradle.project.") and "=" in a)
+doc = json.loads((pathlib.Path(values["set.dir"]) / "set.json").read_text(encoding="utf-8"))
+item = doc["projects"]["lib"]["artifacts"]["mod"]
+data = (pathlib.Path(values["set.store"]) / "files" / item["sha256"] / item["file"]).read_text(encoding="utf-8")
+need = pathlib.Path("needs.txt").read_text(encoding="utf-8").strip()
+if need not in data:
+    sys.exit(f"cannot find symbol {need} in lib {item['sha256'][:12]}")
+out = pathlib.Path("out")
+out.mkdir(exist_ok=True)
+(out / "app-1.jar").write_text("app built against " + item["sha256"], encoding="utf-8")
+"""
+CONSUMER = """schema = 1
+gate = ["build"]
+
+[project]
+name = "app"
+
+[uses]
+lib = "mod"
+
+[artifacts.mod]
+check = "build"
+file = "out/app-*.jar"{mod_id}
+
+[checks.build]
+steps = [["{{python}}", "check.py"]]
+{launch}"""
+
+
+class Reach(unittest.TestCase):
+    """A producer and its consumer: landed together, the consumer builds against the producer's new line; a producer
+    landed alone reaches the consumer, whose gate runs against the would-be set (or whose pass stands); a
+    byte-identical producer reaches nobody; and the Set gate refuses a private URL and two builds of one mod id."""
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        root = Path(tempfile.mkdtemp(prefix="wb-reach-"))
+        cls.root = root
+        cls.lib, cls.lib_remote = project(root, "lib")
+        cls.app, cls.app_remote = project(root, "app")
+        cls.home = root / "set.git"
+        git(root, "init", "-q", "--bare", "-b", "main", str(cls.home))
+        seed = root / "seed"
+        seed.mkdir()
+        git(seed, "init", "-q", "-b", "main")
+        platform = {"java": 26, "gradle": {"version": "9.8.1"}}
+        (seed / "set.json").write_text(json.dumps({**EMPTY_SET, "platform": platform}, indent=1) + "\n",
+                                       encoding="utf-8")
+        git(seed, "add", "-A")
+        git(seed, "commit", "-q", "-m", "seed")
+        git(seed, "push", "-q", str(cls.home), "main")
+        out = root / "out"
+        cls.store = out / "store"
+        # The set's Gradle in the Store, so a run hands its steps -Pset.dir and -Pset.store (never run here).
+        binary = cls.store / "gradle" / "9.8.1" / "gradle-9.8.1" / "bin" / ("gradle.bat" if os.name == "nt" else "gradle")
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text("@echo gradle %*\r\n" if os.name == "nt" else '#!/bin/sh\necho gradle "$@"\n', encoding="utf-8")
+        binary.chmod(0o755)
+        cls.d = Daemon(f"""
+            [workspace]
+            set = '{cls.home}'
+
+            [modules.ci]
+            store = '{cls.store.as_posix()}'
+            records = '{(out / "records").as_posix()}'
+
+            [modules.ci.projects.lib]
+            repo = '{cls.lib}'
+            jdk = ""
+
+            [modules.ci.projects.app]
+            repo = '{cls.app}'
+            jdk = ""
+            """, root=root).start()
+        cls.c = cls.d.client
+        cls.said = []
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.d.stop()
+
+    def lander(self):
+        self.said.clear()
+        return Lander(Workspace(self.d.config), self.c, say=self.said.append)
+
+    def set_json(self):
+        return json.loads(git(self.home, "show", "main:set.json"))
+
+    def consumer(self, needs: str, mod_id: str = "", launch: str = "") -> str:
+        (self.app / "project.toml").write_text(CONSUMER.format(
+            mod_id=f'\nmod_id = "{mod_id}"' if mod_id else "", launch=launch), encoding="utf-8")
+        (self.app / "check.py").write_text(CONSUMER_CHECK, encoding="utf-8")
+        (self.app / "needs.txt").write_text(needs + "\n", encoding="utf-8")
+        git(self.app, "add", "-A")
+        git(self.app, "commit", "-q", "-m", f"needs {needs}")
+        return git(self.app, "rev-parse", "HEAD")
+
+    def test_1_a_producer_and_a_consumer_needing_its_new_symbol_land_together(self):
+        self.assertEqual(self.lander().land({"lib": "HEAD"})["state"], "landed", self.said)  # lib v1: no symbol yet
+        lib = advance(self.lib, "v2 EMISSIVE_PARTICLES")
+        app = self.consumer("EMISSIVE_PARTICLES")
+        result = self.lander().land({"lib": "HEAD", "app": "HEAD"})
+        self.assertEqual(result["state"], "landed", self.said)
+        lines = self.set_json()["projects"]
+        self.assertEqual((lines["lib"]["commit"], lines["app"]["commit"]), (lib, app))
+        # app ran after lib, against the would-be set that names lib's new file, not against the head.
+        order = [s for s in self.said if s.startswith("checking ")]
+        self.assertTrue(order[0].startswith("checking lib") and order[1].startswith("checking app"), order)
+        self.assertIn("would-be set candidate-", order[1])
+        tree = git(self.app, "rev-parse", "HEAD^{tree}")
+        record = json.loads(next((self.store / "passes" / "app" / tree).glob("build.*.json")).read_text("utf-8"))
+        self.assertTrue(record["set"].startswith("candidate-"), record)
+        built = (self.store / "files" / lines["app"]["artifacts"]["mod"]["sha256"] / "app-1.jar").read_text("utf-8")
+        self.assertEqual(built, "app built against " + lines["lib"]["artifacts"]["mod"]["sha256"])
+
+    def test_2_a_producer_alone_reaches_its_consumer_and_a_recorded_pass_stands(self):
+        app = self.set_json()["projects"]["app"]["commit"]
+        advance(self.lib, "v3 EMISSIVE_PARTICLES")
+        dry = self.lander().land({"lib": "HEAD"}, dry=True)  # who breaks: the consumer runs against the would-be set
+        self.assertEqual(dry["state"], "dry", self.said)
+        self.assertEqual(dry["reached"]["app"]["why"], ["uses lib"])
+        self.assertTrue(any(s.startswith("reached app") and "checking it" in s for s in self.said), self.said)
+        result = self.lander().land({"lib": "HEAD"})
+        self.assertEqual(result["state"], "landed", self.said)
+        self.assertEqual((result["reached"]["app"]["commit"], result["reached"]["app"]["stands"]), (app, True))
+        self.assertTrue(any(s.startswith("reached app") and "its pass stands" in s for s in self.said), self.said)
+        self.assertIn(f"reached app at {app[:12]} (uses lib): gate passed",
+                      git(self.home, "log", "-1", "--format=%B", "main"))
+
+    def test_3_a_byte_identical_producer_reaches_nobody(self):
+        (self.lib / "README.md").write_text("docs only\n", encoding="utf-8")
+        git(self.lib, "add", "-A")
+        git(self.lib, "commit", "-q", "-m", "docs")
+        result = self.lander().land({"lib": "HEAD"})
+        self.assertEqual((result["state"], result["reached"]), ("landed", {}), self.said)
+        self.assertTrue(any("byte-identical" in s for s in self.said), self.said)
+
+    def test_4_a_producer_that_breaks_its_consumer_lands_nothing(self):
+        before = (git(self.home, "rev-parse", "main"), git(self.lib_remote, "rev-parse", "main"))
+        advance(self.lib, "v5 without the symbol")
+        with self.assertRaises(WorkspaceError) as raised:
+            self.lander().land({"lib": "HEAD"})
+        self.assertIn("would break what it reaches", str(raised.exception))
+        self.assertIn("app", str(raised.exception))
+        self.assertEqual((git(self.home, "rev-parse", "main"), git(self.lib_remote, "rev-parse", "main")), before)
+        git(self.lib, "reset", "-q", "--hard", "HEAD~1")
+
+    def test_5_the_set_gate_refuses_two_builds_of_one_mod_id_and_warns_of_none_declared(self):
+        launch = '\n[launch.default]\nmembers = ["app:mod@both", "lib:mod@both"]\n'
+        self.consumer("EMISSIVE_PARTICLES", mod_id="app", launch=launch)
+        result = self.lander().land({"app": "HEAD"})
+        self.assertEqual(result["state"], "landed", self.said)
+        self.assertEqual(self.set_json()["projects"]["app"]["artifacts"]["mod"]["mod_id"], "app")
+        self.assertTrue(any("warning:" in s and "lib:mod@both declares no mod id" in s for s in self.said), self.said)
+        before = git(self.home, "rev-parse", "main")
+        manifest = (self.lib / "project.toml").read_text(encoding="utf-8")
+        (self.lib / "project.toml").write_text(manifest.replace('file = "out/lib-*.jar"',
+                                                                'file = "out/lib-*.jar"\nmod_id = "app"'),
+                                               encoding="utf-8")
+        advance(self.lib, "v6 EMISSIVE_PARTICLES")
+        with self.assertRaises(WorkspaceError) as raised:
+            self.lander().land({"lib": "HEAD"})
+        self.assertIn("two builds of one mod id: app from app:mod@both, lib:mod@both", str(raised.exception))
+        self.assertEqual(git(self.home, "rev-parse", "main"), before)
+
+    def test_6_the_set_gate_refuses_a_url_a_public_set_may_not_carry(self):
+        from wb_core import setfile
+        drive = "Z:" + "\\repos\\lib"  # a drive path, built so no literal one sits in the tree
+        for url, why in (("file:///srv/git/lib.git", "file:"), (drive, "local path"),
+                         ("/srv/git/lib.git", "local path"), ("http://example.org/lib.git", "not encrypted"),
+                         ("https://user:secret@example.org/lib.git", "credentials"),
+                         ("https://token@example.org/lib.git", "credentials"),
+                         ("https://127.0.0.1/lib.git", "private"), ("https://buildbox/lib.git", "private"),
+                         ("ssh://me@example.org/lib.git", "credentials")):
+            self.assertIn(why, setfile.url_problem(url) or "", url)
+        scp = "git" + "@example.org:org/lib.git"  # git's scp-like address, not anyone's mail
+        for url in ("https://github.com/org/lib.git", scp, "ssh://git@example.org/lib.git"):
+            self.assertIsNone(setfile.url_problem(url), url)
+        self.assertEqual(setfile.private_urls({"projects": {"lib": {"url": "https://a:b@example.org/x"}}}),
+                         ["projects.lib.url: credentials in the URL; a public set names none"])  # never the URL
+        before = git(self.home, "rev-parse", "main")
+        with self.assertRaises(WorkspaceError) as raised:
+            self.lander().land({}, urls={"lib": "http://example.org/lib.git"})
+        self.assertIn("not encrypted", str(raised.exception))
+        self.assertEqual(git(self.home, "rev-parse", "main"), before)
 
 
 if __name__ == "__main__":

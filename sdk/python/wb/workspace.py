@@ -248,6 +248,14 @@ class Workspace:
                     "Set's worktree")
         line = self.set_line(project.name)
         store = self.store_root()
+        if remote_ref.startswith("refs/tags/") and line:
+            # A tag names a commit that is or was the project's line: the line now, or one a landing published.
+            if line.get("commit") == commit or (store is not None and landings.naming(
+                    store, project.name, commit, ("set-pushed", "landed"), finished=True)):
+                return ""
+            tag = remote_ref.removeprefix("refs/tags/")
+            return (f"tag {tag} names {commit[:12]}, which has never been {project.name}'s line: a tag goes on a "
+                    f"landed commit (wb land {project.name}={commit[:12]} --tag {tag})")
         if remote_ref.startswith("refs/landed/"):
             states = ("prepared", "refs-pushed", "set-pushed")
         elif line and remote_ref == f"refs/heads/{line.get('branch')}":

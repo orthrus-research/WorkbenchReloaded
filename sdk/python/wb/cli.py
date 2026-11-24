@@ -611,6 +611,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--add", action="append", metavar="PROJECT=URL", help="a project's first line, with its public url")
     p.add_argument("--branch", help="the set-named branch (default: the line's, else the remote's default)")
     p.add_argument("--dry", action="store_true", help="validate and compose only; publish nothing")
+    p.add_argument("--tag", metavar="NAME", help="tag each landed commit on its remote as part of the publish")
+    p.add_argument("--only", action="append", metavar="PROJECT",
+                   help="land only this project of what was asked (repeatable); the rest is left out")
     p.add_argument("--hold", metavar="PROJECT:ARTIFACT[@CONSUMER]", help="keep one artifact on another commit, "
                    "with seeded bytes (--file, --commit, --reason, --source)")
     p.add_argument("--file", help="--hold: the bytes")
