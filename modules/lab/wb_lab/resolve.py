@@ -17,6 +17,24 @@ first); otherwise it keeps the Store's name.
 add ``[launch.member]`` (``jvm.client``, ``jvm.server``, ``collect``, ``failures``), read at the commit its line names,
 so a member's switch needs no landing in the product.
 
+A launch also names:
+
+- ``base = "<project>:<name>"``: what every instance starts from, the ``[launch.<name>]`` of that project's
+  project.toml, read at the commit the set's line names for it (a hold ``<project>@<product>`` wins; the product's own
+  commit when the product is the base's project), with the ``launch/<overlay>`` folder at that commit. A base is a
+  table without members (``BASE_KEYS``): the installer, the server's and client's command lines, the player, the JVM
+  profile, the view keys a session sets, and an overlay folder whose ``both/``, ``server/`` and ``client/`` files are
+  laid into the instance's sides. A base project whose commit has no such table yet falls back to Workbench's interim
+  copy (``wb_lab.bases``), with a warning;
+- ``overlay``: the product's own folder under ``launch/``, laid over the base's;
+- ``configure = "launch/configure.py"``: the product's script, run by lab.build only for a project in ``[lab] trusted``;
+- ``params``: each a default value, whose type it fixes, or a table ``{ type, default, min, max, choices }``; lab.build
+  refuses a value of another type or one the launch does not declare;
+- ``tour`` (the rules lab.run drives a tour by) and ``drivers`` (``{ command = [...], cwd = "..." }`` per name).
+
+launch.json records the launch definition's commit with the tree id of its ``launch/`` folder, and the base's
+project, commit, table and overlay tree id, so lab.build exports exactly those trees and resolves nothing.
+
 launch.json names every member by SHA-256 with its Store path and the mod ids its mcmod.info declares; a launch that
 would load two builds of one mod id is refused before anything is written, as is a member the set or the Store lacks.
 Its ``runtime`` names the kind, version and exact JDK build, and, once the platform names them
@@ -36,11 +54,30 @@ from pathlib import Path
 SCHEMA = 1
 SIDES = ("both", "client", "server")
 MEMBER = re.compile(r"^([a-z0-9][a-z0-9._-]*)(?::([a-z0-9][a-z0-9._-]*))?@(both|client|server)$")
-LAUNCH_KEYS = {"members", "runtime", "params", "jvm", "collect", "failures", "place", "tour", "drivers"}
+LAUNCH_KEYS = {"members", "runtime", "params", "jvm", "collect", "failures", "place", "tour", "drivers", "base",
+               "overlay", "configure"}
 PLACE = re.compile(r'^[^/\\:*?"<>|]+\.jar$')  # a bare file name: no folder, nothing Windows refuses
 MEMBER_KEYS = {"jvm", "collect", "failures"}
 RUNTIMES = ("cleanroom",)
 RUNTIME_FILES = ("installer", "universal", "prism")  # platform.cleanroom's files, copied into runtime.files
+# A base: what lab.build starts every instance of a runtime from (wb_lab.instance names each key's use).
+BASE_KEYS = {"summary", "runtime", "player", "installer", "memory", "jvm_profile", "jvm_args_file", "overlay", "files",
+             "views", "eula", "ready", "server", "client"}
+BASE_REQUIRED = ("installer", "server", "client")
+JVM_PROFILE_KEYS = {"name", "collector", "initialHeapMiB", "maxHeapMiB", "arguments"}
+BASE_NAME = re.compile(r"^([a-z0-9][a-z0-9._-]*):([A-Za-z0-9._-]+)$")
+LAUNCH_FOLDER = "launch"
+FOLDER = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$")  # relative, no '..'
+CONFIGURE = re.compile(r"^launch/[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*\.py$")
+VIEW_KEY = re.compile(r"^(server|client)/[^:]+:.+$")  # <side>/<file>:<key>
+# The tour rules lab.run reads (wb_lab.run.TOUR_DEFAULTS), each with its type.
+TOUR_KEYS = {"setup": list, "spawn": str, "joined": str, "spectator": bool, "client_jvm": list, "captured": str,
+             "capture_timeout": (int, float), "step": (int, float), "pause": (int, float), "leave": list,
+             "leave_seconds": (int, float), "screenshots": str}
+DRIVER_KEYS = {"command", "cwd", "summary"}
+PARAM = re.compile(r"^[a-z][a-z0-9_]*$")
+PARAM_KEYS = {"type", "default", "min", "max", "choices", "summary"}
+PARAM_TYPES = {"int": int, "float": float, "bool": bool, "string": str}
 
 
 class LaunchError(Exception):
@@ -95,15 +132,163 @@ def _add_jvm(target: dict[str, list[str]], jvm: dict[str, list[str]]):
             target[name].extend(v for v in values if v not in target[name])
 
 
+def _strings(value) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+
+
+def param_value(name: str, value, spec: dict, where: str):
+    """``value`` checked against a param's declared type (an int is a float too); the value as the type takes it."""
+    kind = spec.get("type")
+    if kind == "float" and isinstance(value, int) and not isinstance(value, bool):
+        value = float(value)
+    expected = PARAM_TYPES.get(kind)
+    if expected is None or not isinstance(value, expected) or (kind in ("int", "float") and isinstance(value, bool)):
+        raise LaunchError(f"{where}: param {name} is {kind}, not {value!r}")
+    if "min" in spec and value < spec["min"] or "max" in spec and value > spec["max"]:
+        raise LaunchError(f"{where}: param {name} is {spec.get('min', '')}..{spec.get('max', '')}, not {value!r}")
+    if "choices" in spec and value not in spec["choices"]:
+        raise LaunchError(f"{where}: param {name} is one of {', '.join(map(str, spec['choices']))}, not {value!r}")
+    return value
+
+
+def params_of(table: dict, where: str) -> tuple[dict, dict]:
+    """(defaults, types) of a launch's params: a bare value is its default and fixes its type; a table declares
+    ``type`` with an optional ``default``, ``min``, ``max`` (numbers), ``choices`` and ``summary``."""
+    params = table.get("params") or {}
+    if not isinstance(params, dict):
+        raise LaunchError(f"{where}.params is a table of name = value or name = {{ type = ... }}")
+    names = {bool: "bool", int: "int", float: "float", str: "string"}
+    defaults, types = {}, {}
+    for name, value in params.items():
+        if not PARAM.match(name):
+            raise LaunchError(f"{where}.params: {name!r} is not a lowercase param name")
+        if isinstance(value, dict):
+            for key in sorted(set(value) - PARAM_KEYS):
+                raise LaunchError(f"{where}.params.{name}: unknown key {key}")
+            if value.get("type") not in PARAM_TYPES:
+                raise LaunchError(f"{where}.params.{name}.type is one of {', '.join(PARAM_TYPES)}")
+            spec = {k: value[k] for k in ("type", "min", "max", "choices", "summary") if k in value}
+            if ("min" in spec or "max" in spec) and spec["type"] not in ("int", "float"):
+                raise LaunchError(f"{where}.params.{name}: min and max are for an int or a float")
+            if "choices" in spec and (not isinstance(spec["choices"], list) or not spec["choices"]):
+                raise LaunchError(f"{where}.params.{name}.choices lists the values it may take")
+            for choice in spec.get("choices") or []:
+                param_value(name, choice, {"type": spec["type"]}, where)
+            if "default" in value:
+                defaults[name] = param_value(name, value["default"], spec, where)
+        else:
+            kind = names.get(type(value))
+            if kind is None:
+                raise LaunchError(f"{where}.params.{name}: a default is a bool, int, float or string, not {value!r}")
+            spec, defaults[name] = {"type": kind}, value
+        types[name] = spec
+    return defaults, types
+
+
+def _check_tour(tour, where: str):
+    if not isinstance(tour, dict):
+        raise LaunchError(f"{where}.tour is a table of the tour rules ({', '.join(sorted(TOUR_KEYS))})")
+    for key, value in tour.items():
+        expected = TOUR_KEYS.get(key)
+        if expected is None:
+            raise LaunchError(f"{where}: unknown key tour.{key} (known: {', '.join(sorted(TOUR_KEYS))})")
+        if expected is list and not _strings(value) or expected is not list and (
+                not isinstance(value, expected) or expected is not bool and isinstance(value, bool)):
+            raise LaunchError(f"{where}: tour.{key} is " + ("a list of strings" if expected is list else
+                                                             getattr(expected, "__name__", "a number")))
+
+
+def _check_drivers(drivers, where: str):
+    if not isinstance(drivers, dict):
+        raise LaunchError(f"{where}.drivers is a table of name = {{ command = [...] }}")
+    for name, driver in drivers.items():
+        if not isinstance(driver, dict):
+            raise LaunchError(f"{where}.drivers.{name} is a table with a command")
+        for key in sorted(set(driver) - DRIVER_KEYS):
+            raise LaunchError(f"{where}: unknown key drivers.{name}.{key}")
+        if not _strings(driver.get("command")) or not driver["command"]:
+            raise LaunchError(f"{where}.drivers.{name}.command is the driver's command line, a list of strings")
+        if not isinstance(driver.get("cwd", ""), str):
+            raise LaunchError(f"{where}.drivers.{name}.cwd is a folder")
+
+
+def _check_overlay(value, where: str):
+    if not isinstance(value, str) or not FOLDER.match(value) or ".." in value.split("/"):
+        raise LaunchError(f"{where}.overlay is a folder under {LAUNCH_FOLDER}/ (like 'standalone'), not {value!r}")
+
+
+def base_definition(table, where: str) -> dict:
+    """A base's table (a [launch.<name>] without members), checked: known keys, its command lines, the JVM profile,
+    the view keys, the overlay folder."""
+    if not isinstance(table, dict):
+        raise LaunchError(f"{where} is not a table")
+    if "members" in table:
+        raise LaunchError(f"{where} lists members, so it is a launch, not a base")
+    for key in sorted(set(table) - BASE_KEYS):
+        raise LaunchError(f"{where}: unknown key {key} (a base's keys: {', '.join(sorted(BASE_KEYS))})")
+    for key in BASE_REQUIRED:
+        if not _strings(table.get(key)) or not table[key]:
+            raise LaunchError(f"{where}.{key} is a command line, a list of strings")
+    for key in ("summary", "player", "memory", "jvm_args_file", "eula", "ready"):
+        if not isinstance(table.get(key, ""), str):
+            raise LaunchError(f"{where}.{key} is a string")
+    if table.get("runtime", "cleanroom") not in RUNTIMES:
+        raise LaunchError(f"{where}.runtime is one of {', '.join(RUNTIMES)}")
+    profile = table.get("jvm_profile") or {}
+    if not isinstance(profile, dict) or set(profile) - JVM_PROFILE_KEYS or not _strings(profile.get("arguments", [])):
+        raise LaunchError(f"{where}.jvm_profile is a table of {', '.join(sorted(JVM_PROFILE_KEYS))}, its arguments a "
+                          "list of JVM arguments")
+    views = table.get("views") or {}
+    if not isinstance(views, dict) or not all(_strings(v) and all(VIEW_KEY.match(k) for k in v)
+                                              for v in views.values()):
+        raise LaunchError(f"{where}.views is a table of view = ['<server|client>/<file>:<key>', ...]")
+    files = table.get("files") or {}
+    if not isinstance(files, dict) or set(files) - set(SIDES) or not all(
+            isinstance(f, dict) and all(isinstance(t, str) for t in f.values()) for f in files.values()):
+        raise LaunchError(f"{where}.files is a table of both, server and client, each of <file> = <text>")
+    if "overlay" in table:
+        _check_overlay(table["overlay"], where)
+    return table
+
+
+def parse_base(text, where: str) -> tuple[str, str]:
+    """(project, name) of a launch's ``base``."""
+    match = BASE_NAME.match(str(text)) if isinstance(text, str) else None
+    if not match:
+        raise LaunchError(f"{where}.base is '<project>:<name>' (its [launch.<name>]), not {text!r}")
+    return match.group(1), match.group(2)
+
+
 def definition(project_toml: dict, name: str, where: str = "project.toml") -> dict:
-    """The [launch.<name>] table, checked: known keys, members parsed, a known runtime."""
+    """The [launch.<name>] table, checked: known keys, members parsed, a known runtime, the base, overlay, configure
+    script, typed params, tour rules and drivers."""
     launches = project_toml.get("launch") or {}
     table = launches.get(name)
     if not isinstance(table, dict) or name == "member":
         defined = sorted(k for k in launches if k != "member")
         raise LaunchError(f"{where} has no [launch.{name}] (defined: {', '.join(defined) or 'none'})")
+    if "members" not in table and any(key in table for key in BASE_REQUIRED):
+        raise LaunchError(f"{where}: [launch.{name}] is a base, which starts no members of its own: a launch names it "
+                          f"with base = '<project>:{name}'")
     for key in sorted(set(table) - LAUNCH_KEYS):
         raise LaunchError(f"{where}: unknown key launch.{name}.{key}")
+    if "base" in table:
+        parse_base(table["base"], f"{where}: launch.{name}")
+    if "overlay" in table:
+        _check_overlay(table["overlay"], f"{where}: launch.{name}")
+    configure = table.get("configure")
+    if configure is not None and (not isinstance(configure, str) or not CONFIGURE.match(configure)
+                                  or ".." in configure.split("/")):
+        raise LaunchError(f"{where}: launch.{name}.configure is a Python file under {LAUNCH_FOLDER}/ "
+                          f"(launch/configure.py), not {configure!r}")
+    params_of(table, f"{where}: launch.{name}")
+    if "tour" in table:
+        _check_tour(table["tour"], f"{where}: launch.{name}")
+    if "drivers" in table:
+        _check_drivers(table["drivers"], f"{where}: launch.{name}")
+    for key in ("collect", "failures"):
+        if key in table and not isinstance(table[key], list):
+            raise LaunchError(f"{where}: launch.{name}.{key} is a list")
     members = table.get("members")
     if not isinstance(members, list) or not members:
         raise LaunchError(f"{where}: launch.{name}.members lists the launch's members")
@@ -147,11 +332,62 @@ def _store_file(store: Path, digest: str, name: str | None) -> tuple[str, Path]:
     return name, artifacts.path_of(store, digest, name)
 
 
+def _object(objects, project: str, commit: str, path: str, kind: str, where: str) -> str:
+    """The id of the ``kind`` (tree or blob) at ``path`` in ``project`` at ``commit``; refused when there is none."""
+    if objects is None:
+        raise LaunchError(f"{where}: {path} names a folder or file of {project}, and nothing here reads its "
+                          "repository")
+    found = objects(project, commit, path)
+    if not found or found[0] != kind:
+        what = "folder" if kind == "tree" else "file"
+        raise LaunchError(f"{where}: {project} has no {what} {path} at {commit[:12]}")
+    return found[1]
+
+
+def base_of(*, name: str, product: str, commit: str, product_toml: dict | None, set_doc: dict, extras, objects,
+            warn=None) -> dict:
+    """The launch file's ``base``: the base project's [launch.<name>] at the commit the set names for it, checked, and
+    its overlay folder's tree id; Workbench's interim copy, with a warning, when that commit has none yet."""
+    from .bases import INTERIM_BASES
+    project, launch = parse_base(name, "launch")
+    holds, lines = set_doc.get("holds") or {}, set_doc.get("projects") or {}
+    if project == product:
+        at, toml = commit, product_toml
+    else:
+        held = holds.get(f"{project}@{product}") or {}
+        at = held.get("commit") or (lines.get(project) or {}).get("commit")
+        if not at:
+            raise LaunchError(f"base {name}: the set has no line for {project}")
+        if extras is None:
+            raise LaunchError(f"base {name}: nothing here reads {project}'s project.toml")
+        toml = extras(project, at)
+    where = f"base {name} ({project} {at[:12]} project.toml [launch.{launch}])"
+    table = ((toml or {}).get("launch") or {}).get(launch)
+    record = {"name": name, "project": project, "commit": at}
+    if table is None:
+        if name not in INTERIM_BASES:
+            raise LaunchError(f"{project} at {at[:12]} has no [launch.{launch}], so there is no base {name}")
+        if warn:
+            warn(f"INTERIM BASE: {project} at {at[:12]} has no [launch.{launch}] yet, so base {name} is Workbench's "
+                 f"interim copy (wb_lab/bases.py); it goes once {project}'s line carries [launch.{launch}]")
+        return {**record, "source": "interim", "definition": json.loads(json.dumps(INTERIM_BASES[name])),
+                "overlay": None}
+    base_definition(table, where)
+    overlay = None
+    if "overlay" in table:
+        path = f"{LAUNCH_FOLDER}/{table['overlay']}"
+        overlay = {"path": path, "tree": _object(objects, project, at, path, "tree", where)}
+    return {**record, "source": "project.toml", "definition": json.loads(json.dumps(table)), "overlay": overlay}
+
+
 def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, set_doc: dict, revision: str,
-            store: Path, product_artifacts: dict, product_index: dict | None, extras=None) -> dict:
+            store: Path, product_artifacts: dict, product_index: dict | None, extras=None, objects=None,
+            product_toml: dict | None = None, warn=None) -> dict:
     """The launch file for ``table`` (a checked [launch.<name>]) of ``product`` at ``commit``/``tree`` on set
     ``revision``. ``product_artifacts`` is the product's [artifacts] (each with its ``file`` glob), ``product_index``
-    the Store's index of its tree; ``extras(project, commit)`` returns that member's project.toml or None."""
+    the Store's index of its tree; ``extras(project, commit)`` returns that member's project.toml or None;
+    ``objects(project, commit, path)`` the (type, id) of a path in that project's repository at that commit, or None;
+    ``product_toml`` is the product's own project.toml and ``warn`` takes what the person should see."""
     from wb_core import artifacts
     lines, holds, thirds = set_doc.get("projects") or {}, set_doc.get("holds") or {}, set_doc.get("third") or {}
     members, owners = [], {}
@@ -250,9 +486,24 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
              for part in RUNTIME_FILES if isinstance(cleanroom.get(part), dict)}
     if files:
         runtime["files"] = files
+    defaults, types = params_of(table, f"launch.{launch}")
     document = {"schema": SCHEMA, "project": product, "launch": launch, "commit": commit, "tree": tree,
                 "set": revision, "store": str(store), "runtime": runtime, "members": members, "jvm": jvm,
-                "collect": collect, "failures": failures, "params": dict(table.get("params") or {})}
+                "collect": collect, "failures": failures, "params": defaults, "param_types": types}
+    # The definition's commit and its launch/ folder, the product's overlay and configure script in it, and the base.
+    found = objects(product, commit, LAUNCH_FOLDER) if objects is not None else None
+    document["definition"] = {"commit": commit, "launch_tree": found[1] if found and found[0] == "tree" else None}
+    where = f"{product} {commit[:12]} launch.{launch}"
+    if "overlay" in table:
+        path = f"{LAUNCH_FOLDER}/{table['overlay']}"
+        document["overlay"] = {"project": product, "commit": commit, "path": path,
+                               "tree": _object(objects, product, commit, path, "tree", where)}
+    if "configure" in table:
+        document["configure"] = {"project": product, "commit": commit, "path": table["configure"],
+                                 "blob": _object(objects, product, commit, table["configure"], "blob", where)}
+    if "base" in table:
+        document["base"] = base_of(name=table["base"], product=product, commit=commit, product_toml=product_toml,
+                                   set_doc=set_doc, extras=extras, objects=objects, warn=warn)
     # How a session drives the game (lab.run): the tour rules and the drivers, as the launch names them.
     for key in ("tour", "drivers"):
         if table.get(key):
@@ -278,6 +529,15 @@ def _toml_at(repo: Path, commit: str, where: str) -> dict | None:
         return tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise LaunchError(f"{where}: project.toml at {commit[:12]} does not parse: {error}") from None
+
+
+def object_at(repo: Path, commit: str, path: str) -> tuple[str, str] | None:
+    """(type, id) of ``path`` in ``repo`` at ``commit``, or None when it has no such path."""
+    found = _git(repo, "rev-parse", "--verify", "--quiet", f"{commit}:{path}")
+    if found is None or not found.strip():
+        return None
+    kind = _git(repo, "cat-file", "-t", found.strip())
+    return (kind.strip(), found.strip()) if kind else None
 
 
 def resolve_command(ctx, folder: str, launch: str = "default", out: str = ""):
@@ -316,16 +576,31 @@ def resolve_command(ctx, folder: str, launch: str = "default", out: str = ""):
         table = definition(own, launch, f"{product or top.name} project.toml")
         registered = workspace.projects()
 
-        def extras(project: str, at: str):
+        def repository(project: str) -> Path:
+            if project == product:
+                return top
             entry = registered.get(project)
             if entry is None or not entry.repo.is_dir():
-                raise LaunchError(f"member project {project} is not registered on this machine "
-                                  "([modules.ci.projects]), so its [launch.member] cannot be read")
-            return _toml_at(entry.repo, at, f"member {project}")
+                raise LaunchError(f"project {project} is not registered on this machine ([modules.ci.projects]), so "
+                                  "its [launch.member] and launch/ folder cannot be read")
+            return entry.repo
+
+        def extras(project: str, at: str):
+            return _toml_at(repository(project), at, f"project {project}")
+
+        def objects(project: str, at: str, path: str):
+            return object_at(repository(project), at, path)
+
+        warnings = []
+
+        def warn(text: str):
+            warnings.append(text)
+            ctx.log.warning(text)
 
         document = resolve(product=product, commit=commit, tree=tree, launch=launch, table=table, set_doc=set_doc,
                            revision=revision, store=store, product_artifacts=own.get("artifacts") or {},
-                           product_index=artifacts.find(store, product, tree), extras=extras)
+                           product_index=artifacts.find(store, product, tree), extras=extras, objects=objects,
+                           product_toml=own, warn=warn)
     except MissingBuild as error:
         raise ParamError(str(error)) from error  # wb play reads what builds it from the cause
     except LaunchError as error:
@@ -336,7 +611,12 @@ def resolve_command(ctx, folder: str, launch: str = "default", out: str = ""):
     target.write_text(text, encoding="utf-8")
     (ctx.out / "launch.json").write_text(text, encoding="utf-8")
     ctx.output("launch", ctx.out / "launch.json")
+    base = document.get("base")
+    based = f", base {base['name']} at {base['commit'][:12]}" + (" (INTERIM COPY)" if base["source"] == "interim"
+                                                                 else "") if base else ""
     ctx.summary(f"launch {product}:{launch} at {commit[:12]} on set {revision[:7]}: {len(document['members'])} "
-                f"members, written to {target}")
+                f"members{based}, written to {target}")
     return {"launch": str(target), "set": revision, "commit": commit,
-            "members": {m["member"]: m["sha256"] for m in document["members"]}}
+            "members": {m["member"]: m["sha256"] for m in document["members"]},
+            **({"base": {k: base[k] for k in ("name", "commit", "source")}} if base else {}),
+            **({"warnings": warnings} if warnings else {})}

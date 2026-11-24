@@ -111,7 +111,7 @@ class Sessions(unittest.TestCase):
             "jvm": {"client": ["-Dgame.mode=own"], "server": []}, "collect": [], "failures": [r"Description: "],
             "params": {}, "tour": {"setup": ["time set 6000"], "client_jvm": ["-Dgame.tour=true"],
                                    "captured": "Game view captured", "leave_seconds": 0},
-            "drivers": {"probe": {"command": ["{python}", "{root}/driver.py", "{instance_json}"]}}}
+            "drivers": {"probe": {"command": ["{python}", "{root}/driver.py", "{instance_json}", "{session_id}"]}}}
         self.config = {"instances": str(self.root / "instances"), "runtime_cache": str(self.cache),
                        "sessions": str(self.root / "sessions")}
         self.lab = {"trusted": ["game"], "env": {"OLD_TURN": "token"}}
@@ -312,7 +312,8 @@ class Sessions(unittest.TestCase):
         (root / "driver.py").write_text(
             "import json, os, sys\n"
             "json.dump({k: os.environ.get(k) for k in ('WB_TURN_TOKEN', 'OLD_TURN', 'WB_INSTANCE', 'WB_SESSION')}"
-            " | {'arg': sys.argv[1]}, open(os.path.join(os.environ['WB_SESSION'], 'seen.json'), 'w'))\n",
+            " | {'arg': sys.argv[1], 'id': sys.argv[2]},"
+            " open(os.path.join(os.environ['WB_SESSION'], 'seen.json'), 'w'))\n",
             encoding="utf-8")
         ctx, result, record = self.play(kind="driver", driver="probe", driver_root=str(root))
         self.assertEqual(ctx.outcome, "ok", ctx.findings)
@@ -320,6 +321,7 @@ class Sessions(unittest.TestCase):
         self.assertEqual((seen["WB_TURN_TOKEN"], seen["OLD_TURN"]), ("a-token", "a-token"))
         self.assertEqual(seen["WB_INSTANCE"], str(self.instance() / "instance.json"))
         self.assertEqual(seen["arg"], seen["WB_INSTANCE"])
+        self.assertEqual(seen["id"], record["id"])
         self.assertEqual(record["exit"]["driver"], 0)
         self.lab["trusted"] = []
         with self.assertRaisesRegex(ParamError, "not in \\[lab\\] trusted"):
