@@ -12,7 +12,8 @@
 #      (WB_RELEASE empty, WB_SOURCE_COMMIT its commit), or a release the volume could not take;
 #   3. the release this volume ran last (a compose file from before the mount);
 #   4. code an older image carries in /opt/wb/src.
-# It sets and exports WB_CODE, PYTHONPATH and WB_COMMIT, or says what is missing and returns 1.
+# It sets and exports WB_CODE, PYTHONPATH and WB_COMMIT, or says what is missing and returns 1. Starting a release
+# from the volume ("copy") keeps that copy and the one run before it, and removes older copies.
 # The folders are variables only so the tests can run this outside a container.
 
 wb_state="${WB_STATE_DIR:-/var/lib/wb}"
@@ -78,8 +79,18 @@ wb_pick_code() {
     return 1
   fi
   if [ "$1" = copy ] && [ -n "$wb_release" ] && [ "$WB_CODE" = "$wb_state/releases/$wb_release" ]; then
+    wb_before="$(cat "$wb_state/releases/last" 2>/dev/null || true)"
     printf '%s\n' "$wb_release" > "$wb_state/releases/last.part" && mv "$wb_state/releases/last.part" \
       "$wb_state/releases/last" || true
+    # Keep this copy and the one before it; an older one is copied again from its mount if it is ever started.
+    for wb_old in "$wb_state"/releases/*; do
+      wb_name="${wb_old##*/}"
+      wb_name="${wb_name%.part}"
+      if [ -d "$wb_old" ] && wb_is_release_name "$wb_name" && [ "$wb_name" != "$wb_release" ] \
+         && [ "$wb_old" != "$wb_state/releases/$wb_before" ]; then
+        rm -rf "$wb_old"
+      fi
+    done
   fi
   PYTHONPATH="$WB_CODE/sdk/python:$WB_CODE/core:$WB_CODE/host"
   if [ -f "$WB_CODE/RELEASE.json" ]; then

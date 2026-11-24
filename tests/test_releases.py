@@ -262,6 +262,16 @@ class CodeScript(unittest.TestCase):
         self.mount.mkdir()
         self.assertEqual(self.pick(WB_RELEASE=self.name)[0], copy.as_posix())
 
+    def test_the_volume_keeps_the_release_it_runs_and_the_one_before(self):
+        import shutil
+        names = ["aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"]
+        for name in names:
+            shutil.rmtree(self.mount)
+            code_tree(self.mount, name + "0" * 28)
+            self.assertEqual(self.pick(WB_RELEASE=name)[0], (self.state / "releases" / name).as_posix())
+        kept = sorted(p.name for p in (self.state / "releases").iterdir() if p.is_dir())
+        self.assertEqual(kept, names[1:])  # the first is copied again from its mount if it is ever started
+
     def test_a_half_made_copy_is_never_run(self):
         code_tree(self.mount, self.commit)
         broken = self.state / "releases" / self.name
