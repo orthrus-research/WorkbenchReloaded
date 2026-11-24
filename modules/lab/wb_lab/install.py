@@ -4,7 +4,7 @@ The installer is checked against ``sha256`` before anything runs, copied into th
 ``launch`` (by default ``java -jar <installer> --installServer <target>``) into a fresh folder, the out folder's
 ``server/``. What it installed is kept as ``inventory.json``, every file by size and SHA-256, beside ``install.log``
 and ``receipt.json`` (the installer, the JVM, the command, the exit code and the time). The folder is then a stopped
-server ``lab.server`` and ``lab.session`` take.
+server ``lab.server`` takes.
 
 The Minecraft EULA is not accepted for anyone: ``eula = true`` writes ``eula.txt`` only when the request says so, as
 the record of whoever made it accepting it for this folder.

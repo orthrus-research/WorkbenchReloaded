@@ -58,6 +58,23 @@ class NotFound(Exception):
     pass
 
 
+# Commands that are gone, each with what replaces it, answered for one release instead of "unknown command".
+RETIRED = {
+    **dict.fromkeys(("lab.inputs", "lab.checkouts", "lab.ensure"),
+                    "wb play: lab.resolve writes the launch file and lab.build the instance from it"),
+    **dict.fromkeys(("lab.script", "lab.userdev"),
+                    "a check with on = 'host' in the project's project.toml (wb check), or a launch's driver "
+                    "(wb play --driver <name>)"),
+    "lab.session": "wb play (lab.run), a session of an instance lab.build made",
+    "lab.server-scenario": "lab.server, keeping what the run wrote with keep",
+    "lab.queue": "wb gpu",
+    **dict.fromkeys(("lab.snapshot", "lab.reset"), "wb play --fresh-world, or a kept session (lab.keep)"),
+    **dict.fromkeys(("lab.remove", "lab.prune-instances", "lab.store-gc", "lab.dedupe", "lab.instances"),
+                    "wb gc: it lists the instances, templates and blobs it would remove, and removes that list"),
+    **dict.fromkeys(("lab.migrate", "lab.migrate-plan"), "[lab] home in this machine's config"),
+}
+
+
 class Conflict(Exception):
     def __init__(self, message: str, envelope: dict | None = None):
         super().__init__(message)
@@ -234,6 +251,8 @@ class Workbench:
 
     def entry(self, name: str) -> Entry:
         entry = self.registry.get(name) or self.registry.get(self.aliases.get(name, ""))
+        if entry is None and name in RETIRED:
+            raise NotFound(f"{name} is retired; use {RETIRED[name]}")
         if entry is None:
             raise NotFound(f"unknown command {name!r} (see GET /v1/commands)")
         return entry

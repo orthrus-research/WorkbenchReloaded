@@ -5,8 +5,8 @@ and run on a chosen machine.
     name = "river-r1"
     summary = "A river view, textures held still"
     protocol = "Settle, then the reference; stop at the first failure. Never score against an instance's first run."
-    machine = "host"                       # host (the local GPU through wb-host) or rental
-    turn = true                            # consecutive host steps share one GPU lease
+    machine = "rental"                     # rental, or host (the local GPU through wb-host)
+    turn = true                            # on a host, consecutive turn routines share one GPU lease
 
     [inputs.jar]                           # pinned: a drifted input refuses the plan
     path = '/srv/builds/client-mod-0.1.0.jar'
@@ -36,8 +36,10 @@ and run on a chosen machine.
     lab = '/srv/lab-inputs/tours'          # the template's input archives, as vast.lab-inputs makes them
     window = "1280x720"                    # any other key is a value the template's steps file may use
 
-On a rental the game steps (those whose command declares a ``role``) run first, together, in one bundle the
-template says how to write (``vast.bundle``); the results it names come back as those steps' outputs.
+On a rental the game steps (those whose command declares a ``role``: lab.prepare and lab.play) run first, together,
+in one bundle the template says how to write (``vast.bundle``); the results it names come back as those steps'
+outputs. On a host those two are retired (wb play builds and plays a launch), so a host plan's steps are other
+commands.
 """
 
 from __future__ import annotations

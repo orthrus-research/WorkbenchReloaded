@@ -96,6 +96,19 @@ def new_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
 
 
+def first_line(patterns: list[str], texts: list[str]) -> str | None:
+    """Why a session failed, by failure patterns: tried in order, most telling first, each over every text; the
+    first line one finds, shortened."""
+    for pattern in patterns:
+        regex = re.compile(pattern)
+        for text in texts:
+            for line in text.splitlines():
+                if regex.search(line):
+                    line = line.strip()
+                    return line if len(line) <= 240 else line[:237] + "..."
+    return None
+
+
 def sessions_root(ctx: Context) -> Path:
     configured = str(ctx.config.get("sessions") or "")
     return instances.Machine().path(configured) if configured else machines.home(ctx) / "sessions"
@@ -763,7 +776,6 @@ class Session:
                 texts.append(log.read_text(encoding="utf-8", errors="replace"))
         if (self.folder / "driver.log").is_file():
             texts.append((self.folder / "driver.log").read_text(encoding="utf-8", errors="replace"))
-        from .commands import explain as first_line
         line = first_line(list(self.launch.get("failures") or []) + list(FAILURES), texts)
         target = self.p.get("instance")
         return {"summary": str(failure), "where": failure.where, "line": line,

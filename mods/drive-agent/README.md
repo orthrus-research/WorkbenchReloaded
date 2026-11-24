@@ -20,9 +20,9 @@ cd mods/drive-agent
 ./gradlew build          # build/libs/wbdrive-<version>.jar, remapped for the game
 ```
 
-Give it to a session as a client mod, with the parts it should run as JVM options:
+Give it to a session as a member of the launch it plays (once its JAR is in the Store, a third entry or a
+project's artifact), with the parts it should run as the session's JVM options:
 
 ```
-wb run lab.session ... client_mods='["mods/drive-agent/build/libs/wbdrive-0.1.0.jar"]' \
-  client_jvm_args='["-Dwb.driver=true", "-Dwb.capture=true"]'
+wb play <project>:<launch> --jvm client:-Dwb.driver=true --jvm client:-Dwb.capture=true
 ```

@@ -83,8 +83,13 @@
   consoles, and naming the decisive line, crash report and next command on a failure.
 - Modules: build, toolchain, jar, mixin, probe, source, content, assets, world, render, runs, profile, lab, drive,
   ledger, vast, ci, release, plan, frames, tools (the former standalone tools, 0.6.0), selftest.
-- The lab reads a profile's checkouts at a ref, each from a snapshot fixed at its commit for the whole job
-  (`lab.checkouts` shows and prunes them), so no checkout is moved by hand after a push or under a running job.
+- The instance profile and its commands are retired: `lab.inputs`, `lab.checkouts`, `lab.ensure`, `lab.script`,
+  `lab.userdev`, `lab.session`, `lab.server-scenario`, `lab.queue`, `lab.snapshot`, `lab.reset`, `lab.remove`,
+  `lab.instances`, `lab.prune-instances`, `lab.store-gc`, `lab.dedupe`, `lab.migrate` and `lab.migrate-plan`
+  answer with their replacement for one release; `lab.prepare` and `lab.play` stay only as a rental plan's game
+  steps. The profile, launcher, snapshots, scripts and environments keys of `[modules.lab]` are read by nothing and
+  are accepted until the machine's config drops them. `wb play --driver` runs a driver from the project's tree the
+  launch was resolved from, and `[lab] env` can name the runtime cache (`cache`) for drivers.
 - The Windows host runner, sharing the GPU lease and lanes with gpu_queue.py; host routines that need no GPU run
   beside the lease holder.
 - SDKs: Python with the `wb` CLI, Node/TypeScript, Java with a Gradle plugin (the same JAR bytes on every machine,

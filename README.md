@@ -61,7 +61,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 | `drive` | Workload drivers: what a game session is made to do and see. Tours checked before a session plays them, camera paths made from keyframes and checked against the frames captured along them, and block galleries laid out for review. | `tour-lint`, `path`, `path-check`, `gallery`, `send` |
 | `frames` | Score captured frames: pass or fail against references, capture noise, wrong-view checks, and PSNR/SSIM quality (from Quadrature's frames.py). | `compare`, `measure`, `check`, `quality` |
 | `jar` | Static analysis of compiled mods: class files, references and what each JAR patches. | `audit`, `survey`, `index`, `references`, `hook-targets`, `diff` |
-| `lab` | Game sessions: native client sessions on the host through wb-host (instances, the GPU lease, the lab home), and headless dedicated-server sessions in the container. | `gpu`, `queue`, `prepare`, `play`, `inputs`, `resolve`, `checkouts`, `migrate-plan`, `script`, `turn`, `migrate`, `prune-instances`, `ensure`, `snapshot`, `reset`, `instances`, `remove`, `dedupe`, `store-gc`, `install-server`, `userdev`, `pack`, `assemble`, `build`, `run`, `keep`, `server`, `session`, `server-scenario` |
+| `lab` | Game sessions: native client sessions on the host through wb-host (instances, the GPU lease, the lab home), and headless dedicated-server sessions in the container. | `gpu`, `prepare`, `play`, `resolve`, `turn`, `install-server`, `pack`, `assemble`, `build`, `run`, `keep`, `server` |
 | `ledger` | Formal results, costs and market prices in one queryable database. | `query`, `runs`, `findings`, `show`, `costs`, `calls`, `add-run`, `add-finding`, `supersede`, `link-run`, `add-machine`, `prune`, `import`, `import-ci`, `import-results`, `import-json`, `parse-log` |
 | `mixin` | Mixin and patches: verifying Mixin and patch application without the game. | `remap-proof`, `apply`, `doctor` |
 | `plan` | Declarative turns and campaigns: pinned inputs, a declared protocol, steps that are Workbench commands; checked first, then run on the host or a rented GPU. | `check`, `run` |
@@ -159,11 +159,8 @@ library by the target's rules, the natives, the client JAR and the assets, each 
 metadata names into a shared cache, and `runtime.json` naming the main class, arguments and class path.
 `lab.install-server` installs a dedicated server with its loader's own installer, pinned by SHA-256. `lab.pack` gets
 a release-exact modpack from its pack file, every file checked by the hash the pack names: a Modrinth pack
-directly, a CurseForge pack through CurseForge's API with the machine's key. `lab.session`
-then runs one server and several clients started straight from the runtime, each with an offline name, waits for
-them to join, can kill one on cue, and keeps every console, log and capture; `desktop = "hidden"` keeps the clients
-on a desktop of their own that never takes the input (Windows). `lab.userdev` runs a project's development client
-from its own build in a fresh run folder, and an exit code alone never passes it: the receipt the game writes does.
+directly, a CurseForge pack through CurseForge's API with the machine's key. The game itself is built and played from
+a launch file (below): `wb play`, `lab.build` and `lab.run`.
 
 The drive agent (`mods/drive-agent`) is a small client mod a session adds: it captures views once they settle and
 answers requests on the game's own thread (status, screenshot, chat, keys, clicks), which `drive.send` writes.
@@ -199,17 +196,12 @@ the layer behind every value.
 
 ## Game instances
 
-An instance is a recipe over shared layers, not a fresh full copy. How a launcher prepares, plays and lays out
-its instances is an instance profile in config (`[modules.lab.profile]`; Workbench ships none). `lab.ensure` hashes
-everything the launcher's `prepare` reads into a recipe, prepares one template per recipe, and builds each instance from it in under a
-second: libraries, mod jars and natives are read-only hard links to one stored copy, and only what the game
-writes is the instance's own. `lab.snapshot` keeps a generated world and `lab.reset` restores it, so every run
-can start from the same settled state. `lab.dedupe` turns existing full copies into linked ones in place.
-`lab.play` plays a tour on an instance, or, given no tour, opens a session a person plays until they close the
-client (the profile's `play_open`), under the GPU lease either way. `lab.inputs` runs the profile's input steps
-first (pinned dependencies, the builds an instance is made from), in their checkouts, in order. A launch set whose
-projects pin different commits of what they share (the profile's `agree`) is reported there and refused by
-`lab.ensure`.
+An instance is built from a launch file, not by a project's own launcher: Workbench ships no instance profile and
+runs no launcher script. The profile-era commands (`lab.inputs`, `lab.checkouts`, `lab.ensure`, `lab.script`,
+`lab.userdev`, `lab.session`, `lab.server-scenario`, `lab.queue`, `lab.snapshot`, `lab.reset`, `lab.remove`,
+`lab.instances`, `lab.prune-instances`, `lab.store-gc`, `lab.dedupe`, `lab.migrate`, `lab.migrate-plan`) are
+retired and answer with what replaces them. `lab.prepare` and `lab.play` remain only as a rental plan's game steps,
+which `vast.bundle` writes into a bundle; on this machine they refuse and name `wb play`.
 
 A project that is launched defines its launches in its own `project.toml` (`[launch.<name>]`: members as
 `project:artifact@side` or `third@side`, the runtime, typed params, JVM arguments, where a file's name matters the

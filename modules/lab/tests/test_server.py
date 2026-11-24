@@ -1,4 +1,4 @@
-"""lab.server and lab.server-scenario against a fake dedicated server written here: a small Python program that
+"""lab.server against a fake dedicated server written here: a small Python program that
 prints the vanilla ready line, answers console commands on stdin, writes files and stops on "stop". Its
 behaviour comes from fake.json in its folder. The default launch (java -jar <jar> nogui) is run against a tiny
 server JAR compiled here when this machine has a JDK."""
@@ -329,12 +329,9 @@ class Sessions(unittest.TestCase):
         missing = self.c.submit("lab.server", {"server": str(folder), "jdk": "5"}).result(timeout=120)
         self.assertEqual(missing.outcome, "environment")
         self.assertIn("JDK 5 is not available", missing.summary)
-        endless = self.run_server(folder, "lab.server-scenario", probe="probe.json")
-        self.assertEqual(endless.outcome, "usage")
-        self.assertIn("a scenario needs ticks, seconds or until", endless.summary)
 
-    # -- scenarios ---------------------------------------------------------------------------------
-    def test_a_scenario_adds_files_and_mods_and_keeps_the_probe_json(self):
+    # -- added files and mods ----------------------------------------------------------------------
+    def test_files_and_mods_are_laid_over_the_copy_only(self):
         folder = self.server({"probe": {"path": "probe/result.json"}}, files={"config/probe.cfg": "mode=slow\n"})
         overlay = self.d.data / "overlay"
         (overlay / "config").mkdir(parents=True)
@@ -342,39 +339,17 @@ class Sessions(unittest.TestCase):
         mod = self.d.data / "tick-probe.jar"
         with zipfile.ZipFile(mod, "w") as archive:
             archive.writestr("mcmod.info", "[]")
-        result = self.run_server(folder, "lab.server-scenario", probe="probe/*.json", files=str(overlay),
-                                 mods=[str(mod)], ticks=10, require={"error": None})
+        result = self.run_server(folder, files=str(overlay), mods=[str(mod)], ticks=10, keep=["probe/*.json"])
         self.assertEqual(result.outcome, "ok", result.summary)
-        self.assertEqual([(p["file"], p["valid"]) for p in result.data.probe], [("probe/result.json", True)])
-        self.assertEqual(result.data.json["config"], "mode=fast")
-        self.assertEqual(result.data.json["mods"], ["tick-probe.jar"])
         out = Path(result.data.receipt).parent
-        self.assertTrue((out / "probe" / "probe" / "result.json").is_file())
+        written = json.loads((out / "files" / "probe" / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual(written["config"], "mode=fast")
+        self.assertEqual(written["mods"], ["tick-probe.jar"])
         receipt = self.receipt(result)
         self.assertEqual(receipt["replaced"], ["config/probe.cfg"])
         self.assertEqual(receipt["added"]["mods/tick-probe.jar"]["sha256"], sha256_tree(mod)[0])
         self.assertEqual(receipt["jars"]["mods/tick-probe.jar"], sha256_tree(mod)[0])
         self.assertEqual((folder / "config" / "probe.cfg").read_text(encoding="utf-8"), "mode=slow\n")
-
-    def test_a_probe_that_writes_nothing_or_bad_json_is_a_finding(self):
-        nothing = self.run_server(self.server(), "lab.server-scenario", probe="probe/*.json", ticks=5)
-        self.assertEqual(nothing.outcome, "finding")
-        self.assertIn("the run wrote no file matching probe/*.json", nothing.summary)
-        broken = self.run_server(self.server({"probe": {"path": "probe/result.json", "text": "{not json"}}),
-                                 "lab.server-scenario", probe="probe/*.json", ticks=5)
-        self.assertEqual(broken.outcome, "finding")
-        self.assertIn("probe/result.json is not valid JSON", broken.summary)
-        self.assertFalse(broken.data.probe[0]["valid"])
-        stale = self.run_server(self.server(files={"probe/result.json": '{"error": null}'}), "lab.server-scenario",
-                                probe="probe/*.json", ticks=5)
-        self.assertEqual(stale.outcome, "finding")
-        self.assertIn("came with the server folder unchanged", stale.summary)
-        failed = self.run_server(self.server({"probe": {"path": "probe/result.json", "error": "boom"}}),
-                                 "lab.server-scenario", probe="probe/*.json", ticks=5,
-                                 require={"error": None, "cases.0": True})
-        self.assertEqual(failed.outcome, "finding")
-        self.assertIn('probe/result.json: error is "boom", not null', failed["findings"])
-        self.assertIn("probe/result.json: cases.0 is missing", failed["findings"])
 
     # -- the default launch -------------------------------------------------------------------------
     @unittest.skipUnless(JDKS, "no JDK with javac on this machine")

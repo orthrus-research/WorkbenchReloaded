@@ -1,4 +1,4 @@
-"""lab.server and lab.server-scenario: headless dedicated-server sessions. They need no GPU and no host, so they
+"""lab.server: headless dedicated-server sessions. They need no GPU and no host, so they
 run in the container.
 
 A session copies a stopped server folder (its JARs, mods, config and world) into the job's work folder, so the
@@ -9,8 +9,8 @@ command line). It reads the console line by line and
 1. waits until each ``ready`` pattern has matched a line (by default the vanilla ``Done (...)! For help`` line);
 2. sends ``commands`` in order, each optionally waiting for a reply that matches its ``expect``;
 3. lets the server run until the first of: ``ticks`` game ticks have passed (the server's own game time, read
-   with ``tick_query``), ``seconds`` have passed, or a line matches ``until`` (a probe's last line, or the
-   server's own ``Stopping server`` when the probe stops it);
+   with ``tick_query``), ``seconds`` have passed, or a line matches ``until`` (a mod's last line, or the
+   server's own ``Stopping server`` when something in it stops it);
 4. stops it as an operator would: ``save-all`` first when ``save`` is set, then ``stop``. A server still running
    ``grace`` later is killed, and that is a finding.
 
@@ -18,9 +18,6 @@ What the run leaves is kept under the out folder: ``console.log`` (written as it
 run wrote (``crash-reports/``, and JVM ``hs_err`` logs), what ``keep`` names (under ``files/``), every input file
 by SHA-256 (``inventory.json``) and ``receipt.json``: the inputs by SHA-256, the JVM and its arguments, the times,
 the exit code and every line matched. The copy itself is then removed.
-
-``lab.server-scenario`` is the same session with a probe: the run must write JSON where ``probe`` (a glob) says,
-it must parse, and it must hold the values ``require`` names; anything else is a finding.
 """
 
 from __future__ import annotations
@@ -54,7 +51,6 @@ IN_LAUNCH = {"java", "jar", "jvm_args", "server", "port", "ticks"}
 IN_VALUES = {"server", "port", "ticks"}  # in jvm_args and properties
 TICKS_PER_SECOND = 20  # the game's own rate; it only paces the game-time checks
 CANCEL_STOP = 30.0     # a cancelled session waits at most this long for stop before killing
-JSON_IN_DATA = 64 * 1024
 NEVER = threading.Event()
 
 
@@ -337,29 +333,6 @@ def _release(home: Path) -> dict[str, str]:
     return info
 
 
-_MISSING = object()
-
-
-def _lookup(data, dotted: str):
-    for part in dotted.split("."):
-        if isinstance(data, dict) and part in data:
-            data = data[part]
-        elif isinstance(data, list) and part.isdigit() and int(part) < len(data):
-            data = data[int(part)]
-        else:
-            return _MISSING
-    return data
-
-
-def _same(a, b) -> bool:
-    """JSON equality: true is not 1."""
-    if isinstance(a, bool) or isinstance(b, bool):
-        return type(a) is type(b) and a == b
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-        return a == b
-    return type(a) is type(b) and a == b
-
-
 # -- wording ----------------------------------------------------------------------------------------
 _span = processes.span
 
@@ -389,9 +362,8 @@ def _no_interrupt():
 
 # -- the session ------------------------------------------------------------------------------------
 class Session:
-    def __init__(self, ctx: Context, options: Options, probe: str | None = None, require: dict | None = None):
+    def __init__(self, ctx: Context, options: Options):
         self.ctx, self.o = ctx, options
-        self.probe, self.require = probe, dict(require or {})
         self.copy = ctx.work / "server"
         self.copied: dict[str, dict] = {}      # the server's files, as copied
         self.before: dict[str, dict] = {}      # the copy as launched: server files, added files and mods
@@ -412,7 +384,6 @@ class Session:
         self.reported_exit = False
         self.kept: list[dict] = []
         self.crash_reports: list[str] = []
-        self.probes: list[dict] = []
         self.problems: list[str] = []
         self.files_cache: tuple[list[str], list[str]] | None = None
 
@@ -755,10 +726,7 @@ class Session:
             self._remove_copy()
             return
         ctx.progress("keep", msg="console, crash reports, receipt" + (", kept files" if self.o.keep else ""))
-        steps = [self._close_console, self._keep_crash_reports]
-        if self.probe is not None:
-            steps.append(self._keep_probe)
-        steps.append(self._keep_files)
+        steps = [self._close_console, self._keep_crash_reports, self._keep_files]
         for step in steps:
             try:
                 step()
@@ -795,40 +763,6 @@ class Session:
                           else f"the JVM wrote a fatal error log: {relative}")
         if self.crash_reports:
             self.ctx.output("crash-reports", self.ctx.out / "crash-reports")
-
-    def _keep_probe(self):
-        files, _ = self._files()
-        found = [f for f in files if _matches(f, self.probe)]
-        if not found:
-            self._finding(f"the run wrote no file matching {self.probe}")
-            return
-        for relative in found:
-            path = self.copy / relative
-            digest = sha256_file(path)
-            entry = {"file": relative, "sha256": digest, "bytes": path.stat().st_size, "valid": False, "failed": []}
-            self.probes.append(entry)
-            _place(path, self.ctx.out / "probe" / relative, False)
-            entry["kept"] = self.ctx.host_path(self.ctx.out / "probe" / relative)
-            if self.before.get(relative, {}).get("sha256") == digest:
-                self._finding(f"{relative} came with the server folder unchanged; the run did not write it")
-                continue
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (ValueError, UnicodeDecodeError) as error:
-                self._finding(f"{relative} is not valid JSON: {error}")
-                continue
-            entry["valid"] = True
-            for dotted, expected in self.require.items():
-                actual = _lookup(data, dotted)
-                if actual is _MISSING:
-                    entry["failed"].append(f"{dotted} is missing")
-                elif not _same(actual, expected):
-                    entry["failed"].append(f"{dotted} is {json.dumps(actual)}, not {json.dumps(expected)}")
-            for failure in entry["failed"]:
-                self._finding(f"{relative}: {failure}")
-            if len(found) == 1 and entry["bytes"] <= JSON_IN_DATA:
-                entry["json"] = data
-        self.ctx.output("probe", self.ctx.out / "probe")
 
     def _keep_files(self):
         if not self.o.keep:
@@ -872,9 +806,6 @@ class Session:
             receipt["console"] = {"file": "console.log", "lines": console.count}
         receipt.update(exit=self.exit, stopped=self.stopped, crash_reports=self.crash_reports,
                        findings=list(self.ctx.findings), cancelled=self.ctx.cancelled.is_set())
-        if self.probe is not None:
-            receipt["probe"] = {"pattern": self.probe, "require": self.require,
-                                "files": [{k: v for k, v in p.items() if k != "json"} for p in self.probes]}
         if self.problems:
             receipt["problems"] = self.problems
         return receipt
@@ -887,9 +818,6 @@ class Session:
                 "commands": [{"send": c["send"], "line": c["line"]} for c in commands],
                 "crash_reports": self.crash_reports, "kept": [k["path"] for k in self.kept],
                 "receipt": ctx.host_path(ctx.out / "receipt.json"), "console": ctx.host_path(ctx.out / "console.log")}
-        if self.probe is not None:
-            data["probe"] = [{k: v for k, v in p.items() if k != "json"} for p in self.probes]
-            data["json"] = self.probes[0].get("json") if len(self.probes) == 1 else None
         if ctx.outcome == "ok":
             run = self.receipt.get("run") or {}
             parts = [f"ready in {_span(self.ready_at)}"]
@@ -906,8 +834,6 @@ class Session:
             sent = (self.receipt.get("stop") or {}).get("commands")
             parts.append((f"stopped with {' then '.join(map(repr, sent))}" if sent else "stopped by itself")
                          + f" (exit {self.exit})")
-            if self.probes:
-                parts.append("probe JSON " + ", ".join(p["file"] for p in self.probes))
             ctx.summary("server " + "; ".join(parts))
         return data
 
@@ -916,12 +842,3 @@ class Session:
 def server(ctx: Context, **params):
     """lab.server: one dedicated-server session (module.toml lists the params; this module's docstring the run)."""
     return Session(ctx, Options.parse(params)).execute()
-
-
-def scenario(ctx: Context, probe: str, require: dict, **params):
-    """lab.server-scenario: a session whose probe must leave valid JSON at ``probe``."""
-    options = Options.parse(params)
-    _relative_glob("probe", probe)
-    if not options.runs:
-        raise ParamError("a scenario needs ticks, seconds or until: how long the probe runs")
-    return Session(ctx, options, probe=probe, require=require).execute()

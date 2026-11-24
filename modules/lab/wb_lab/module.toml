@@ -4,16 +4,16 @@ version = "0.1.0"
 summary = "Game sessions: native client sessions on the host through wb-host (instances, the GPU lease, the lab home), and headless dedicated-server sessions in the container."
 
 [config]
-launcher = { type = "string", default = "", summary = "the checkout whose launcher (the profile's launcher script) prepares and plays instances" }
-python = { type = "string", default = "", summary = "the interpreter for the launcher; empty means the one running wb-host" }
-profile = { type = "object", default = {}, summary = "the instance profile: how the launcher prepares, plays and checks instances and how they are laid out (keys: wb_lab/profile.py)" }
-snapshots = { type = "string", default = "", summary = "where the lab keeps snapshots of the checkouts a profile names by ref, each a clone at one commit that is never moved; empty: checkouts in the lab home" }
-keep_worlds = { type = "list", items = "string", default = [], summary = "glob patterns of world snapshots lab.store-gc never removes" }
-keep_instances = { type = "list", items = "string", default = [], summary = "glob patterns of instances lab.prune-instances never removes" }
-scripts = { type = "list", items = "string", default = [], summary = "folders whose scripts lab.script may run" }
-profiles = { type = "object", default = {}, summary = "named instance profiles, one per harness, each a table of profile keys (wb_lab/profile.py), a job picks one with profile=<name>; from = \"<name>\" starts one from another profile (empty: the default), so it writes only the keys it changes" }
-environments = { type = "object", default = {}, summary = "by allow-listed folder: the pip requirements files (relative to it, or absolute) whose environment, made once, runs its Python scripts; other folders' scripts get the lab's interpreter" }
-python_cache = { type = "string", default = "", summary = "where those environments are kept; empty: the user's cache folder (XDG_CACHE_HOME or ~/.cache)/wb/python" }
+launcher = { type = "string", default = "", summary = "retired: read by nothing since the instance profile's commands went (wb play builds from a launch file); remove it from this machine's config" }
+python = { type = "string", default = "", summary = "retired: read by nothing since the instance profile's commands went (wb play builds from a launch file); remove it from this machine's config" }
+profile = { type = "object", default = {}, summary = "retired: read by nothing since the instance profile's commands went (wb play builds from a launch file); remove it from this machine's config" }
+snapshots = { type = "string", default = "", summary = "retired: read by nothing since the instance profile's commands went (wb play builds from a launch file); remove it from this machine's config" }
+keep_worlds = { type = "list", items = "string", default = [], summary = "retired: read by nothing since the instance profile's commands went (wb play builds from a launch file); remove it from this machine's config" }
+keep_instances = { type = "list", items = "string", default = [], summary = "retired: read by nothing since the instance profile's commands went (wb play builds from a launch file); remove it from this machine's config" }
+scripts = { type = "list", items = "string", default = [], summary = "retired: read by nothing since the instance profile's commands went (wb play builds from a launch file); remove it from this machine's config" }
+profiles = { type = "object", default = {}, summary = "retired: read by nothing since the instance profile's commands went (wb play builds from a launch file); remove it from this machine's config" }
+environments = { type = "object", default = {}, summary = "retired: read by nothing since the instance profile's commands went (wb play builds from a launch file); remove it from this machine's config" }
+python_cache = { type = "string", default = "", summary = "retired: read by nothing since the instance profile's commands went (wb play builds from a launch file); remove it from this machine's config" }
 metadata = { type = "string", default = "", summary = "where lab.assemble reads a component an instance carries no patch for: a URL template with {uid} and {version} (a launcher metadata server, or a mirror)" }
 asset_base = { type = "string", default = "https://resources.download.minecraft.net/", summary = "where lab.assemble downloads asset objects from, by <first two hex digits>/<SHA-1>" }
 runtime_cache = { type = "string", default = "", summary = "where lab.assemble keeps libraries, client JARs and assets, shared by every runtime; empty: <state>/cache/runtime (put it under a configured root for the host to use what it holds)" }
@@ -36,62 +36,30 @@ handler = "wb_lab.commands:gpu"
 runs_on = ["host"]
 
 [[command]]
-name = "queue"
-summary = "The GPU lease and every lane in the coordination folder."
-handler = "wb_lab.commands:queue"
-runs_on = ["host"]
-
-[[command]]
 name = "prepare"
-requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
-turn = true
 role = "prepare"
-summary = "Prepare an instance with the launcher's own prepare (the instance profile's command)."
+summary = "A rental plan's prepare step: the instance its bundle's script prepares, written into the bundle by vast.bundle (the template's [steps]). Retired on this machine: wb play builds and plays a launch."
 handler = "wb_lab.commands:prepare"
-params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 runs_on = ["host"]
-timeout = "40m"
+timeout = "1m"
 params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
 params.seed = { type = "int", optional = true }
-params.scale = { type = "float", optional = true, summary = "a whole or fractional scale (0.5); a whole one is passed as an integer" }
-params.args = { type = "list", items = "string", default = [], summary = "further prepare arguments; one that starts {<checkout>} names a file in that checkout as the job reads it (a snapshot at its commit)" }
-params.packs = { type = "list", items = "path.in", default = [], summary = "shader or resource packs laid into the instance's packs_dir (the profile's); they are part of its recipe" }
+params.scale = { type = "float", optional = true, summary = "a whole or fractional scale (0.5)" }
+params.args = { type = "list", items = "string", default = [], summary = "further prepare arguments for the bundle's script" }
 
 [[command]]
 name = "play"
-requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
-turn = true
 role = "play"
-summary = "Play on an instance on the host's GPU, under the GPU lease: one tour (the profile's play; up to 90 minutes), or with no tour an open session a person plays until they close the client (the profile's play_open; up to its limit); keeps logs and captures."
+summary = "A rental plan's play step: one tour its bundle's script plays, written into the bundle by vast.bundle (the template's [steps]); the results the template names come back as its outputs. Retired on this machine: wb play builds and plays a launch."
 handler = "wb_lab.commands:play"
 runs_on = ["host"]
-# A tour is a measurement and needs a quiet machine; an open session only needs the GPU.
-resources = { gpu = true, quiet_if = ["tour"] }
-timeout = "12h"
-cancel_grace = "2m"
+timeout = "1m"
 params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
-params.tour = { type = "path.in", optional = true, summary = "the tour to play; none: an open session (the profile's play_open)" }
-params.limit = { type = "duration", default = "4h", min = "10s", max = "12h", summary = "an open session is stopped after this, with the game it started (a finding); a tour has 90 minutes" }
+params.tour = { type = "path.in", optional = true, summary = "the tour to play" }
 params.window = { type = "string", default = "1920x1080", pattern = "^[0-9]+x[0-9]+$" }
-params.options = { type = "string", default = "", summary = "JVM options for the client, in the profile's options_env" }
+params.options = { type = "string", default = "", summary = "JVM options for the client" }
 params.label = { type = "string", default = "play" }
 params.args = { type = "list", items = "string", default = [] }
-params.collect = { type = "list", items = "list", default = [], summary = "more files to keep after this play, beside the profile's collect: [file in the instance, name to keep it as] pairs" }
-params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
-
-[[command]]
-name = "inputs"
-requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
-summary = "Bring a launch set to the state an instance is built from: first check that its projects pin the same commits of what they share (the profile's agree; a finding when they disagree), then run the instance profile's input steps (pinned dependencies, builds) in order on the host with the profile's environment; stops at the first that fails (a finding)."
-handler = "wb_lab.inputs:inputs"
-runs_on = ["host"]
-resources = { cpu = 2 }
-timeout = "2h"
-params.steps = { type = "list", items = "string", default = [], summary = "the steps to run, by name; empty: all of them" }
-params.allow_disagreement = { type = "bool", default = false, summary = "run the steps although the launch set's pins disagree" }
-params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
-result.steps = { type = "list" }
-result.agreement = { type = "object" }
 
 [[command]]
 name = "resolve"
@@ -108,40 +76,6 @@ result.commit = { type = "string" }
 result.members = { type = "object" }
 
 [[command]]
-name = "checkouts"
-requires = { config = ["modules.lab.profile"] }
-summary = "What the instance profile's checkouts resolve to now (a ref, fetched first when the profile says so), each read from a snapshot at its commit; with prune, removes snapshots past the newest keep of each repository that no job has used for unused_days."
-handler = "wb_lab.snapshots:checkouts_command"
-runs_on = ["host"]
-params.prune = { type = "bool", default = false, summary = "remove old snapshots (never one this profile resolves to now)" }
-params.keep = { type = "int", default = 3, min = 0, summary = "snapshots kept per repository, the most recently used" }
-params.unused_days = { type = "float", default = 7, min = 0, summary = "a snapshot used more recently than this is kept" }
-params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
-result.checkouts = { type = "object" }
-result.snapshots = { type = "list" }
-result.removed = { type = "list" }
-
-[[command]]
-name = "migrate-plan"
-requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
-summary = "List what moving the launcher's lab items (the profile's lab_root) into the lab home would move (a dry run)."
-handler = "wb_lab.commands:migrate_plan"
-params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
-runs_on = ["host"]
-
-[[command]]
-name = "script"
-turn = true
-summary = "Run a campaign script (Python or PowerShell) from a folder allow-listed in modules.lab.scripts, under the GPU lease."
-handler = "wb_lab.commands:script"
-runs_on = ["host"]
-resources = { gpu = true, quiet = true }
-timeout = "24h"
-params.script = { type = "string", summary = "a .py or .ps1 path under an allow-listed folder" }
-params.args = { type = "list", items = "string", default = [] }
-params.timeout = { type = "duration", default = "4h", min = "1s", max = "24h", summary = "the script is stopped after this, printing or not (a finding)" }
-
-[[command]]
 name = "turn"
 summary = "Run host routines in order under ONE GPU lease; stop at the first failure."
 handler = "wb_lab.commands:turn"
@@ -152,126 +86,6 @@ cancel_grace = "2m"
 params.steps = { type = "list", items = "object", summary = "[{id, command, params}] of lab host routines" }
 params.continue_on_finding = { type = "bool", default = false }
 
-[[command]]
-name = "migrate"
-requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
-summary = "Move the launcher's lab items into the lab home (renames on one volume, a link left at each old path); undo reverses it."
-handler = "wb_lab.commands:migrate"
-params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
-runs_on = ["host"]
-resources = { gpu = true, quiet = true }
-timeout = "1h"
-params.execute = { type = "bool", default = false, summary = "false: show the plan only" }
-params.items = { type = "list", items = "string", default = [], summary = "a subset of the plan's items; all by default" }
-params.undo = { type = "bool", default = false, summary = "reverse the last migration from its manifest" }
-
-[[command]]
-name = "prune-instances"
-requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
-summary = "Remove game instances unused for N days (keep patterns honoured); a dry run unless execute=true."
-handler = "wb_lab.commands:prune_instances"
-runs_on = ["host"]
-resources = { gpu = true, quiet = true }
-timeout = "2h"
-params.days = { type = "int", default = 30, min = 1 }
-params.execute = { type = "bool", default = false }
-params.keep = { type = "list", items = "string", default = [], summary = "glob patterns of instance names never pruned" }
-params.names = { type = "list", items = "string", default = [], summary = "delete only these (the approved list)" }
-params.expect = { type = "int", optional = true, summary = "refuse unless exactly this many match (the approved count)" }
-params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
-
-[[command]]
-name = "ensure"
-requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
-turn = true
-role = "prepare"
-summary = "An instance for a recipe: reused if it exists, else built from the recipe's template by hard links (prepared once per recipe), optionally on a world snapshot."
-handler = "wb_lab.commands:ensure"
-runs_on = ["host"]
-timeout = "40m"
-params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
-params.seed = { type = "int", optional = true }
-params.scale = { type = "float", optional = true, summary = "a whole or fractional scale (0.5); a whole one is passed as an integer" }
-params.args = { type = "list", items = "string", default = [], summary = "prepare arguments; one that starts {<checkout>} names a file in that checkout as the job reads it (a snapshot at its commit); the recipe keeps its bytes" }
-params.world = { type = "string", default = "", summary = "a world snapshot label to start from; empty: the prepared (empty) world" }
-params.replace = { type = "bool", default = false, summary = "replace an instance of the same name built from another recipe" }
-params.allow_writer_change = { type = "bool", default = false, summary = "accept a world written by another build of the profile's world_writer" }
-params.verify = { type = "bool", default = true, summary = "check the instance with the profile's load command, as play would" }
-params.allow_disagreement = { type = "bool", default = false, summary = "build although the launch set's pins disagree (the profile's agree); a finding" }
-result.recipe = { type = "string" }
-result.reused = { type = "bool" }
-params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
-params.packs = { type = "list", items = "path.in", default = [], summary = "shader or resource packs laid into the instance's packs_dir (the profile's); they are part of its recipe" }
-
-[[command]]
-name = "snapshot"
-requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
-turn = true
-summary = "Keep an instance's generated world (the profile's world parts) as a labelled snapshot."
-handler = "wb_lab.commands:snapshot"
-params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
-runs_on = ["host"]
-resources = { gpu = true }
-timeout = "30m"
-params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
-params.label = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
-
-[[command]]
-name = "reset"
-requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
-turn = true
-summary = "Put an instance's world back to a snapshot (a private copy), so every run starts from the same state."
-handler = "wb_lab.commands:reset"
-runs_on = ["host"]
-resources = { gpu = true }
-timeout = "30m"
-params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
-params.world = { type = "string" }
-params.allow_writer_change = { type = "bool", default = false, summary = "accept a world written by another build of the profile's world_writer" }
-params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
-
-[[command]]
-name = "instances"
-requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
-summary = "The instances: built from the store (recipe, world) or legacy full copies; and the store's templates and snapshots."
-handler = "wb_lab.commands:instances"
-runs_on = ["host"]
-params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
-
-[[command]]
-name = "remove"
-requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
-summary = "Remove one instance; the store's shared files are untouched."
-handler = "wb_lab.commands:remove"
-params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
-runs_on = ["host"]
-resources = { gpu = true }
-params.name = { type = "string", pattern = "^[A-Za-z0-9._-]+$" }
-
-[[command]]
-name = "dedupe"
-requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
-summary = "Turn existing full-copy instances into store-linked ones: their identical read-only files become hard links to one copy. A dry run unless execute=true."
-handler = "wb_lab.commands:dedupe"
-runs_on = ["host"]
-resources = { gpu = true, quiet = true }
-timeout = "6h"
-params.execute = { type = "bool", default = false }
-params.limit = { type = "int", default = 0, min = 0, summary = "at most this many instances (0: all)" }
-params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
-
-[[command]]
-name = "store-gc"
-requires = { config = ["modules.lab.launcher", "modules.lab.profile"] }
-summary = "Remove templates and world snapshots unused for N days (kept patterns honoured) and blobs nothing uses. A dry run unless execute=true."
-handler = "wb_lab.commands:store_gc"
-runs_on = ["host"]
-resources = { gpu = true }
-params.days = { type = "int", default = 30, min = 1 }
-params.execute = { type = "bool", default = false }
-
-# Dedicated servers need no GPU and no host: these run in the container (wb_lab/server.py).
-params.profile = { type = "string", default = "", summary = "a named instance profile ([modules.lab.profiles.<name>]); empty: [modules.lab] profile" }
 [[command]]
 name = "install-server"
 summary = "Install a dedicated server with its loader's own installer, the installer pinned by SHA-256: every installed file is kept by size and SHA-256 with a receipt, and the folder is a stopped server for lab.server and lab.session. The EULA is accepted only when the request says eula = true."
@@ -286,28 +100,6 @@ params.eula = { type = "bool", default = false, summary = "true writes eula.txt,
 params.timeout = { type = "duration", default = "30m", summary = "the installer is stopped after this" }
 result.server = { type = "string", optional = true }
 result.files = { type = "int", optional = true }
-
-[[command]]
-name = "userdev"
-summary = "Run a project's development client (runClient, or another JavaExec task) through its Gradle wrapper in a fresh run folder: inputs hashed before and after, a deadline, the class path it ran on, a receipt the game must write when asked, and every capture kept by SHA-256 with each PNG checked. An exit code alone never passes a run."
-handler = "wb_lab.userdev:userdev"
-runs_on = ["host"]
-resources = { gpu = true }
-timeout = "3h"
-params.checkout = { type = "path.in", digest = "git", summary = "the project checkout whose build runs the client" }
-params.task = { type = "string", default = "runClient", summary = "the dev-run task (a JavaExec task)" }
-params.project = { type = "string", default = "", summary = "the Gradle subproject that has it; empty: the root project" }
-params.gradle = { type = "list", items = "string", default = [], summary = "the build's command ({checkout} is filled in); empty: the checkout's own wrapper" }
-params.args = { type = "list", items = "string", default = [], summary = "more Gradle arguments (-P properties, --offline)" }
-params.system_properties = { type = "object", default = {}, summary = "system properties for the client, beside wb.run.id and wb.run.output (the evidence folder)" }
-params.inputs = { type = "list", items = "string", default = ["src/**", "*.gradle", "*.gradle.kts", "gradle.properties"], summary = "globs of the checkout's files that must not change during the run" }
-params.receipt = { type = "string", default = "", summary = "a file the run must write under evidence/, holding receipt_ok = true; empty: none" }
-params.receipt_ok = { type = "string", default = "passed", summary = "the receipt's key (dotted) that must be true" }
-params.captures = { type = "list", items = "string", default = ["**/*.png"], summary = "globs of what the run leaves in its run and evidence folders to keep in the inventory" }
-params.deadline = { type = "duration", default = "10m", summary = "the run is stopped after this" }
-params.jdk = { type = "string", default = "26", summary = "the JDK Gradle runs on, as the host names them; empty: the environment's" }
-result.exit = { type = "int", optional = true }
-result.captures = { type = "int", optional = true }
 
 [[command]]
 name = "pack"
@@ -331,7 +123,7 @@ params.instance = { type = "path.in", summary = "a Prism or MultiMC instance fol
 params.system = { type = "enum", values = ["", "windows", "linux", "osx"], default = "", summary = "the system the runtime is for; empty: the one the job runs on" }
 params.arch = { type = "enum", values = ["", "x86_64", "aarch64", "x86"], default = "", summary = "its architecture; empty: the machine's" }
 params.assets = { type = "bool", default = true, summary = "fetch the asset index and its objects too" }
-params.game = { type = "bool", default = false, summary = "also copy the instance's own game folder (mods, config, packs, scripts, options.txt; never worlds or logs), each file listed by SHA-256, for lab.session's client_files" }
+params.game = { type = "bool", default = false, summary = "also copy the instance's own game folder (mods, config, packs, scripts, options.txt; never worlds or logs), each file listed by SHA-256" }
 result.runtime = { type = "string", optional = true }
 result.main_class = { type = "string", optional = true }
 result.libraries = { type = "int", optional = true }
@@ -432,91 +224,3 @@ result.stopped = { type = "string" }
 result.exit = { type = "int" }
 result.receipt = { type = "string" }
 
-[[command]]
-name = "session"
-summary = "One dedicated server and several clients on the host, each client started from an assembled runtime (lab.assemble) with an offline name and no launcher: they join on their own, play for ticks, seconds or until a line, a scripted client may be killed, and every console, log and crash report is kept with a receipt. desktop = hidden keeps them off the user's desktop (Windows)."
-handler = "wb_lab.session:session"
-runs_on = ["host"]
-resources = { gpu = true }
-timeout = "24h"
-cancel_grace = "2m"
-params.runtime = { type = "path.in", summary = "runtime.json from lab.assemble, assembled where the host can read its cache" }
-params.clients = { type = "int", default = 2, min = 1, max = 8, summary = "how many clients join" }
-params.prefix = { type = "string", default = "wb", pattern = "^[A-Za-z0-9_]{1,12}$", summary = "the clients' offline names are this and 1, 2, ..." }
-params.client_jdk = { type = "string", default = "26", summary = "the JDK the clients run on, as the host names its JDKs" }
-params.client_mods = { type = "list", items = "path.in", default = [], summary = "client-only mods added to the server's own (a renderer)" }
-params.client_files = { type = "path.in", optional = true, summary = "a folder laid over each client's game folder (config, options.txt)" }
-params.client_jvm_args = { type = "list", items = "string", default = [], summary = "JVM options for every client" }
-params.window = { type = "string", default = "854x480", summary = "each client's window, WIDTHxHEIGHT" }
-params.joined = { type = "string", default = "{name} joined the game", summary = "the server console line that shows a client joined ({name} is the client)" }
-params.left = { type = "string", default = "{name} left the game", summary = "the server console line that shows a client left" }
-params.join_timeout = { type = "duration", default = "10m", summary = "how long every client has to join" }
-params.kill_client = { type = "int", default = 0, min = 0, max = 8, summary = "a client to kill during the run (1 is the first; 0: none)" }
-params.kill_after = { type = "duration", default = "30s", summary = "how long after the last join it is killed" }
-params.leave_timeout = { type = "duration", default = "1m", summary = "how long the server has to show the killed client leaving" }
-params.desktop = { type = "enum", values = ["visible", "hidden"], default = "visible", summary = "hidden: the clients run on a desktop of their own that never takes the input (Windows)" }
-params.audio = { type = "bool", default = false, summary = "sample each client's audio peak from the last join to the end of the run (Windows): which clients made sound, and how loud" }
-params.server = { type = "path.in", summary = "a stopped server folder (its JARs, mods, config and world); the run uses a copy, so it is never written" }
-params.jdk = { type = "string", default = "8", summary = "the JDK that runs it, as Workbench names them (8, 17, 25); empty: none, for a launch that names no {java}" }
-params.jar = { type = "string", default = "", summary = "the server JAR for {jar}: a glob relative to the folder that matches one file; empty: the folder's only top-level JAR" }
-params.jvm_args = { type = "list", items = "string", default = [], summary = "JVM options for {jvm_args}; {port}, {ticks} and {server} are filled in" }
-params.launch = { type = "list", items = "string", default = ["{java}", "{jvm_args}", "-jar", "{jar}", "nogui"], summary = "the server's command line, run in the copy: {java}, {jvm_args} (an item of its own: the options), {jar}, {server} (the copy), {port}, {ticks}" }
-params.exclude = { type = "list", items = "string", default = [], summary = "globs of the folder left out of the copy: logs, or world for a fresh one" }
-params.files = { type = "path.in", optional = true, summary = "a folder laid over the copy: config, scripts, datapacks" }
-params.mods = { type = "list", items = "path.in", default = [], summary = "JARs added to the copy's mods folder" }
-params.properties = { type = "object", default = {}, summary = "server.properties values for the copy ({port} is filled in); unless it names server-port, the copy listens on a free port" }
-params.ready = { type = "list", items = "string", default = ['Done \([^)]*\)! For help'], summary = "regular expressions; the server is ready once each has matched a console line" }
-params.ready_timeout = { type = "duration", default = "10m", max = "2h" }
-params.commands = { type = "list", items = "any", default = [], summary = "console commands sent once it is ready, in order: a string, or {send, expect, timeout}, where expect is a regular expression the reply must match" }
-params.reply_timeout = { type = "duration", default = "60s", max = "1h", summary = "how long an expected reply, or the game time, may take" }
-params.ticks = { type = "int", default = 0, min = 0, summary = "then run until this many game ticks have passed, by the server's own game time (tick_query)" }
-params.seconds = { type = "duration", default = 0, max = "20h", summary = "then run this long" }
-params.until = { type = "list", items = "string", default = [], summary = "then run until a console line matches one of these regular expressions; the run ends at the first of ticks, seconds and until" }
-params.run_timeout = { type = "duration", default = "1h", max = "20h", summary = "the longest a run for ticks or until may take; reaching it is a finding" }
-params.tick_query = { type = "string", default = "time query gametime", summary = "the console command that prints the game time" }
-params.tick_reply = { type = "string", default = '[Tt]ime is (\d+)', summary = "its reply; group 1 is the game time in ticks" }
-params.save = { type = "bool", default = false, summary = "send save-all, and wait for it to finish, before stopping" }
-params.stop = { type = "list", items = "string", default = ["stop"], summary = "the console commands that stop the server" }
-params.grace = { type = "duration", default = "2m", max = "30m", summary = "how long it may take to stop before it is killed (a finding)" }
-params.keep = { type = "list", items = "string", default = [], summary = "globs, relative to the copy, of what to keep from it under files/ (world, logs/*.log); the console, new crash reports and the receipt are always kept" }
-result.receipt = { type = "string", optional = true }
-
-[[command]]
-name = "server-scenario"
-summary = "Run a server scenario: a copy of a stopped server with a probe added (a mod JAR, datapacks, config), run for ticks, seconds or until a line and stopped gracefully; a finding unless the run wrote valid JSON where the probe writes it."
-handler = "wb_lab.server:scenario"
-resources = { cpu = 2, mem_gb = 4 }
-timeout = "24h"
-cancel_grace = "2m"
-params.server = { type = "path.in", summary = "a stopped server folder (its JARs, mods, config and world); the run uses a copy, so it is never written" }
-params.probe = { type = "string", summary = "a glob, relative to the copy, of the JSON the probe writes; none written, or JSON that does not parse, is a finding" }
-params.require = { type = "object", default = {}, summary = 'values the probe JSON must hold, by dotted path, e.g. {"error": null, "cases.0.passed": true}' }
-params.files = { type = "path.in", optional = true, summary = "a folder laid over the copy: the probe's config, scripts, datapacks" }
-params.mods = { type = "list", items = "path.in", default = [], summary = "JARs added to the copy's mods folder: the probe mod" }
-params.jdk = { type = "string", default = "8", summary = "the JDK that runs it, as Workbench names them (8, 17, 25); empty: none, for a launch that names no {java}" }
-params.jar = { type = "string", default = "", summary = "the server JAR for {jar}: a glob relative to the folder that matches one file; empty: the folder's only top-level JAR" }
-params.jvm_args = { type = "list", items = "string", default = [], summary = "JVM options for {jvm_args}; {port}, {ticks} and {server} are filled in (-Dprobe.ticks={ticks})" }
-params.launch = { type = "list", items = "string", default = ["{java}", "{jvm_args}", "-jar", "{jar}", "nogui"], summary = "the server's command line, run in the copy: {java}, {jvm_args} (an item of its own: the options), {jar}, {server} (the copy), {port}, {ticks}" }
-params.exclude = { type = "list", items = "string", default = [], summary = "globs of the folder left out of the copy: logs, or world for a fresh one" }
-params.properties = { type = "object", default = {}, summary = "server.properties values for the copy ({port} is filled in); unless it names server-port, the copy listens on a free port" }
-params.ready = { type = "list", items = "string", default = ['Done \([^)]*\)! For help'], summary = "regular expressions; the server is ready once each has matched a console line" }
-params.ready_timeout = { type = "duration", default = "10m", max = "2h" }
-params.commands = { type = "list", items = "any", default = [], summary = "console commands sent once it is ready, in order: a string, or {send, expect, timeout}, where expect is a regular expression the reply must match" }
-params.reply_timeout = { type = "duration", default = "60s", max = "1h", summary = "how long an expected reply, or the game time, may take" }
-params.ticks = { type = "int", default = 0, min = 0, summary = "then run until this many game ticks have passed, by the server's own game time (tick_query)" }
-params.seconds = { type = "duration", default = 0, max = "20h", summary = "then run this long" }
-params.until = { type = "list", items = "string", default = [], summary = "then run until a console line matches one of these (the probe's last line); a scenario names ticks, seconds or until" }
-params.run_timeout = { type = "duration", default = "1h", max = "20h", summary = "the longest a run for ticks or until may take; reaching it is a finding" }
-params.tick_query = { type = "string", default = "time query gametime", summary = "the console command that prints the game time" }
-params.tick_reply = { type = "string", default = '[Tt]ime is (\d+)', summary = "its reply; group 1 is the game time in ticks" }
-params.save = { type = "bool", default = false, summary = "send save-all, and wait for it to finish, before stopping" }
-params.stop = { type = "list", items = "string", default = ["stop"], summary = "the console commands that stop the server" }
-params.grace = { type = "duration", default = "2m", max = "30m", summary = "how long it may take to stop before it is killed (a finding)" }
-params.keep = { type = "list", items = "string", default = [], summary = "globs, relative to the copy, of what to keep from it under files/; the probe JSON, the console, new crash reports and the receipt are always kept" }
-result.ready = { type = "bool" }
-result.ended = { type = "string" }
-result.ticks = { type = "int" }
-result.stopped = { type = "string" }
-result.exit = { type = "int" }
-result.receipt = { type = "string" }
-result.probe = { type = "list" }

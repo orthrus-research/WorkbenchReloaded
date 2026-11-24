@@ -144,10 +144,8 @@ class Plans(unittest.TestCase):
         from wb_core.manifest import parse
         manifest = parse(REPO / "modules" / "lab" / "wb_lab" / "module.toml", "wb_lab")
         commands = {c.name: c for c in manifest.commands}
-        self.assertEqual({n for n, c in commands.items() if c.turn},
-                         {"prepare", "play", "script", "gpu", "ensure", "snapshot", "reset"})
-        self.assertEqual({n: c.role for n, c in commands.items() if c.role},
-                         {"prepare": "prepare", "ensure": "prepare", "play": "play"})
+        self.assertEqual({n for n, c in commands.items() if c.turn}, {"gpu"})
+        self.assertEqual({n: c.role for n, c in commands.items() if c.role}, {"prepare": "prepare", "play": "play"})
 
 
 TEMPLATE = """
@@ -212,10 +210,6 @@ class RentalPlans(unittest.TestCase):
             poll_seconds = 0.02
             ssh_retry_seconds = 0.02
             cards = ["RTX 3060"]
-            [modules.lab]
-            launcher = '{data / "launcher"}'
-            [modules.lab.profile]
-            launcher = "launcher.py"
             """, root=root, files={"modules/vast/templates/turn.toml": template}).start()
         cls.c, cls.data = cls.d.client, data
         cls.jar = hashlib.sha256(b"jar bytes").hexdigest()

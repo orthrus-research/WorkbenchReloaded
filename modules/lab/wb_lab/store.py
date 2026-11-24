@@ -2,19 +2,17 @@
 
 An instance is a function of its inputs, so the lab keeps the inputs once and builds instances from them:
 
-- A **recipe** is the hash of everything the launcher's prepare reads: its arguments (each file argument by its
-  SHA-256), the seed and scale, and the files the instance profile names (pins, default artifact, launcher code).
-  The same recipe gives the same instance, so it is reused, not prepared again.
+- A **recipe** is the hash of everything an instance is built from (for lab.build: the launch file, its base and
+  parameters). The same recipe gives the same instance, so it is reused, not built again.
 - A **template** is one prepared instance per recipe, kept in the store. Its read-only parts live once in the
   content-addressed **blob** store.
 - An **instance** is a working copy of a template: read-only files are hard links into the blobs (no space, no
   time), everything the game writes is a private copy, and the files that name the instance are rewritten.
 - A **world snapshot** keeps a generated world (and its caches) by content; restoring it is a private copy,
-  because the game writes region files in place. A snapshot fits an instance with the same world key (the
-  profile's ``world_key``); a different generator build is refused unless allowed.
+  because the game writes region files in place.
 
-Which parts are worlds, which files are rewritten and which are only read all come from the instance profile
-(wb_lab.profile.Layout). Shared blobs are marked read-only, so an accidental write fails loudly instead of
+Which parts are worlds, which files are rewritten and which are only read is the store's ``Layout`` (lab.build's is
+wb_lab.instance.LAYOUT). Shared blobs are marked read-only, so an accidental write fails loudly instead of
 changing every instance.
 Hard links work on NTFS and on Linux and macOS filesystems; store and instances must share a volume.
 """
@@ -30,9 +28,25 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .profile import Layout
-
 MARKER = ".wb-instance.json"
+
+
+@dataclass
+class Layout:
+    """The parts of an instance the store treats differently."""
+    world_parts: list[str] = field(default_factory=list)
+    rewrite: list[str] = field(default_factory=list)
+    linkable_dirs: list[str] = field(default_factory=list)
+    linkable_suffixes: list[str] = field(default_factory=list)
+
+    def linkable(self, relative: str) -> bool:
+        """Files the game only reads: shared by hard link. Everything else is a private copy."""
+        rel = relative.replace("\\", "/")
+        if any(rel == part or rel.startswith(part + "/") for part in self.world_parts):
+            return False
+        if any(rel.startswith(part + "/") for part in self.linkable_dirs):
+            return True
+        return any(rel.endswith(suffix) for suffix in self.linkable_suffixes)
 
 
 class StoreError(Exception):
@@ -189,7 +203,7 @@ class Store:
         if folder.exists():
             raise StoreError(f"world snapshot {label} already exists")
         if not self.layout.world_parts:
-            raise StoreError("the instance profile names no world_parts, so there is no world to snapshot")
+            raise StoreError("the layout names no world_parts, so there is no world to snapshot")
         files, total = {}, 0
         for part in self.layout.world_parts:
             base = instance / part

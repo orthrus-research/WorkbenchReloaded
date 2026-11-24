@@ -62,8 +62,7 @@ from . import machine as machines
 from . import process as processes
 from . import resolve as resolver
 from .bases import INTERIM_BASES
-from .profile import Layout
-from .store import MARKER, Store, StoreError, recipe_of, remove_tree
+from .store import MARKER, Layout, Store, StoreError, recipe_of, remove_tree
 
 SCHEMA = "wb.lab.instance/1"
 RECEIPT = "instance.json"

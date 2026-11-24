@@ -1,9 +1,5 @@
-# [modules.lab]: native sessions through wb-host.
-# The checkout whose launcher prepares and plays instances:
-launcher = '../MyLauncher'
-# Folders whose scripts lab.script may run (campaigns):
-scripts = []
-
-# The instance commands also need an instance profile, [modules.lab.profile]: how that launcher prepares, plays
-# and checks instances and how they are laid out. Workbench ships none; write yours in modules/lab/profile.toml
-# (an example sits beside this file) or here under [profile]. Every key: modules/lab/wb_lab/profile.py.
+# [modules.lab]: native sessions through wb-host. A game is built from a launch file (wb play, lab.build) and needs
+# no launcher here; where the runtime cache, sessions and instances go:
+# runtime_cache = ''
+# sessions = ''
+# instances = ''

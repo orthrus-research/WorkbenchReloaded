@@ -31,7 +31,6 @@ SUITES = [
     ["tests/test_ci.py"],
     ["tests/test_plan.py"],
     ["tests/test_host.py"],
-    ["tests/test_store.py"],
     ["modules/vast/tests/test_vast.py"],
     ["modules/ledger/tests/test_ledger.py"],
     ["modules/frames/tests/test_qframes.py"],
@@ -43,18 +42,16 @@ SUITES = [
     ["modules/mixin/tests/test_mixin.py"],
     ["modules/probe/tests/test_probe.py"],
     ["modules/lab/tests/test_server.py"],
-    ["modules/lab/tests/test_profiles.py"],
-    ["modules/lab/tests/test_snapshots.py"],
-    ["modules/lab/tests/test_inputs_store.py"],
-    ["modules/lab/tests/test_template_paths.py"],
     ["tests/test_land.py"],
     ["tests/test_platform_fetch.py"],
     ["tests/test_gradlehome.py"],
     ["modules/lab/tests/test_assemble.py"],
-    ["modules/lab/tests/test_session.py"],
     ["modules/lab/tests/test_install.py"],
-    ["modules/lab/tests/test_userdev.py"],
     ["modules/lab/tests/test_pack.py"],
+    ["modules/lab/tests/test_resolve.py"],
+    ["modules/lab/tests/test_instance.py"],
+    ["modules/lab/tests/test_run.py"],
+    ["modules/lab/tests/test_play.py"],
     ["modules/content/tests/test_content.py"],
     ["modules/drive/tests/test_drive.py"],
     ["modules/release/tests/test_release.py"],
@@ -83,7 +80,7 @@ def main() -> int:
     for suite in SUITES:
         if part_of(suite) not in parts:
             continue
-        if quick and suite[0] in ("tests/test_sdks.py", "tests/test_host.py", "tests/test_store.py"):
+        if quick and suite[0] in ("tests/test_sdks.py", "tests/test_host.py"):
             continue
         started = time.time()
         done = subprocess.run([sys.executable, "-W", "ignore", *suite], cwd=REPO, capture_output=True, text=True)
