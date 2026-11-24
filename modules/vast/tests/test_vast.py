@@ -873,5 +873,197 @@ class Bundles(unittest.TestCase):
         self.assertIn("has no plan.env", missing.summary)
 
 
+
+# ----------------------------------------------------------------------------------------------
+# bundles made from a launch file
+
+class LaunchBundles(unittest.TestCase):
+    """vast.bundle-launch: a bundle from a launch file alone. Every member and runtime file by SHA-256 from the Store,
+    the JDK as the platform's Linux archive, Workbench's own lab code and a run script; every load checks it against
+    its launch file, so a member or JDK archive that is missing or other bytes is refused before any quote."""
+
+    BUILD = "26.0.2.1+1"
+
+    def setUp(self):
+        from wb_vast import launch_bundle
+        self.launch_bundle = launch_bundle
+        self.root = Path(tempfile.mkdtemp(prefix="wb-launch-bundle-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.store = self.root / "out" / "store"
+        members = []
+        for spec, file, data in (("game:mod@both", "game-1.jar", b"the game"), ("cube:mod@both", "cube-1.jar", b"cube"),
+                                 ("scalar@both", "Scalar Legacy-1.0.1.jar", b"a file name with a space")):
+            self.keep(file, data)
+            members.append({"member": spec, "name": spec.split(":")[0].split("@")[0], "side": "both",
+                            "kind": "line", "commit": "c" * 40, "sha256": sha(data), "file": file,
+                            "path": f"files/{sha(data)}/{file}", "mod_ids": []})
+        runtime = {}
+        for part, file, data in (("installer", "cleanroom-installer.jar", b"installer"),
+                                 ("universal", "cleanroom-universal.jar", b"universal"),
+                                 ("prism", "cleanroom.zip", b"prism")):
+            if part != "universal":  # the installer makes it
+                self.keep(file, data)
+            runtime[part] = {"url": f"https://example.org/{file}", "file": file, "sha256": sha(data)}
+        self.jdk = b"a jdk archive"
+        self.keep("OpenJDK26U-jdk_x64_linux_hotspot_26.0.2.1_1.tar.gz", self.jdk)
+        revision = "5" * 40
+        (self.root / "out" / "sets" / revision).mkdir(parents=True)
+        (self.root / "out" / "sets" / revision / "set.json").write_text(json.dumps({
+            "schema": 1, "projects": {}, "platform": {"java": 26, "jdk": {"26": {"build": self.BUILD, "linux": {
+                "url": "https://example.org/jdk-26.0.2.1%2B1/OpenJDK26U-jdk_x64_linux_hotspot_26.0.2.1_1.tar.gz",
+                "sha256": sha(self.jdk)}}}}}), encoding="utf-8")
+        self.doc = {"schema": 1, "project": "game", "launch": "default", "commit": "a" * 40, "tree": "b" * 40,
+                    "set": revision, "store": str(self.store),
+                    "runtime": {"kind": "cleanroom", "version": "0.7.14-alpha", "java": 26, "jdk": self.BUILD,
+                                "files": runtime},
+                    "members": members, "jvm": {"client": [], "server": []}, "collect": [], "failures": [],
+                    "params": {"seed": 1}, "param_types": {"seed": {"type": "int"}}}
+        self.tour = self.root / "views.json"
+        self.tour.write_text('[{"label": "a", "x": 0, "y": 80, "z": 0, "yaw": 0, "pitch": 0}]', encoding="utf-8")
+        self.lab = {"trusted": [], "eula": True}
+
+    def keep(self, name: str, data: bytes):
+        path = self.store / "files" / sha(data) / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def make(self, doc=None, **params):
+        launch = self.root / "launch.json"
+        launch.write_text(json.dumps(doc or self.doc, indent=1) + "\n", encoding="utf-8")
+        out = self.root / "bundle"
+        ctx = Context({"job": "j", "command": "vast.bundle-launch", "module": "vast", "work": str(self.root / "work"),
+                       "out": str(out), "lab": self.lab, "machine": "host"}, lambda event: None)
+        values = {"name": None, "window": "1920x1080", "gpu": True, "eula": False, "params": {}, "limit": 600,
+                  "disk_gb": 32, "purpose": "calibration", **params}
+        result = self.launch_bundle.make(ctx, str(launch), str(self.tour), readable=Path, **values)
+        return ctx, result, out
+
+    def check(self, out: Path) -> dict:
+        ctx = Context({"job": "c", "command": "vast.bundle-check", "module": "vast", "work": str(self.root / "cw"),
+                       "out": str(self.root / "co")}, lambda event: None)
+        return commands.bundle_check(ctx, str(out))
+
+    def test_the_bundle_carries_every_file_by_sha256_and_the_lab_code(self):
+        ctx, result, out = self.make()
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        files = out / "files"
+        self.assertEqual((files / "launch.json").read_bytes(), (self.root / "launch.json").read_bytes())
+        for member in self.doc["members"]:
+            self.assertEqual(sha(((files / "store") / member["path"]).read_bytes()), member["sha256"])
+        for part in ("installer", "prism"):
+            entry = self.doc["runtime"]["files"][part]
+            self.assertTrue((files / "store" / "files" / entry["sha256"] / entry["file"]).is_file())
+        self.assertEqual((files / "jdk" / "OpenJDK26U-jdk_x64_linux_hotspot_26.0.2.1_1.tar.gz").read_bytes(), self.jdk)
+        for code in ("runner/wb_lab/instance.py", "runner/wb_lab/run.py", "runner/wb_core/module.py",
+                     "runner/wb/config.py", "runner/launch_run.py"):
+            self.assertTrue((files / code).is_file(), code)
+        self.assertFalse(list(files.rglob("__pycache__")))
+        self.assertNotIn(b"\r\n", (files / "run.sh").read_bytes())
+        checksums = (files / "checksums.sha256").read_text(encoding="utf-8").splitlines()
+        self.assertIn(f"{self.doc['members'][2]['sha256']}  store/{self.doc['members'][2]['path']}", checksums)
+        self.assertEqual(len(checksums), 3 + 2 + 1 + 2)  # members, runtime files, the JDK, the launch and tour
+        info = json.loads((files / "bundle-launch.json").read_text(encoding="utf-8"))
+        self.assertEqual((info["jdk"]["build"], info["instance"], info["eula"], info["launch"]["commit"]),
+                         (self.BUILD, "rental", True, "a" * 40))
+        toml = tomllib.loads((out / "bundle.toml").read_text(encoding="utf-8"))
+        self.assertEqual((toml["needs"]["own_jdk"], toml["needs"]["gpu"], toml["run"]["script"]),
+                         (True, True, "files/run.sh"))
+        checked = self.check(out)
+        self.assertEqual((checked["launch"]["members"], checked["launch"]["jdk"]), (3, self.BUILD))
+        self.assertNotIn("/opt/jdk", checked["bootstrap"])  # the bundle's own JDK, not the image's
+        self.assertIn("virtualgl", checked["bootstrap"].lower())
+
+    def test_a_member_or_jdk_archive_missing_or_changed_is_refused_before_any_quote(self):
+        _, _, out = self.make()
+        member = out / "files" / "store" / self.doc["members"][1]["path"]
+        member.write_bytes(b"other bytes")
+        with self.assertRaisesRegex(ParamError, r"member cube:mod@both: store/files/.*/cube-1.jar is [0-9a-f]{12}, "
+                                                r"not [0-9a-f]{12}"):
+            self.check(out)
+        member.unlink()
+        with self.assertRaisesRegex(ParamError, r"member cube:mod@both: the bundle has no store/files/"):
+            self.check(out)
+        _, _, out = self.make()
+        archive = out / "files" / "jdk" / "OpenJDK26U-jdk_x64_linux_hotspot_26.0.2.1_1.tar.gz"
+        archive.write_bytes(b"another jdk")
+        with self.assertRaisesRegex(ParamError, r"JDK 26.0.2.1\+1: jdk/OpenJDK26U.* is [0-9a-f]{12}, not "):
+            self.check(out)
+        archive.unlink()
+        with self.assertRaisesRegex(ParamError, r"JDK 26.0.2.1\+1: the bundle has no jdk/OpenJDK26U"):
+            self.check(out)
+        # the quote loads it the same way: nothing is asked of Vast
+        with self.assertRaisesRegex(ParamError, r"the bundle has no jdk/"):
+            commands._bundle(Context({"job": "q", "command": "vast.rent", "module": "vast",
+                                      "work": str(self.root / "qw"), "out": str(self.root / "qo")},
+                                     lambda event: None), str(out))
+
+    def test_what_the_store_lacks_is_a_finding_and_nothing_is_written(self):
+        doc = json.loads(json.dumps(self.doc))
+        doc["members"][0]["sha256"] = "e" * 64
+        doc["members"][0]["path"] = f"files/{'e' * 64}/game-1.jar"
+        shutil.rmtree(self.store / "files" / sha(self.jdk))
+        ctx, result, out = self.make(doc)
+        self.assertEqual(ctx.outcome, "finding")
+        self.assertRegex(result["problems"][0], r"member game:mod@both: the Store has no files/e{64}/game-1.jar "
+                                                r"\(wb check in game at cccccccccccc\)")
+        self.assertRegex(result["problems"][1], r"JDK 26.0.2.1\+1: the Store has no Linux archive OpenJDK26U.*"
+                                                r"store.platform revision=5{40}")
+        self.assertFalse((out / "bundle.toml").exists())
+
+    def test_a_configure_script_of_a_project_not_trusted_is_not_carried(self):
+        doc = {**self.doc, "configure": {"project": "game", "commit": "a" * 40, "path": "launch/configure.py",
+                                         "blob": "f" * 40}}
+        ctx, result, _ = self.make(doc)
+        self.assertRegex(result["problems"][0], r"configure script launch/configure.py is game's code, and game is not "
+                                                r"in \[lab\] trusted")
+
+    def test_a_bundle_without_the_eula_is_refused_before_the_quote(self):
+        self.lab["eula"] = False
+        ctx, result, out = self.make()
+        self.assertFalse(result["eula"])
+        loaded = commands._bundle(Context({"job": "q", "command": "vast.rent", "module": "vast",
+                                           "work": str(self.root / "qw"), "out": str(self.root / "qo")},
+                                          lambda event: None), str(out))
+        with self.assertRaisesRegex(ParamError, r"records no acceptance of the Minecraft EULA.*Nothing was quoted"):
+            commands._launch_ready(loaded)
+        self.assertIn("no EULA acceptance", self.check_summary(out))
+
+    def check_summary(self, out: Path) -> str:
+        ctx = Context({"job": "c", "command": "vast.bundle-check", "module": "vast", "work": str(self.root / "cw"),
+                       "out": str(self.root / "co")}, lambda event: None)
+        commands.bundle_check(ctx, str(out))
+        return ctx.summary_text
+
+    def test_the_runner_takes_the_bundles_store_and_sources(self):
+        # the runner calls lab.build with the bundle's own Store copy and trees, and nothing of this machine
+        _, _, out = self.make()
+        sys.path.insert(0, str(out / "files" / "runner"))
+        self.addCleanup(sys.path.remove, str(out / "files" / "runner"))
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("bundle_runner", out / "files" / "runner" / "launch_run.py")
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        seen = {}
+
+        def build(ctx, launch, name, **params):
+            seen.update(launch=launch, name=name, lab=ctx.spec["lab"], config=ctx.config, **params)
+            folder = Path(ctx.config["instances"]) / name
+            folder.mkdir(parents=True)
+            (folder / "instance.json").write_text("{}", encoding="utf-8")
+            return {"instance": str(folder), "template": "k", "built": True}
+
+        from wb_lab import instance as instances
+        from unittest import mock
+        with mock.patch.object(instances, "build", build):
+            code = runner.main(["build", str(out / "files"), str(self.root / "lab")])
+        self.assertEqual(code, 0)
+        self.assertEqual((Path(seen["launch"]).name, seen["name"], seen["eula"]), ("launch.json", "rental", True))
+        self.assertTrue(Path(seen["store"]).samefile(out / "files" / "store"))
+        self.assertEqual(Path(seen["sources"]), (out / "files" / "sources").resolve())
+        self.assertEqual(Path(seen["config"]["instances"]), (self.root / "lab" / "instances").resolve())
+        self.assertEqual(seen["config"]["asset_base"], "https://resources.download.minecraft.net/")  # lab's defaults
+        self.assertTrue((out / "files" / "results" / "instance.json").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()

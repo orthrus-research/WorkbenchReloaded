@@ -15,9 +15,10 @@ resolves nothing again. It builds in stages:
    ``server/mods`` and/or ``client/mods`` (by its side) under its ``place`` or its file name.
 3. base: the files, JVM profile, player and command lines of the launch's base (launch.json ``base``: the base
    project's ``[launch.<name>]`` as lab.resolve read it), its overlay folder exported from the base project's
-   repository by the tree id the launch names (``git archive``), then the product's own overlay folder, then the
-   product's configure script (launch.json ``configure``, exported by its blob id) or the hook the request names: a
-   Python file whose ``configure(instance, launch, params, placed)`` makes a launched product's own changes. An
+   repository by the tree id the launch names (``git archive``), then each launch's own overlay folder (a launch that
+   inherits another launch lays that launch's first: launch.json ``overlays``), then the configure script
+   (launch.json ``configure``, exported by its blob id; an inherited one is its own project's, which must be
+   trusted) or the hook the request names: a Python file whose ``configure(instance, launch, params, placed)`` makes a launched product's own changes. An
    overlay's text files are written with the platform's line ends and ``{port}``, ``{seed}``, ``{player}`` and
    ``{player_uuid}`` filled in. A launch file that names no base, or a request naming one of ``wb_lab.bases``, takes
    Workbench's interim copy, with a warning. Workbench names no product; the script is the product's.
@@ -600,7 +601,8 @@ def base_of(ctx: Context, doc: dict, requested: str) -> tuple[str, dict, list[di
     the base's folder and then the product's, each {project, tree, path}."""
     launched = doc.get("base")
     own = doc.get("overlay")
-    overlays = [own] if own else []
+    # A launch that inherits another names every launch's overlay in order (``overlays``), else only its own.
+    overlays = list(doc.get("overlays") or ([own] if own else []))
     if requested:
         if requested not in INTERIM_BASES:
             raise ParamError(f"base: {requested!r} is no interim base (known: {', '.join(sorted(INTERIM_BASES))}); "
@@ -643,12 +645,26 @@ def checked_params(doc: dict, params: dict | None) -> dict:
     return merged
 
 
+def sourced(sources: Path, item: str, name: str | None = None) -> Path:
+    """A tree or blob a launch file names, as a bundle carries it: ``<sources>/<id>/`` (a tree's files) or
+    ``<sources>/<id>/<name>`` (a blob)."""
+    path = sources / item / name if name else sources / item
+    if not (path.is_file() if name else path.is_dir()):
+        raise ParamError(f"sources: {sources} has no {item[:12]}" + (f"/{name}" if name else "/") + " (the launch "
+                         "file names it; make the bundle again)")
+    return path
+
+
 def build(ctx: Context, launch: str, name: str, base: str = "", params: dict | None = None,
-          eula: bool = False, configure: str | None = None, fresh: bool = False):
+          eula: bool = False, configure: str | None = None, fresh: bool = False, store: str = "",
+          sources: str = ""):
     if not NAME.match(name):
         raise ParamError(f"name: {name!r} is not a lowercase instance name (letters, digits, . _ -)")
     machine = Machine()
     data, doc = read_launch(Path(launch))
+    if store:  # a copy of the launch's Store files elsewhere (a rental's bundle); the launch file's bytes are kept
+        doc = {**doc, "store": str(Path(store))}
+    carried = Path(sources) if sources else None
     runtime_files(doc)  # refused with the fix before anything is made
     base, base_doc, overlays, base_source = base_of(ctx, doc, base)
     project = str(doc.get("project") or "")
@@ -658,13 +674,15 @@ def build(ctx: Context, launch: str, name: str, base: str = "", params: dict | N
         raise ParamError(f"configure: {configure} is not a file")
     if hook is not None and doc.get("configure"):
         ctx.log.warning(f"configure: {hook.name} replaces the launch's {doc['configure']['path']}")
-    if hook is not None or doc.get("configure"):  # before anything is made: the script is the launched project's
+    if hook is not None or doc.get("configure"):  # before anything is made: the script is its project's code
         what = f"configure hook {hook.name}" if hook else f"configure script {doc['configure']['path']}"
-        machines.require_trusted(ctx, project, what)
+        # An inherited script is its own project's (the base launch's), so that project is the one trusted.
+        owner = project if hook is not None else str(doc["configure"].get("project") or project)
+        machines.require_trusted(ctx, owner, what)
     if hook is None and doc.get("configure"):
         script = doc["configure"]
-        hook = export_blob(machine.repository(script["project"]), script["blob"],
-                           exports / script["blob"] / Path(script["path"]).name)
+        hook = sourced(carried, script["blob"], Path(script["path"]).name) if carried else export_blob(
+            machine.repository(script["project"]), script["blob"], exports / script["blob"] / Path(script["path"]).name)
         configure_from = {k: script[k] for k in ("project", "commit", "path", "blob")}
     eula = bool(eula) or bool(machines.lab(ctx)["eula"])
     merged = checked_params(doc, params)
@@ -698,8 +716,8 @@ def build(ctx: Context, launch: str, name: str, base: str = "", params: dict | N
             remove_tree(staging)
         staging.mkdir(parents=True)
         try:
-            folders = [export_tree(machine.repository(o["project"]), o["tree"], exports / o["tree"])
-                       for o in overlays]
+            folders = [sourced(carried, o["tree"]) if carried else
+                       export_tree(machine.repository(o["project"]), o["tree"], exports / o["tree"]) for o in overlays]
             receipt = build_template(ctx, staging, data=data, doc=doc, base_name=base, base=base_doc,
                                      configure=hook, params=merged, eula=eula, key=key, machine=machine,
                                      overlays=folders, base_source=base_source, configure_from=configure_from)

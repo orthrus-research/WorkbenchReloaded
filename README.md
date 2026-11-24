@@ -74,7 +74,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 | `source` | Formatting, lint and determinism of source code. | `format`, `strict-math` |
 | `toolchain` | JDKs, pinned inputs, dependency repair and the rescue repository. | `jdk`, `pins`, `patch`, `repo-add`, `repo-list`, `repo-verify`, `repo-init`, `gradle-home` |
 | `tools` | The engine of the former standalone tools. Its tools are commands of the taxonomy's modules: toolchain, build, jar, source, runs and ci. | none (aliases only) |
-| `vast` | Rent GPU machines on Vast.ai, run bundles on them, and record market prices and charges. | `offers`, `market`, `charges`, `instances`, `destroy`, `keys`, `rent`, `probe`, `bundle-check`, `bundle`, `lab-inputs` |
+| `vast` | Rent GPU machines on Vast.ai, run bundles on them, and record market prices and charges. | `offers`, `market`, `charges`, `instances`, `destroy`, `keys`, `rent`, `probe`, `bundle-check`, `bundle-launch`, `bundle`, `lab-inputs` |
 | `world` | Worlds on disk and as generated: what a stopped save holds, how two worlds differ (save by save or by digest), and a generator's windows against golden digests, sampled without the game. | `read`, `diff`, `digest-diff`, `light-diff`, `golden`, `preview` |
 <!-- end generated modules -->
 

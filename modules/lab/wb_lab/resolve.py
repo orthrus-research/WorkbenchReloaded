@@ -25,7 +25,21 @@ A launch also names:
   table without members (``BASE_KEYS``): the installer, the server's and client's command lines, the player, the JVM
   profile, the view keys a session sets, and an overlay folder whose ``both/``, ``server/`` and ``client/`` files are
   laid into the instance's sides. A base project whose commit has no such table yet falls back to Workbench's interim
-  copy (``wb_lab.bases``), with a warning;
+  copy (``wb_lab.bases``), with a warning. A base project with no line in the set follows its branch in its home
+  repository (origin's, else the local branch, else HEAD), as a check's tools do, and launch.json says so;
+- ``base = "<project>:<launch>"`` naming another product's launch (a table with members): the launch inherits that
+  launch, resolved at the base project's commit as that product would resolve it (its own artifact from the Store by
+  the tree of that commit, so ``wb check`` in the base project at that commit makes it), with its members, its base
+  (recursively, at most ``MAX_DEPTH`` launches deep, a cycle refused), configure script, overlays, typed params, JVM
+  arguments, collect and failure patterns and tour rules; then adds its own members. Its own params replace the
+  inherited ones of the same name (a bare value keeps the inherited type and limits), its own JVM arguments replace an
+  inherited one with the same key (``-Dname``, ``-XX:name``, ``-Xmx``), its tour rules replace the inherited ones key
+  by key, and its configure script, when it names one, replaces the inherited one. Drivers are not inherited: they
+  run from the launching product's tree. One build per mod id holds across the union, and a member the base already
+  names is refused. launch.json ``inherits`` lists the launches passed through, nearest first, each with its project,
+  launch, commit, tree and how the commit was chosen (``line``, ``hold``, ``branch`` with its ref, or ``product``);
+- a member of a project with no line in the set follows that project's branch the same way, its file from the Store
+  by the tree of that commit;
 - ``overlay``: the product's own folder under ``launch/``, laid over the base's;
 - ``configure = "launch/configure.py"``: the product's script, run by lab.build only for a project in ``[lab] trusted``;
 - ``params``: each a default value, whose type it fixes, or a table ``{ type, default, min, max, choices }``; lab.build
@@ -78,6 +92,8 @@ DRIVER_KEYS = {"command", "cwd", "summary"}
 PARAM = re.compile(r"^[a-z][a-z0-9_]*$")
 PARAM_KEYS = {"type", "default", "min", "max", "choices", "summary"}
 PARAM_TYPES = {"int": int, "float": float, "bool": bool, "string": str}
+MAX_DEPTH = 4  # the most launches one launch may pass through to its base (itself included)
+JVM_KEY = re.compile(r"^(-D[^=]+|-XX:[+-]?[A-Za-z0-9_]+|-Xm[sx]|-Xss)")  # what an inheriting launch's argument replaces
 
 
 class LaunchError(Exception):
@@ -129,6 +145,21 @@ def _jvm(table, where: str) -> dict[str, list[str]]:
 def _add_jvm(target: dict[str, list[str]], jvm: dict[str, list[str]]):
     for side, values in jvm.items():
         for name in (("client", "server") if side == "both" else (side,)):
+            target[name].extend(v for v in values if v not in target[name])
+
+
+def _jvm_key(argument: str) -> str | None:
+    """What a JVM argument sets (``-Dname``, ``-XX:name`` with or without its +/-, ``-Xmx``), or None."""
+    match = JVM_KEY.match(argument)
+    return match.group(1).replace("-XX:+", "-XX:").replace("-XX:-", "-XX:") if match else None
+
+
+def _override_jvm(target: dict[str, list[str]], jvm: dict[str, list[str]]):
+    """An inheriting launch's own arguments: each replaces an inherited one with the same key, then joins."""
+    for side, values in jvm.items():
+        for name in (("client", "server") if side == "both" else (side,)):
+            keys = {_jvm_key(v) for v in values} - {None}
+            target[name] = [v for v in target[name] if _jvm_key(v) not in keys]
             target[name].extend(v for v in values if v not in target[name])
 
 
@@ -344,26 +375,46 @@ def _object(objects, project: str, commit: str, path: str, kind: str, where: str
     return found[1]
 
 
+def pick_commit(project: str, *, product: str, commit: str, set_doc: dict, follow, where: str) -> dict:
+    """The commit a launch reads ``project`` at, and how it was chosen: the product's own commit; a hold
+    ``<project>@<product>``; the set's line; else, for a project with no line, its branch in its home repository
+    (``follow(project)`` gives (commit, ref), or None for a project this machine does not know)."""
+    if project == product:
+        return {"commit": commit, "chosen": "product"}
+    held = (set_doc.get("holds") or {}).get(f"{project}@{product}") or {}
+    if held.get("commit"):
+        return {"commit": held["commit"], "chosen": "hold"}
+    line = (set_doc.get("projects") or {}).get(project) or {}
+    if line.get("commit"):
+        return {"commit": line["commit"], "chosen": "line"}
+    found = follow(project) if follow is not None else None
+    if found:
+        return {"commit": found[0], "chosen": "branch", "ref": found[1]}
+    raise LaunchError(f"{where}: the set has no line for {project}"
+                      + ("" if follow is None else f", and {project} is not registered on this machine, so its branch "
+                                                   "cannot be followed"))
+
+
 def base_of(*, name: str, product: str, commit: str, product_toml: dict | None, set_doc: dict, extras, objects,
-            warn=None) -> dict:
-    """The launch file's ``base``: the base project's [launch.<name>] at the commit the set names for it, checked, and
-    its overlay folder's tree id; Workbench's interim copy, with a warning, when that commit has none yet."""
+            warn=None, follow=None, picked: dict | None = None) -> dict:
+    """The launch file's ``base``: the base project's [launch.<name>] at the commit the set names for it (or its
+    branch, for a project with no line), checked, and its overlay folder's tree id; Workbench's interim copy, with a
+    warning, when that commit has none yet."""
     from .bases import INTERIM_BASES
     project, launch = parse_base(name, "launch")
-    holds, lines = set_doc.get("holds") or {}, set_doc.get("projects") or {}
+    picked = picked or pick_commit(project, product=product, commit=commit, set_doc=set_doc, follow=follow,
+                                   where=f"base {name}")
+    at = picked["commit"]
     if project == product:
-        at, toml = commit, product_toml
+        toml = product_toml
     else:
-        held = holds.get(f"{project}@{product}") or {}
-        at = held.get("commit") or (lines.get(project) or {}).get("commit")
-        if not at:
-            raise LaunchError(f"base {name}: the set has no line for {project}")
         if extras is None:
             raise LaunchError(f"base {name}: nothing here reads {project}'s project.toml")
         toml = extras(project, at)
     where = f"base {name} ({project} {at[:12]} project.toml [launch.{launch}])"
     table = ((toml or {}).get("launch") or {}).get(launch)
-    record = {"name": name, "project": project, "commit": at}
+    record = {"name": name, "project": project, "commit": at, **{k: picked[k] for k in ("chosen", "ref")
+                                                                  if k in picked}}
     if table is None:
         if name not in INTERIM_BASES:
             raise LaunchError(f"{project} at {at[:12]} has no [launch.{launch}], so there is no base {name}")
@@ -380,23 +431,117 @@ def base_of(*, name: str, product: str, commit: str, product_toml: dict | None, 
     return {**record, "source": "project.toml", "definition": json.loads(json.dumps(table)), "overlay": overlay}
 
 
+def _indexed(spec: str, project: str, tree: str, glob: str, index: dict) -> tuple[str, dict]:
+    """(file, item) of the one file of a Store index that matches an [artifacts] glob."""
+    found = [(file, item) for file, item in (index.get("artifacts") or {}).items()
+             if fnmatch.fnmatch(str(item.get("from") or file), glob) or fnmatch.fnmatch(file, Path(glob).name)]
+    if len(found) != 1:
+        raise LaunchError(f"member {spec}: the Store's index of {project} tree {tree[:12]} has "
+                          f"{len(found)} files matching {glob}")
+    return found[0]
+
+
+def _tree_of(objects, project: str, commit: str, where: str) -> str:
+    found = objects(project, commit, "") if objects is not None else None
+    if not found or found[0] != "tree":
+        raise LaunchError(f"{where}: nothing here reads {project}'s tree at {commit[:12]}")
+    return found[1]
+
+
+def _inherit(*, table: dict, launch: str, product: str, commit: str, set_doc: dict, revision: str, store: Path,
+             extras, objects, product_toml, warn, follow, chain) -> tuple[dict | None, dict | None, dict | None]:
+    """(parent, link, picked) for a launch whose ``base`` names another launch (a table with members): that launch
+    resolved at the base project's commit as that product resolves it, the record of the step for ``inherits``, and
+    how the commit was chosen. (None, None, picked) when the base is a base table; all None without a base."""
+    from wb_core import artifacts
+    if "base" not in table:
+        return None, None, None
+    project, name = parse_base(table["base"], f"launch.{launch}")
+    where = f"base {table['base']}"
+    picked = pick_commit(project, product=product, commit=commit, set_doc=set_doc, follow=follow, where=where)
+    at = picked["commit"]
+    if project == product and at == commit:
+        toml = product_toml
+    elif extras is None:
+        raise LaunchError(f"{where}: nothing here reads {project}'s project.toml")
+    else:
+        toml = extras(project, at)
+    found = ((toml or {}).get("launch") or {}).get(name)
+    if not isinstance(found, dict) or "members" not in found:
+        return None, None, picked  # a base table, or none: base_of reads it
+    trail = [*chain, f"{product}:{launch}"]
+    key = f"{project}:{name}"
+    if key in trail:
+        raise LaunchError(f"the launch's bases go round: {' -> '.join([*trail, key])}")
+    if len(trail) >= MAX_DEPTH:
+        raise LaunchError(f"the launch's bases are more than {MAX_DEPTH} launches deep: {' -> '.join([*trail, key])}")
+    checked = definition(toml, name, f"{project} {at[:12]} project.toml")
+    tree = _tree_of(objects, project, at, where)
+    parent = resolve(product=project, commit=at, tree=tree, launch=name, table=checked, set_doc=set_doc,
+                     revision=revision, store=store, product_artifacts=(toml or {}).get("artifacts") or {},
+                     product_index=artifacts.find(store, project, tree), extras=extras, objects=objects,
+                     product_toml=toml, warn=warn, follow=follow, chain=tuple(trail))
+    link = {"name": key, "project": project, "launch": name, "commit": at, "tree": tree,
+            **{k: picked[k] for k in ("chosen", "ref") if k in picked},
+            "launch_tree": (parent.get("definition") or {}).get("launch_tree")}
+    return parent, link, picked
+
+
+def _inherited_params(table: dict, parent: dict, where: str) -> tuple[dict, dict]:
+    """The inherited params with the launch's own over them: a bare value keeps the inherited type and limits, a
+    table replaces the declaration."""
+    own_defaults, own_types = params_of(table, where)
+    defaults, types = dict(parent.get("params") or {}), dict(parent.get("param_types") or {})
+    for name, value in (table.get("params") or {}).items():
+        if not isinstance(value, dict) and name in types:
+            defaults[name] = param_value(name, value, types[name], where)
+            continue
+        types[name] = own_types[name]
+        defaults.pop(name, None)
+        if name in own_defaults:
+            defaults[name] = own_defaults[name]
+    return defaults, types
+
+
 def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, set_doc: dict, revision: str,
             store: Path, product_artifacts: dict, product_index: dict | None, extras=None, objects=None,
-            product_toml: dict | None = None, warn=None) -> dict:
+            product_toml: dict | None = None, warn=None, follow=None, chain: tuple = ()) -> dict:
     """The launch file for ``table`` (a checked [launch.<name>]) of ``product`` at ``commit``/``tree`` on set
     ``revision``. ``product_artifacts`` is the product's [artifacts] (each with its ``file`` glob), ``product_index``
     the Store's index of its tree; ``extras(project, commit)`` returns that member's project.toml or None;
-    ``objects(project, commit, path)`` the (type, id) of a path in that project's repository at that commit, or None;
-    ``product_toml`` is the product's own project.toml and ``warn`` takes what the person should see."""
+    ``objects(project, commit, path)`` the (type, id) of a path in that project's repository at that commit (the root
+    tree for path ''), or None; ``product_toml`` is the product's own project.toml and ``warn`` takes what the person
+    should see. ``follow(project)`` gives (commit, ref) of a project with no line, its branch in its home repository,
+    or None for a project this machine does not know. ``chain`` names the launches that inherit this one."""
     from wb_core import artifacts
     lines, holds, thirds = set_doc.get("projects") or {}, set_doc.get("holds") or {}, set_doc.get("third") or {}
+    parent, link, picked = _inherit(table=table, launch=launch, product=product, commit=commit, set_doc=set_doc,
+                                    revision=revision, store=store, extras=extras, objects=objects,
+                                    product_toml=product_toml, warn=warn, follow=follow, chain=chain)
     members, owners = [], {}
     jvm = {"client": [], "server": []}
-    collect, failures = list(table.get("collect") or []), list(table.get("failures") or [])
+    collect, failures = [], []
+    if parent is not None:
+        if table.get("runtime", "cleanroom") != parent["runtime"]["kind"]:
+            raise LaunchError(f"launch.{launch}: runtime {table.get('runtime', 'cleanroom')} is not its base "
+                              f"{link['name']}'s {parent['runtime']['kind']}")
+        for member in parent["members"]:
+            entry = {**member, "via": member.get("via") or link["name"]}
+            members.append(entry)
+            for mod_id in entry.get("mod_ids") or []:
+                owners.setdefault(mod_id, []).append(f"{entry['member']} (from {entry['via']})")
+        jvm = {side: list(values) for side, values in parent["jvm"].items()}
+        collect, failures = list(parent.get("collect") or []), list(parent.get("failures") or [])
+    collect += [c for c in table.get("collect") or [] if c not in collect]
+    failures += [f for f in table.get("failures") or [] if f not in failures]
+    inherited = {m["member"]: m["via"] for m in members}
     for spec in table["members"]:
+        if spec in inherited:
+            raise LaunchError(f"member {spec}: the base {inherited[spec]} already names it")
         name, part, side = parse_member(spec)
         entry = {"member": spec, "name": name, "side": side}
         file_name = None
+        found = None
         if name == product:
             if not part:
                 raise LaunchError(f"member {spec}: name the product's artifact ({product}:<artifact>@<side>)")
@@ -404,15 +549,14 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
             if not glob:
                 raise LaunchError(f"member {spec}: {product} has no [artifacts.{part}]")
             if product_index is None:
+                if chain:
+                    raise MissingBuild(f"base {product}:{launch}: CI has not built {product} tree {tree[:12]} (commit "
+                                       f"{commit[:12]}), so the Store has no {product}:{part}: run wb check in "
+                                       f"{product} at {commit[:12]}, then resolve again", product, commit)
                 raise MissingBuild(f"CI has not built {product} tree {tree[:12]} (commit {commit[:12]}), so the Store "
                                    f"has no {product}:{part}: run wb check in the worktree, then resolve again",
                                    product, commit)
-            found = [(file, item) for file, item in (product_index.get("artifacts") or {}).items()
-                     if fnmatch.fnmatch(str(item.get("from") or file), glob) or fnmatch.fnmatch(file, Path(glob).name)]
-            if len(found) != 1:
-                raise LaunchError(f"member {spec}: the Store's index of {product} tree {tree[:12]} has "
-                                  f"{len(found)} files matching {glob}")
-            file_name, item = found[0]
+            file_name, item = _indexed(spec, product, tree, glob, product_index)
             entry.update(kind="product", artifact=part, sha256=item["sha256"], commit=commit, tree=tree)
             source_project, source_commit = product, commit
         elif part and f"{name}:{part}" in holds and part in (holds[f"{name}:{part}"].get("artifacts") or {}):
@@ -443,6 +587,23 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
             entry.update(kind="third", artifact=kind, sha256=digest, module=third.get("module", ""),
                          licence=third.get("licence", ""), **({"source": third["source"]} if third.get("source") else {}))
             source_project, source_commit = None, None
+        elif part and follow is not None and (found := follow(name)):
+            # A project with no line: its branch in its home repository, its file from the Store by that tree.
+            at, ref = found
+            own_toml = extras(name, at) if extras is not None else None
+            glob = (((own_toml or {}).get("artifacts") or {}).get(part) or {}).get("file")
+            if not glob:
+                raise LaunchError(f"member {spec}: {name} has no line in the set, and at {at[:12]} ({ref}) its "
+                                  f"project.toml declares no [artifacts.{part}]")
+            at_tree = _tree_of(objects, name, at, f"member {spec}")
+            index = artifacts.find(store, name, at_tree)
+            if index is None:
+                raise MissingBuild(f"member {spec}: {name} has no line, so it follows {ref} at {at[:12]}, and CI has "
+                                   f"not built its tree {at_tree[:12]}: run wb check in {name} at {at[:12]}, then "
+                                   "resolve again", name, at)
+            file_name, item = _indexed(spec, name, at_tree, glob, index)
+            entry.update(kind="branch", artifact=part, sha256=item["sha256"], commit=at, tree=at_tree, ref=ref)
+            source_project, source_commit = name, at
         else:
             known = sorted({*lines, *thirds, product})
             raise LaunchError(f"member {spec}: the set names no project or third entry {name} "
@@ -474,7 +635,11 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
     if doubled:
         raise LaunchError("the launch would load two builds of one mod id: "
                           + "; ".join(f"{mod_id} from {', '.join(specs)}" for mod_id, specs in sorted(doubled.items())))
-    _add_jvm(jvm, _jvm(table.get("jvm"), f"launch.{launch}"))
+    own_jvm = _jvm(table.get("jvm"), f"launch.{launch}")
+    if parent is not None:
+        _override_jvm(jvm, own_jvm)
+    else:
+        _add_jvm(jvm, own_jvm)
     platform = set_doc.get("platform") or {}
     java = platform.get("java")
     cleanroom = platform.get("cleanroom") or {}
@@ -486,10 +651,15 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
              for part in RUNTIME_FILES if isinstance(cleanroom.get(part), dict)}
     if files:
         runtime["files"] = files
-    defaults, types = params_of(table, f"launch.{launch}")
+    if parent is not None:
+        defaults, types = _inherited_params(table, parent, f"launch.{launch}")
+    else:
+        defaults, types = params_of(table, f"launch.{launch}")
     document = {"schema": SCHEMA, "project": product, "launch": launch, "commit": commit, "tree": tree,
                 "set": revision, "store": str(store), "runtime": runtime, "members": members, "jvm": jvm,
                 "collect": collect, "failures": failures, "params": defaults, "param_types": types}
+    if parent is not None:
+        document["inherits"] = [link, *(parent.get("inherits") or [])]
     # The definition's commit and its launch/ folder, the product's overlay and configure script in it, and the base.
     found = objects(product, commit, LAUNCH_FOLDER) if objects is not None else None
     document["definition"] = {"commit": commit, "launch_tree": found[1] if found and found[0] == "tree" else None}
@@ -498,16 +668,31 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
         path = f"{LAUNCH_FOLDER}/{table['overlay']}"
         document["overlay"] = {"project": product, "commit": commit, "path": path,
                                "tree": _object(objects, product, commit, path, "tree", where)}
+    if parent is not None:
+        # Every launch's own overlay in the order they are laid: the farthest base launch's first, this one's last.
+        overlays = list(parent.get("overlays") or ([parent["overlay"]] if parent.get("overlay") else []))
+        overlays += [document["overlay"]] if "overlay" in document else []
+        if overlays:
+            document["overlays"] = overlays
     if "configure" in table:
         document["configure"] = {"project": product, "commit": commit, "path": table["configure"],
                                  "blob": _object(objects, product, commit, table["configure"], "blob", where)}
-    if "base" in table:
+    elif parent is not None and parent.get("configure"):
+        document["configure"] = parent["configure"]
+    if parent is not None:
+        if parent.get("base"):
+            document["base"] = parent["base"]
+    elif "base" in table:
         document["base"] = base_of(name=table["base"], product=product, commit=commit, product_toml=product_toml,
-                                   set_doc=set_doc, extras=extras, objects=objects, warn=warn)
-    # How a session drives the game (lab.run): the tour rules and the drivers, as the launch names them.
-    for key in ("tour", "drivers"):
-        if table.get(key):
-            document[key] = json.loads(json.dumps(table[key]))
+                                   set_doc=set_doc, extras=extras, objects=objects, warn=warn, follow=follow,
+                                   picked=picked)
+    # How a session drives the game (lab.run): the tour rules (an inheriting launch's over its base's, key by key) and
+    # the drivers, which run from this product's tree and so are never inherited.
+    tour = {**((parent or {}).get("tour") or {}), **(table.get("tour") or {})}
+    if tour:
+        document["tour"] = json.loads(json.dumps(tour))
+    if table.get("drivers"):
+        document["drivers"] = json.loads(json.dumps(table["drivers"]))
     return document
 
 
@@ -591,6 +776,20 @@ def resolve_command(ctx, folder: str, launch: str = "default", out: str = ""):
         def objects(project: str, at: str, path: str):
             return object_at(repository(project), at, path)
 
+        def follow(project: str):
+            # A project with no line follows its branch in its home repository: origin's when it has a remote, else
+            # the local branch, else HEAD (the rule a check's tools follow), and the summary says which commit.
+            entry = registered.get(project)
+            if entry is None or not entry.repo.is_dir():
+                return None
+            branch = str((getattr(entry, "entry", None) or {}).get("branch") or "main")
+            for ref in (f"refs/remotes/origin/{branch}", f"refs/heads/{branch}", "HEAD"):
+                sha = _git(entry.repo, "rev-parse", "--verify", "-q", f"{ref}^{{commit}}")
+                if sha and sha.strip():
+                    ctx.log.info(f"{project} has no line in set {revision[:12]}: {ref} at {sha.strip()[:12]}")
+                    return sha.strip(), ref
+            return None
+
         warnings = []
 
         def warn(text: str):
@@ -600,7 +799,7 @@ def resolve_command(ctx, folder: str, launch: str = "default", out: str = ""):
         document = resolve(product=product, commit=commit, tree=tree, launch=launch, table=table, set_doc=set_doc,
                            revision=revision, store=store, product_artifacts=own.get("artifacts") or {},
                            product_index=artifacts.find(store, product, tree), extras=extras, objects=objects,
-                           product_toml=own, warn=warn)
+                           product_toml=own, warn=warn, follow=follow)
     except MissingBuild as error:
         raise ParamError(str(error)) from error  # wb play reads what builds it from the cause
     except LaunchError as error:
@@ -614,9 +813,14 @@ def resolve_command(ctx, folder: str, launch: str = "default", out: str = ""):
     base = document.get("base")
     based = f", base {base['name']} at {base['commit'][:12]}" + (" (INTERIM COPY)" if base["source"] == "interim"
                                                                  else "") if base else ""
+    chain = document.get("inherits") or []
+    inherited = "".join(f", inherits {step['name']} at {step['commit'][:12]} ({step['chosen']}"
+                        + (f" {step['ref']}" if step.get("ref") else "") + ")" for step in chain)
     ctx.summary(f"launch {product}:{launch} at {commit[:12]} on set {revision[:7]}: {len(document['members'])} "
-                f"members{based}, written to {target}")
+                f"members{inherited}{based}, written to {target}")
     return {"launch": str(target), "set": revision, "commit": commit,
             "members": {m["member"]: m["sha256"] for m in document["members"]},
             **({"base": {k: base[k] for k in ("name", "commit", "source")}} if base else {}),
+            **({"inherits": [{k: step[k] for k in ("name", "commit", "chosen") if k in step} for step in chain]}
+               if chain else {}),
             **({"warnings": warnings} if warnings else {})}
