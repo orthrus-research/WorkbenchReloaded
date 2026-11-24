@@ -3,7 +3,8 @@
 Every module's commands as its manifest (`modules/<module>/wb_<module>/module.toml`) declares them: the full name
 to give `wb run`, where it runs (`container`: the daemon's container; `host`: the host runner, natively on this
 machine) and its summary. `wb help <command>` gives its parameters, requirements and result. Workbench's own verbs
-(`wb gc`, `wb land`, `wb work`, ...) are listed by `wb --help`.
+(`wb gc`, `wb land`, `wb work`, ...) are listed by `wb --help`. Their words are the ones [vocabulary.md](vocabulary.md)
+defines.
 
 <!-- begin generated commands: python tools/command_tables.py writes this table from the module manifests -->
 ### `assets`
@@ -27,19 +28,19 @@ Builds with receipts and reproducible archives. (modules/build/wb_build/module.t
 
 ### `ci`
 
-Run a project's jobs, gate pushes on them, and keep commits clean. (modules/ci/wb_ci/module.toml)
+Run a project's checks, gate pushes on them, and keep commits clean. (modules/ci/wb_ci/module.toml)
 
 | Command | Runs on | Summary |
 |---|---|---|
-| `ci.run` | container | Run a project's jobs from a clean clone (pinned repositories at their pins), keeping the records in Workbench; their Gradle builds get toolchain's rescue repository. |
+| `ci.run` | container | Run a project's checks from a clean clone (pinned repositories at their pins), keeping the records in Workbench; their Gradle builds get toolchain's rescue repository. |
 | `ci.host-run` | host | Run a project's host checks (on = "host", gpu = true) natively from a clean clone of its commit, only for a project in [lab] trusted: the gpu checks under one turn of the GPU lease, which their steps join; the records go where ci.run keeps them. |
-| `ci.gate` | container | The push gate: refuse pushed commits whose trees have not passed every required job in Workbench's records. |
+| `ci.gate` | container | The push gate: refuse pushed commits whose trees have not passed every check their gate needs in Workbench's records. |
 | `ci.status` | container | What a project's commit has passed, and what it still needs before the gate lets it through. |
 | `ci.hook` | host | Install (or remove) the pre-push hook that asks ci.gate, in the project's own checkout on the host. |
-| `ci.actions` | container | Run a project's build and test jobs in its own checkout, like a small CI (ci.run builds from clean trees instead). Also as `tools.actions`. |
+| `ci.actions` | container | Run a project's checks in its own checkout, like a small CI (ci.run builds from clean trees instead). Also as `tools.actions`. |
 | `ci.scrub` | container | Refuse commits carrying attribution trailers, tooling files, local paths or personal data. Also as `tools.scrub`. |
 | `ci.matrix` | host | Run a project's command once per Python on the host (a portability lane that needs no GPU): a clean clone of its commit, each interpreter by version (py launcher on Windows, pythonX.Y elsewhere) or path, an environment per version from requirements when given, and each version's result kept. |
-| `ci.store-verify` | container | Rebuild what the Store keeps for a project cold (a fresh clone, every job, no build cache) at the commit it was built from, and record whether each file came out to its SHA-256; a file that did not is a finding. Also as `store.verify`. |
+| `ci.store-verify` | container | Rebuild what the Store keeps for a project cold (a fresh clone, every check, no build cache) at the commit it was built from, and record whether each file came out to its SHA-256; a file that did not is a finding. Also as `store.verify`. |
 | `ci.store-export` | container | Copy what the Store keeps (one project's, or its build of one commit) and every seeded file into a folder laid out as a Store, each file re-hashed on the way. Also as `store.export`. |
 | `ci.store-import` | container | Take a folder store-export wrote into the Store: every file re-hashed and refused unless it is its SHA-256, build records merged, seeded files' sources kept. Also as `store.import`. |
 | `ci.land` | container | One landing under lock set: each commit descends from its line and has passed its gate checks, its files are found in the Store, the new set.json and commit body are composed and scrubbed, and the lock is held while wb land publishes with the caller's git. Also as `set.land`. |
@@ -109,7 +110,7 @@ Game sessions: native client sessions on the host through wb-host (instances, th
 | `lab.run` | host | One session of an instance lab.build made, from its receipt (instance.json) alone, under the GPU lease: open (a person plays; console lines appended to the session's commands.txt go to the server, and its 'client <action> [<JSON>]' lines to the client's fixture through the session's client channel, the {channel} a launch's JVM arguments name), tour (the launch's tour rules drive the game through a tour's views, each captured and filed by label), measure (a tour that is evidence: quiet, on a fresh copy of the template, only for the launch file named) or driver (the launch's declared driver, a trusted project's program, gets the turn token, the lease, the instance.json path and, by the name [lab] env gives it, the runtime cache). Every cache, JDK and member file is hashed against the receipt first, and a JDK of another build is refused. The port, JVM options, window, views, edits, debugger and desktop (hidden: the client on a hidden Windows desktop that never takes the input) are the session's: they go into session.json with the member hashes, JDK build, GPU and driver, and never into the template. A stop waits at least 180 s for the server's own exit; a failure names the decisive line, the crash report and the next command. |
 | `lab.send` | host | Send one request to a running session's client fixture through the session's client channel (<session>/channel: request.json in, responses/<id>.json back, one at a time) and wait for its answer. The launch names the folder to its fixture mod as {channel}; what an action means is the fixture's. |
 | `lab.keep` | host | Keep a session: retention never removes the session, its instance, its template or its launch file. |
-| `lab.freeze` | host | Keep the old route's instances (folders with no instance.json, as the project launchers prepared them) as read-only evidence: a manifest of every file by size, time and SHA-256, the world imported into the lab's world store by its world key (seed, layout scale, the definitions' SHA-256, the Cubature JAR that wrote it), tours/ and runs/ copied into one session kept with lab.keep, then every file marked read-only. Without apply it only inventories. Never moves, deletes or follows a link; a folder reached through a link is refused. lab.thaw is the undo. |
+| `lab.freeze` | host | Keep the old route's instances (folders with no instance.json, as the project launchers prepared them) as read-only evidence: a manifest of every file by size, time and SHA-256, the world imported into the lab's kept worlds by its world key (seed, layout scale, the definitions' SHA-256, the Cubature JAR that wrote it), tours/ and runs/ copied into one session kept with lab.keep, then every file marked read-only. Without apply it only inventories. Never moves, deletes or follows a link; a folder reached through a link is refused. lab.thaw is the undo. |
 | `lab.thaw` | host | Undo lab.freeze: clear the read-only mark from exactly the files a freeze's manifest says it marked, each only while its size and time are the ones recorded. The imported world and session are copies and stay. |
 | `lab.server` | container | Run a dedicated server from a copy of a stopped server folder: wait until it is ready, send console commands, let it run for ticks, seconds or until a line, stop it gracefully, and keep its console, new crash reports, chosen files and a receipt. |
 
@@ -132,7 +133,7 @@ Formal results, costs and market prices in one queryable database. (modules/ledg
 | `ledger.add-machine` | container | Record a machine's specs (one of ours, or a host by hand); specs given replace those recorded. |
 | `ledger.prune` | container | Drop the stored response bodies of provider calls older than N days, keeping the calls and the offers they listed; a dry run unless execute=true. |
 | `ledger.import` | container | Import a results database, mapping ids so references hold (idempotent; repairs earlier imports); an older schema's run columns become inputs. |
-| `ledger.import-ci` | container | Import a CI project's run records: one run per CI run (ci/<project>/<run id>), its trees as inputs, each job's seconds and status as measurements (idempotent). |
+| `ledger.import-ci` | container | Import a CI project's run records: one run per CI run (ci/<project>/<run id>), its trees as inputs, each check's seconds and status as measurements (idempotent). |
 | `ledger.import-results` | container | Import result files (wb/ledger-result/v1: a run's label, fields, inputs, measurements, jobs and findings), mapping each run to the ledger's of its label (idempotent). |
 | `ledger.import-json` | container | Import JSON files a tool writes in its own shape, by a reader of [modules.ledger.readers]: each file, or each entry of one, a run mapped to the ledger's of its label (idempotent). |
 | `ledger.parse-log` | container | Parse a log with a parser of [modules.ledger.parsers] into a run's measurements (idempotent: a log parsed again into its run changes nothing). |
@@ -275,8 +276,8 @@ Rent GPU machines on Vast.ai, run bundles on them, and record market prices and 
 | `vast.offers` | container | List rentable offers for a card (or every configured card); rents nothing. |
 | `vast.market` | container | Record a market snapshot: every listed offer of the configured cards, asked three times. |
 | `vast.charges` | container | Record the account's billed charges of the last days. |
-| `vast.instances` | container | List the account's instances. |
-| `vast.destroy` | container | Destroy one instance (stops its billing). |
+| `vast.instances` | container | List the account's rented machines. |
+| `vast.destroy` | container | Destroy one rented machine (stops its billing). |
 | `vast.keys` | container | List the account's SSH keys. |
 | `vast.rent` | container | Rent one offer, run a bundle on it, fetch the results, destroy it. |
 | `vast.probe` | container | Rent one offer briefly to check it gives OpenGL 4.6 through VirtualGL, then destroy it. |

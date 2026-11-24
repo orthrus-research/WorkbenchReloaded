@@ -208,7 +208,7 @@ params.reason = { type = "string", summary = "why it is kept" }
 
 [[command]]
 name = "freeze"
-summary = "Keep the old route's instances (folders with no instance.json, as the project launchers prepared them) as read-only evidence: a manifest of every file by size, time and SHA-256, the world imported into the lab's world store by its world key (seed, layout scale, the definitions' SHA-256, the Cubature JAR that wrote it), tours/ and runs/ copied into one session kept with lab.keep, then every file marked read-only. Without apply it only inventories. Never moves, deletes or follows a link; a folder reached through a link is refused. lab.thaw is the undo."
+summary = "Keep the old route's instances (folders with no instance.json, as the project launchers prepared them) as read-only evidence: a manifest of every file by size, time and SHA-256, the world imported into the lab's kept worlds by its world key (seed, layout scale, the definitions' SHA-256, the Cubature JAR that wrote it), tours/ and runs/ copied into one session kept with lab.keep, then every file marked read-only. Without apply it only inventories. Never moves, deletes or follows a link; a folder reached through a link is refused. lab.thaw is the undo."
 handler = "wb_lab.legacy:freeze"
 runs_on = ["host"]
 timeout = "6h"

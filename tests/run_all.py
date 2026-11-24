@@ -2,8 +2,8 @@
 all pass.
 
 The suites fall in four parts, which Workbench's own project.toml runs as four checks: ``generated`` (lock files,
-schema types and command tables that must match their sources), ``core`` (tests/), ``modules`` (each module's
-tests) and ``engine`` (the vendored actions engine and tools). With no --part, every part runs, as wb deploy does."""
+schema types and command tables that must match their sources, and help text that keeps to docs/vocabulary.md),
+``core`` (tests/), ``modules`` (each module's tests) and ``engine`` (the vendored actions engine and tools). With no --part, every part runs, as wb deploy does."""
 
 import argparse
 import subprocess
@@ -16,6 +16,7 @@ SUITES = [
     ["image/pins.py", "check"],
     ["schema/generate.py", "--check"],
     ["tests/test_command_tables.py"],
+    ["tests/test_vocabulary.py"],
     ["tests/test_core.py"],
     ["tests/test_scheduler.py"],
     ["tests/test_process.py"],
@@ -64,7 +65,7 @@ SUITES = [
 ]
 VENDORED = ["-m", "unittest", "discover", "-s", "tests", "-t", "."]  # run in modules/tools with src on the path
 PARTS = ("generated", "core", "modules", "engine")
-GENERATED = {"image/pins.py", "schema/generate.py", "tests/test_command_tables.py"}
+GENERATED = {"image/pins.py", "schema/generate.py", "tests/test_command_tables.py", "tests/test_vocabulary.py"}
 
 
 def part_of(suite: list[str]) -> str:

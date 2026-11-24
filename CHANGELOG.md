@@ -38,6 +38,9 @@
 - A `ci.run` of a clean commit (not a working tree, not cold, no stand-in) builds with a local Gradle build cache in
   the machine's Gradle home (`caches/workbench-build-cache`, through `org.gradle.caching` and an init script), so a
   commit that changes no input of a task, a docs-only one, takes `compileJava` from the cache.
+- `docs/vocabulary.md`: the 25 concepts, the words they retire and the words with one meaning. `tools/vocabulary.py
+  --check` (in the generated check) fails when a verb's or option's help, or a module's or command's summary, uses a
+  retired word or a word in another sense outside the places the vocabulary still keeps it.
 - Each job calls the API with a token of its own, revoked when it ends, that can never approve a quote: approval
   takes the person's token.
 - The Set: set.json (schema 1) names each project's line (branch, commit and the SHA-256 of its files), holds
