@@ -19,6 +19,8 @@ so a member's switch needs no landing in the product.
 
 launch.json names every member by SHA-256 with its Store path and the mod ids its mcmod.info declares; a launch that
 would load two builds of one mod id is refused before anything is written, as is a member the set or the Store lacks.
+Its ``runtime`` names the kind, version and exact JDK build, and, once the platform names them
+(``platform.cleanroom.{installer,universal,prism}``), the runtime's own files by URL and SHA-256 in ``runtime.files``.
 The code names no project."""
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ LAUNCH_KEYS = {"members", "runtime", "params", "jvm", "collect", "failures", "pl
 PLACE = re.compile(r'^[^/\\:*?"<>|]+\.jar$')  # a bare file name: no folder, nothing Windows refuses
 MEMBER_KEYS = {"jvm", "collect", "failures"}
 RUNTIMES = ("cleanroom",)
+RUNTIME_FILES = ("installer", "universal", "prism")  # platform.cleanroom's files, copied into runtime.files
 
 
 class LaunchError(Exception):
@@ -227,9 +230,15 @@ def resolve(*, product: str, commit: str, tree: str, launch: str, table: dict, s
     _add_jvm(jvm, _jvm(table.get("jvm"), f"launch.{launch}"))
     platform = set_doc.get("platform") or {}
     java = platform.get("java")
-    runtime = {"kind": table.get("runtime", "cleanroom"),
-               "version": (platform.get("cleanroom") or {}).get("version", ""),
+    cleanroom = platform.get("cleanroom") or {}
+    runtime = {"kind": table.get("runtime", "cleanroom"), "version": cleanroom.get("version", ""),
                "java": java, "jdk": ((platform.get("jdk") or {}).get(str(java)) or {}).get("build", "")}
+    # The runtime's own files as the platform names them (a landing of platform.cleanroom keeps each in the Store):
+    # lab.build makes an instance from these, so the launch file carries them.
+    files = {part: {key: cleanroom[part][key] for key in ("url", "file", "sha256") if key in cleanroom[part]}
+             for part in RUNTIME_FILES if isinstance(cleanroom.get(part), dict)}
+    if files:
+        runtime["files"] = files
     return {"schema": SCHEMA, "project": product, "launch": launch, "commit": commit, "tree": tree,
             "set": revision, "store": str(store), "runtime": runtime, "members": members, "jvm": jvm,
             "collect": collect, "failures": failures, "params": dict(table.get("params") or {})}

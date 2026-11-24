@@ -112,6 +112,19 @@ class Members(Base):
                                           "jdk": "26.0.2.1+1"})
         self.assertEqual((doc["set"], doc["params"], doc["schema"]), ("9" * 40, {"seed": 8675309}, 1))
 
+    def test_the_platforms_runtime_files_go_into_the_launch(self):
+        base = "https://example.org/cleanroom/0.7.14-alpha/cleanroom-0.7.14-alpha"
+        files = {"installer": {"url": base + "-installer.jar", "file": "cleanroom-0.7.14-alpha-installer.jar",
+                               "sha256": "1" * 64},
+                 "universal": {"url": base + "-universal.jar", "file": "cleanroom-0.7.14-alpha-universal.jar",
+                               "sha256": "2" * 64},
+                 "prism": {"url": base + ".zip", "file": "cleanroom-0.7.14-alpha.zip", "sha256": "3" * 64}}
+        set_doc = {**self.set_doc, "platform": {**self.set_doc["platform"],
+                                                "cleanroom": {"version": "0.7.14-alpha", **files}}}
+        doc = self.run_resolve(set_doc=set_doc)
+        self.assertEqual(doc["runtime"]["files"], files)
+        self.assertNotIn("files", self.run_resolve()["runtime"])  # a platform without them: none in the launch
+
     def test_place_names_the_file_a_member_is_placed_under(self):
         table = {**self.table, "place": {"helper@server": "+Helper-0.2.jar"}}
         by = {m["member"]: m for m in self.run_resolve(table=table)["members"]}
