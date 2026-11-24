@@ -61,7 +61,7 @@ utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is
 | `drive` | Workload drivers: what a game session is made to do and see. Tours checked before a session plays them, camera paths made from keyframes and checked against the frames captured along them, and block galleries laid out for review. | `tour-lint`, `path`, `path-check`, `gallery`, `send` |
 | `frames` | Score captured frames: pass or fail against references, capture noise, wrong-view checks, and PSNR/SSIM quality (from Quadrature's frames.py). | `compare`, `measure`, `check`, `quality` |
 | `jar` | Static analysis of compiled mods: class files, references and what each JAR patches. | `audit`, `survey`, `index`, `references`, `hook-targets`, `diff` |
-| `lab` | Game sessions: native client sessions on the host through wb-host (instances, the GPU lease, the lab home), and headless dedicated-server sessions in the container. | `gpu`, `prepare`, `play`, `resolve`, `turn`, `install-server`, `pack`, `assemble`, `build`, `run`, `keep`, `server` |
+| `lab` | Game sessions: native client sessions on the host through wb-host (instances, the GPU lease, the lab home), and headless dedicated-server sessions in the container. | `gpu`, `prepare`, `play`, `resolve`, `turn`, `install-server`, `pack`, `assemble`, `build`, `run`, `keep`, `freeze`, `thaw`, `server` |
 | `ledger` | Formal results, costs and market prices in one queryable database. | `query`, `runs`, `findings`, `show`, `costs`, `calls`, `add-run`, `add-finding`, `supersede`, `link-run`, `add-machine`, `prune`, `import`, `import-ci`, `import-results`, `import-json`, `parse-log` |
 | `mixin` | Mixin and patches: verifying Mixin and patch application without the game. | `remap-proof`, `apply`, `doctor` |
 | `plan` | Declarative turns and campaigns: pinned inputs, a declared protocol, steps that are Workbench commands; checked first, then run on the host or a rented GPU. | `check`, `run` |
@@ -248,7 +248,9 @@ changes. Its `instance.json` names every file by SHA-256 relative to
 `{instance}`, `{cache}` and `{jdk:N}`, with the launch file's SHA-256 and the server's and client's command lines. One
 template is built per launch file, base and parameters, and each further instance is hard-linked from it in under a
 second. `modules/lab/tools/compare_instances.py` compares such an instance with one the old route prepared, file by
-file and command line by command line. A configure script runs only for a project the machine's `[lab] trusted` names,
+file and command line by command line, and with `--host <instance> --container <instance or tar>` two instances of
+one launch file built on two systems, naming each difference it can explain (natives, line endings, the files that
+name their system). A configure script runs only for a project the machine's `[lab] trusted` names,
 and `eula.txt` is written only where `[lab] eula = true` (or the request) accepts the Minecraft EULA. The server's
 port is not part of a template: `{port}` stays in the client's command line for the session to fill.
 
@@ -268,6 +270,12 @@ on loopback, writes `attach/launch.json` (VS Code) and `attach/jdb.txt`, and mar
 stop waits at least 180 s for the server's own exit before the tree is killed; a failure names the decisive line
 (the launch's `failures` first), the crash report and the next command. `lab.keep session=<id> reason=<text>` keeps
 a session; what it names is a retention root (`kept.json`).
+
+The old route's instances (a checkout's `.local/cubic-standalone/<name>`, with no `instance.json`) are kept as
+evidence by `lab.freeze folder=<folder> apply=true`: a manifest of every file by size, time and SHA-256, the world
+in the world store by its world key, `tours/` and `runs/` copied into a kept session, then every file read-only.
+Without `apply` it only inventories; a folder reached through a link is refused. `lab.thaw folder=<folder>` is the
+undo: it clears exactly the marks the manifest says the freeze made.
 
 `wb play [project][@set|@head][:launch]` does all of it from the folder you stand in: it resolves the launch at the
 folder's `.set` (or the head where there is none) and says which (`set <rev> (this folder, N behind)` or `set <rev>

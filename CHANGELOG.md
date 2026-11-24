@@ -73,6 +73,9 @@
   JDWP on loopback and writes an attach configuration. A stop waits at least 180 s for the server; a failure names
   the decisive line, the crash report and the next command. `lab.keep` keeps a session as a retention root.
   `lab.resolve` carries a launch's `tour` rules and `drivers` into launch.json.
+- `lab.freeze` keeps the old route's instances as read-only evidence (a manifest, the world by world key, tours/
+  and runs/ as a kept session), never following a link; `lab.thaw` undoes it. lab.build finds its instances under
+  `[lab] home` when `[modules.lab] instances` is not set, as lab.run does its sessions.
 - A launch may name another product's launch as its base (`base = "riven:default"`): it inherits that launch's
   members, base, configure script, overlays, typed params, JVM arguments and tour rules, resolved at the base
   project's commit (its line, or its branch in its home repository when it has none), and adds its own, with one

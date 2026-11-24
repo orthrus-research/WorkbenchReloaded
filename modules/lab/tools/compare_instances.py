@@ -22,6 +22,18 @@ Three comparisons, each printed with what differs and, for the differences this 
   service files) found in more than one: only those make the order matter, and each is reported with the JAR that
   serves it first in either order;
 - the player name and the class-path order, named on their own because the proof names them.
+
+The proof of phase 8, that one launch file built on the host and in the container gives the same instance tree apart
+from natives, compares two instances lab.build made:
+
+    python modules/lab/tools/compare_instances.py --host <instance> --container <instance | instance .tar>
+        [--json <report.json>]
+
+Every file of both by relative path and SHA-256. A difference is explained when it is a native (under
+``client/natives``, or a .dll, .so, .dylib or .jnilib: each system's own), a text file whose bytes are equal once
+CRLF is written as LF (the builder writing a generated file in its system's line endings), or the receipt and the
+store's marker, which name their system, paths and template by design; the receipts' file lists are compared too,
+apart from natives. Anything else is unexplained, and the exit code is 1.
 """
 
 from __future__ import annotations
@@ -32,7 +44,9 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import sys
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -201,14 +215,172 @@ def compare_commands(old: list[str], new: list[str], cache: Path | None, moved: 
     return report
 
 
+# --- two instances lab.build made, on two systems --------------------------------------------------------------------
+
+NATIVE_SUFFIXES = (".dll", ".so", ".dylib", ".jnilib")
+# A JAR of natives for one system, by its classifier: lwjgl-3.4.3-natives-windows.jar, netty's -linux-x86_64.jar.
+NATIVE_JAR = re.compile(r"-natives-(windows|linux|macos|osx)[^/]*\.jar$"
+                        r"|-(windows|linux|osx|macos)-(x86_64|x86|aarch_64|aarch64|arm64)\.jar$")
+# The files that name their own system, paths and template by design.
+BY_SYSTEM = {
+    "instance.json": "the receipt: it names the system, the template's key and each side's command line",
+    ".wb-instance.json": "the instance store's marker: the template's folder and key on this machine",
+    "server/run.bat": "the installer's start script for Windows",
+    "server/run.sh": "the installer's start script for Linux and macOS",
+}
+# The installer's argument files: the same libraries but each system's natives.
+ARGUMENTS = re.compile(r"(^|/)(win|unix)_args\.txt$")
+TOKEN = re.compile(r"[\s;:]+")
+
+
+def is_native(path: str) -> bool:
+    return (path.startswith("client/natives/") or "/natives/" in path or path.lower().endswith(NATIVE_SUFFIXES)
+            or bool(NATIVE_JAR.search(path.replace("\\", "/"))))
+
+
+def without_natives(data: bytes) -> list[str]:
+    """A text file's tokens with path separators as /, the native JARs it names left out."""
+    text = data.decode("utf-8", "replace").replace("\\", "/")
+    return [token for token in TOKEN.split(text) if token and not NATIVE_JAR.search(token)]
+
+
+def instance_files(source: Path) -> dict[str, bytes]:
+    """An instance's files by relative path, read from its folder or from a tar of it (one top folder)."""
+    if source.is_dir():
+        return {p.relative_to(source).as_posix(): p.read_bytes() for p in sorted(source.rglob("*")) if p.is_file()}
+    out = {}
+    with tarfile.open(source) as archive:
+        for member in archive.getmembers():
+            if not (member.isfile() or member.islnk()):
+                continue
+            name = member.name.split("/", 1)[1] if "/" in member.name else member.name
+            out[name] = archive.extractfile(member).read()
+    return out
+
+
+def receipt_files(receipt: dict) -> dict[str, str]:
+    """The receipt's file list (path relative to a root, SHA-256)."""
+    return {path: (entry.get("sha256") if isinstance(entry, dict) else entry)
+            for path, entry in (receipt.get("files") or {}).items()}
+
+
+def classify(path: str, host: bytes | None, container: bytes | None) -> tuple[str, str] | None:
+    """Why a file differs between the systems, or None when nothing explains it."""
+    if is_native(path):
+        return "natives", "each system's own"
+    if path in BY_SYSTEM:
+        return "by_system", BY_SYSTEM[path]
+    if host is None or container is None:
+        return None
+    if host.replace(b"\r\n", b"\n") == container.replace(b"\r\n", b"\n"):
+        return "line_endings", "written in the building system's line endings"
+    if ARGUMENTS.search(path) and without_natives(host) == without_natives(container):
+        return "arguments", "the installer's argument file: the same entries but each system's native JARs"
+    return None
+
+
+def compare_peers(host: dict[str, bytes], container: dict[str, bytes]) -> dict:
+    digest = {side: {path: hashlib.sha256(data).hexdigest() for path, data in files.items()}
+              for side, files in (("host", host), ("container", container))}
+    trees = compare_trees(digest["host"], digest["container"], same_folder=False)
+    report = {"files": [len(host), len(container)], "equal": len(trees["equal"]), "natives": [], "line_endings": [],
+              "arguments": [], "by_system": {}, "unexplained": []}
+    why = {}
+
+    def place(path: str, a: bytes | None, b: bytes | None, missing: str | None = None):
+        found = classify(path, a, b)
+        if found is None:
+            report["unexplained"].append({"path": path, "why": missing or "differs"})
+            return
+        kind, reason = found
+        why[path] = kind
+        if kind == "by_system":
+            report["by_system"][path] = reason
+        else:
+            report[kind].append(path)
+
+    for path in trees["differ"]:
+        place(path, host[path], container[path])
+    for key, side in (("only_old", "host"), ("only_new", "container")):
+        for path in trees[key]:
+            place(path, None, None, f"only on the {side}")
+    for item in trees["renamed"]:
+        place(item["old"], None, None, f"the same bytes are {item['new']} in the container")
+    receipts = {}
+    for side, files in (("host", host), ("container", container)):
+        try:
+            receipts[side] = json.loads(files["instance.json"])
+        except (KeyError, ValueError):
+            receipts[side] = {}
+    listed = compare_trees(receipt_files(receipts["host"]), receipt_files(receipts["container"]))
+    explained, jdk = [], []
+    for path in listed["differ"] + listed["only_old"] + listed["only_new"]:
+        inside = path.removeprefix("{instance}/")
+        if path.startswith("{jdk:"):
+            jdk.append(path)  # the receipt's JDK is the launch's build for each system: its own files
+        elif is_native(path) or (inside != path and inside in why):
+            explained.append(path)
+        else:
+            report["unexplained"].append({"path": f"instance.json files: {path}",
+                                          "why": "the receipts list it differently"})
+    report["receipt"] = {"system": [receipts["host"].get("system"), receipts["container"].get("system")],
+                         "key": [receipts["host"].get("key"), receipts["container"].get("key")],
+                         "files_equal": len(listed["equal"]), "files_differ": len(listed["differ"]),
+                         "only_host": len(listed["only_old"]), "only_container": len(listed["only_new"]),
+                         "explained": explained, "jdk": jdk}
+    report["natives"].sort()
+    report["same_apart_from_natives"] = not report["unexplained"]
+    return report
+
+
+def render_peers(report: dict) -> str:
+    receipt = report["receipt"]
+    lines = [f"files: {report['files'][0]} on the host, {report['files'][1]} in the container; {report['equal']} equal "
+             f"by SHA-256; {len(report['natives'])} natives (each system's own); {len(report['line_endings'])} equal "
+             f"but for line endings; {len(report['arguments'])} argument files equal but for natives; "
+             f"{len(report['by_system'])} that name their system; "
+             f"{len(report['unexplained'])} unexplained"]
+    lines += [f"  native: {path}" for path in report["natives"]]
+    lines += [f"  line endings only: {path} (written in the building system's line endings)"
+              for path in report["line_endings"]]
+    lines += [f"  arguments: {path} (the same entries but each system's native JARs)" for path in report["arguments"]]
+    lines += [f"  by system: {path} -- {why}" for path, why in report["by_system"].items()]
+    lines += [f"  UNEXPLAINED: {item['path']} ({item['why']})" for item in report["unexplained"]]
+    lines.append(f"receipts: systems {receipt['system'][0]} and {receipt['system'][1]}, templates {receipt['key'][0]} "
+                 f"and {receipt['key'][1]}; {receipt['files_equal']} listed files equal, {receipt['files_differ']} "
+                 f"differ, {receipt['only_host']} only on the host, {receipt['only_container']} only in the "
+                 f"container: {len(receipt['explained'])} of them natives or the files above, {len(receipt['jdk'])} "
+                 "the JDK's own files for each system")
+    lines.append("the same instance tree apart from natives" if report["same_apart_from_natives"]
+                 else "NOT the same instance tree apart from natives")
+    return "\n".join(lines)
+
+
+def main_peers(args) -> int:
+    report = compare_peers(instance_files(args.host), instance_files(args.container))
+    report.update(host=str(args.host), container=str(args.container))
+    print(render_peers(report))
+    if args.json:
+        args.json.write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")
+    return 0 if report["same_apart_from_natives"] else 1
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--new", type=Path, required=True)
-    parser.add_argument("--old", type=Path, required=True)
-    parser.add_argument("--old-tools", type=Path, required=True)
+    parser.add_argument("--new", type=Path)
+    parser.add_argument("--old", type=Path)
+    parser.add_argument("--old-tools", type=Path)
     parser.add_argument("--cache", type=Path)
+    parser.add_argument("--host", type=Path, help="an instance lab.build made on the host")
+    parser.add_argument("--container", type=Path, help="the same launch's instance built in the container (or a tar)")
     parser.add_argument("--json", type=Path)
     args = parser.parse_args(argv)
+    if args.host or args.container:
+        if not (args.host and args.container):
+            parser.error("--host and --container go together")
+        return main_peers(args)
+    if not (args.new and args.old and args.old_tools):
+        parser.error("--new, --old and --old-tools go together (or --host and --container)")
     receipt = json.loads((args.new / "instance.json").read_text(encoding="utf-8"))
     manifest = json.loads((args.old / "standalone.json").read_text(encoding="utf-8"))
     report = {"new": str(args.new), "old": str(args.old)}

@@ -123,11 +123,7 @@ def _lab_root(ctx: Context, machine: Machine) -> Path:
     configured = str(ctx.config.get("instances") or "")
     if configured:
         return machine.path(configured)
-    home = os.environ.get("WB_LAB_HOME", "")
-    if not home:
-        raise EnvironmentProblem("no folder for instances: set [modules.lab] instances, or run lab.build on wb-host, "
-                                 "which names the lab home")
-    return Path(home) / "instances"
+    return machines.home(ctx) / "instances"  # [lab] home, else the lab home wb-host names
 
 
 def _runtime_cache(ctx: Context, machine: Machine) -> Path:

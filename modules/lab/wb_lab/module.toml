@@ -190,6 +190,29 @@ params.session = { type = "string", pattern = "^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$",
 params.reason = { type = "string", summary = "why it is kept" }
 
 [[command]]
+name = "freeze"
+summary = "Keep the old route's instances (folders with no instance.json, as the project launchers prepared them) as read-only evidence: a manifest of every file by size, time and SHA-256, the world imported into the lab's world store by its world key (seed, layout scale, the definitions' SHA-256, the Cubature JAR that wrote it), tours/ and runs/ copied into one session kept with lab.keep, then every file marked read-only. Without apply it only inventories. Never moves, deletes or follows a link; a folder reached through a link is refused. lab.thaw is the undo."
+handler = "wb_lab.legacy:freeze"
+runs_on = ["host"]
+timeout = "6h"
+params.folder = { type = "path.in", summary = "a legacy instance, or the folder holding them (a checkout's .local/cubic-standalone)" }
+params.apply = { type = "bool", default = false, summary = "false: inventory only (counts, sizes, world keys, what would be imported), hashing nothing" }
+params.hash_limit = { type = "int", default = 256, min = 0, summary = "files larger than this many MiB are recorded by size and time only" }
+result.instances = { type = "list" }
+result.skipped = { type = "list" }
+result.bytes = { type = "int" }
+result.applied = { type = "bool" }
+
+[[command]]
+name = "thaw"
+summary = "Undo lab.freeze: clear the read-only mark from exactly the files a freeze's manifest says it marked, each only while its size and time are the ones recorded. The imported world and session are copies and stay."
+handler = "wb_lab.legacy:thaw"
+runs_on = ["host"]
+timeout = "1h"
+params.folder = { type = "path.in", summary = "a frozen legacy instance, or the folder holding them" }
+result.instances = { type = "list" }
+
+[[command]]
 name = "server"
 summary = "Run a dedicated server from a copy of a stopped server folder: wait until it is ready, send console commands, let it run for ticks, seconds or until a line, stop it gracefully, and keep its console, new crash reports, chosen files and a receipt."
 handler = "wb_lab.server:server"

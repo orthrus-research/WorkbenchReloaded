@@ -52,6 +52,8 @@ SUITES = [
     ["modules/lab/tests/test_resolve.py"],
     ["modules/lab/tests/test_instance.py"],
     ["modules/lab/tests/test_run.py"],
+    ["modules/lab/tests/test_legacy.py"],
+    ["modules/lab/tests/test_compare.py"],
     ["modules/lab/tests/test_play.py"],
     ["modules/content/tests/test_content.py"],
     ["modules/drive/tests/test_drive.py"],

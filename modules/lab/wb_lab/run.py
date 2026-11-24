@@ -874,4 +874,5 @@ def kept_roots(root: Path) -> dict[str, list[str]]:
         out["instances"].append(kept["instance"])
         out["templates"].append(kept["template"])
         out["launches"].append(kept["launch"])
-    return {key: sorted(set(values)) for key, values in out.items()}
+    # an imported session names no template, and may name no launch file
+    return {key: sorted({value for value in values if value}) for key, values in out.items()}
