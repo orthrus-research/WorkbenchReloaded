@@ -60,6 +60,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from wb_core import process as owned_processes
+from wb_core import retention
 from wb_core.module import Cancelled, Context, EnvironmentProblem, ParamError, sha256_file
 
 from . import channel as channels
@@ -532,8 +533,8 @@ class Session:
             self._edit(path, lambda text, k=key, v=value, n=path.name: set_key(text, k, v, n))
         if self.p.get("fresh_world"):
             world = folder / "server" / "world"
-            if world.exists():
-                shutil.rmtree(world)
+            if world.exists() or retention.is_link(world):
+                retention.remove(world)  # unlink-first: a link in the world is removed, never what it points at
         for side in SIDES:
             (folder / side / "java-tmp").mkdir(parents=True, exist_ok=True)
 

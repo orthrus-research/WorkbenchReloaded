@@ -441,6 +441,21 @@ class Sessions(unittest.TestCase):
         with self.assertRaisesRegex(ParamError, "not evidence"):
             self.play(kind="measure", tour=str(self.tour), launch=str(launch), debug="client", label="debug")
 
+    def test_a_fresh_world_is_removed_link_first_and_never_what_a_link_in_it_points_at(self):
+        from wb.platform import make_link
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "kept.dat").write_bytes(b"not the world's")
+        world = self.instance() / "server" / "world"
+        (world / "region").mkdir(parents=True)
+        (world / "region" / "r.0.0.mca").write_bytes(b"region")
+        os.chmod(world / "region" / "r.0.0.mca", 0o444)  # a read-only file is removed too
+        make_link(world / "shared", outside)
+        ctx, _, _ = self.play(kind="tour", tour=str(self.tour), fresh_world=True)
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        self.assertFalse(world.exists())
+        self.assertEqual((outside / "kept.dat").read_bytes(), b"not the world's")
+
     def test_a_driver_gets_the_token_lease_and_instance_under_the_configured_names(self):
         root = self.root / "project"
         root.mkdir()

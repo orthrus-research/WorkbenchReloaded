@@ -290,15 +290,11 @@ def rewrite_paths(path: Path, old_root: Path, new_root: Path, old_name: str, new
 
 
 def remove_tree(path: Path):
-    """shutil.rmtree that also removes read-only links (Windows refuses to delete a read-only file)."""
-    def retry(function, target, _info):
-        try:
-            _writable(Path(target))
-        except OSError:
-            pass
-        function(target)
-    if Path(path).exists():
-        shutil.rmtree(path, onexc=retry)
+    """Removes a folder by the unlink-first routine (``wb.platform.remove_tree``): every link in it (a symlink or a
+    junction) is removed as a link before anything else, so nothing it points at is touched, then the rest, read-only
+    hard links to the blobs included (Windows refuses to delete a read-only file)."""
+    from wb.platform import remove_tree as unlink_first
+    unlink_first(Path(path))
 
 
 def recipe_of(inputs: dict) -> str:
