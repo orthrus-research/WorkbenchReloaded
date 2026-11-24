@@ -38,6 +38,10 @@ steps = [{ name = "build", run = ["{python}", "-c", "import pathlib; p = pathlib
 [jobs.clean-env]
 steps = [{ name = "env", run = ["{python}", "-c", "import os, sys; sys.exit(3 if [k for k in os.environ if k.startswith('WB_') and k not in ('WB_PIN_CACHE', 'WB_COLD', 'WB_GRADLE')] else 0)"] }]
 
+[jobs.slow-built]
+artifacts = ["build/slow.jar"]
+steps = [{ name = "build", run = ["{python}", "-c", "import pathlib, time; time.sleep(3); p = pathlib.Path('build'); p.mkdir(exist_ok=True); (p / 'slow.jar').write_bytes(b'slow bytes')"] }]
+
 [jobs.unbuilt]
 artifacts = ["build/missing.jar"]
 steps = [{ name = "nothing", run = ["{python}", "-c", "pass"] }]
@@ -88,6 +92,10 @@ class Ci(unittest.TestCase):
         git(cls.demo, "commit", "-q", "-m", "demo")
         cls.head = git(cls.demo, "rev-parse", "HEAD")
         cls.d = Daemon(f"""
+            [core.budget]
+            cpu_cores = 16
+            mem_gb = 64
+
             [modules.ci]
             excludes = ["NOTES.local.md"]
             git_config = {{ "core.autocrlf" = "true" }}
@@ -241,6 +249,35 @@ class Ci(unittest.TestCase):
         self.assertEqual(len(verified.children), 1)  # one ci.run, cold
         # The cold builds read no Gradle build cache: every build's Gradle home has the script that turns it off.
         self.assertIn("WB_COLD", (self.d.state / "cache" / "gradle" / "init.d" / "workbench-cold.gradle").read_text())
+
+    def test_two_checks_of_one_project_at_once_both_complete(self):
+        from wb_core import artifacts
+        git(self.demo, "commit", "-q", "--allow-empty", "-m", "the same tree again")
+        again = git(self.demo, "rev-parse", "HEAD")
+        try:
+            jobs = [self.c.submit("ci.run", {"project": "demo", "commit": commit, "workflow": "slow-built",
+                                             "if_needed": False}) for commit in (self.head, again)]
+            for job in jobs:
+                result = job.result(timeout=600)
+                self.assertEqual(result.outcome, "ok", result.summary)
+                self.assertEqual(result.data.passed, ["slow-built"])
+            first, second = (self.d.workbench.db.one("SELECT started, settled FROM job WHERE id = ?", (job.id,))
+                             for job in jobs)
+            self.assertLess(first["started"], second["settled"])  # side by side: neither waited for the other
+            self.assertLess(second["started"], first["settled"])
+            # Both wrote the one index entry of their shared tree, and neither's commit was lost.
+            index = artifacts.find(self.d.state / "store", "demo", git(self.demo, "rev-parse", "HEAD^{tree}"))
+            self.assertTrue({self.head, again} <= set(index["commits"]), index["commits"])
+            self.assertEqual(index["artifacts"]["slow.jar"]["sha256"], hashlib.sha256(b"slow bytes").hexdigest())
+            self.assertNotIn("disagreements", index)
+        finally:
+            git(self.demo, "reset", "-q", "--hard", self.head)
+
+    def test_two_runs_of_one_commit_wait_for_each_other(self):
+        entry = self.d.workbench.registry.get("ci.run")
+        locks = lambda **params: self.d.workbench._resources(entry.command, "container", params)[4]  # noqa: E731
+        self.assertEqual(locks(project="demo", commit="abc"), {"ci:demo@abc"})
+        self.assertNotEqual(locks(project="demo", commit="abc"), locks(project="demo", commit="def"))
 
     def test_a_step_gets_none_of_workbenchs_own_environment(self):
         result = self.c.submit("ci.run", {"project": "demo", "workflow": "clean-env"}).result(timeout=600)

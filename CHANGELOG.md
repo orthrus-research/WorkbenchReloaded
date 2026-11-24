@@ -29,6 +29,9 @@
   `toolchain.rebuild`, `build.freeze` and `build.stage` are gone: `store.verify` is how a pin is shown to rebuild.
 - The actions engine runs inside its job's reservation: no run lock, the job id as its run id, the job's memory
   as its budget. A project's steps get an allow-listed environment, none of Workbench's own.
+- Two checks of one project run at once: `ci.run`'s lock is per commit (`ci:<project>@<commit>`), and the Store's
+  index entries, its files, the engine's input cache and the Python environments are safe to write at once (an
+  entry is merged under a lock of its own and every file moved into place whole).
 - Each job calls the API with a token of its own, revoked when it ends, that can never approve a quote: approval
   takes the person's token.
 - The Set: set.json (schema 1) names each project's line (branch, commit and the SHA-256 of its files), holds
