@@ -3,6 +3,7 @@
     wb play [project][@ref|@set|@head][:launch] [--from launch.json] [--name N] [--tour F] [--measure]
             [--driver D] [--debug client|server|both] [--fresh-world|--keep-world] [--param k=v]...
             [--jvm OPT]... [--view k=v]... [--window WxH] [--edit side/file:key=value]... [--no-rebuild]
+            [--desktop hidden]
 
 Without a project it plays the worktree you stand in; a project named while you stand in one of its worktrees is
 that worktree. The revision every line resolves at is the folder's .set, or the head where the folder has none
@@ -15,7 +16,10 @@ its commit. A member the Store lacks is built first by submitting its producing 
 The instance is built from the launch file (lab.build: one template per launch file, base and params, reused when it
 is already built), then the session runs (lab.run) under the GPU lease in a lane of its own, on this machine, as
 wb-host would run them: the job id, launch file, instance and session folder are printed at once, the consoles are
-streamed, and a failure prints the decisive line, the crash report and the next command.
+streamed, and a failure prints the decisive line, the crash report and the next command. With --desktop hidden
+(Windows) the client runs on a hidden desktop of its own that never takes the input, so a session, an open one
+included, never takes the person's focus; an open session's commands.txt then reaches the client's fixture by its
+'client <action> [<JSON>]' lines.
 """
 
 from __future__ import annotations
@@ -266,7 +270,8 @@ def main(args) -> int:
     kind = "measure" if args.measure else "tour" if args.tour else "driver" if args.driver else "open"
     run_params = {"instance": name, "kind": kind, "session": session, "jvm": list(args.jvm or []), "view": view,
                   "edits": list(args.edit or []), "window": args.window or "", "debug": args.debug or "",
-                  "fresh_world": bool(args.fresh_world), "no_rebuild": bool(args.no_rebuild)}
+                  "fresh_world": bool(args.fresh_world), "no_rebuild": bool(args.no_rebuild),
+                  "desktop": getattr(args, "desktop", None) or ""}
     if args.tour:
         run_params["tour"] = str(Path(args.tour).resolve())
     if args.measure:
@@ -279,7 +284,11 @@ def main(args) -> int:
     print(f"job       {job}")
     print(f"launch    {launch}")
     print(f"instance  {instances._lab_root(ctx, instances.Machine()) / name}")
-    print(f"session   {sessions / session}  ({kind})", flush=True)
+    print(f"session   {sessions / session}  ({kind}" + (", hidden desktop" if run_params["desktop"] else "") + ")",
+          flush=True)
+    if kind == "open":
+        print(f"commands  {sessions / session / 'commands.txt'}  (server console lines; 'client <action> [<JSON>]' "
+              "for the client's fixture)", flush=True)
     try:
         built = instances.build(host.context(job, "lab.build", {}, folder / "build"), str(launch), name,
                                 params=params, configure=str(Path(args.configure).resolve()) if args.configure else None)

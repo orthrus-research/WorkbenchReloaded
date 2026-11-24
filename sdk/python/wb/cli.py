@@ -673,6 +673,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--edit", action="append", metavar="SIDE/FILE:KEY=VALUE", help="an instance file changed for this "
                    "session only")
     p.add_argument("--no-rebuild", action="store_true", help="build no missing member: refuse, naming the check")
+    p.add_argument("--desktop", choices=["hidden"], help="hidden: the client on a hidden Windows desktop that never "
+                   "takes the input")
     p = add("host", cmd_host, "the Windows host runner")
     p.add_argument("action", choices=["serve", "install", "uninstall", "status"])
     p.add_argument("rest", nargs=argparse.REMAINDER)

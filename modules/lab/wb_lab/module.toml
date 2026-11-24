@@ -151,7 +151,7 @@ result.built = { type = "bool" }
 
 [[command]]
 name = "run"
-summary = "One session of an instance lab.build made, from its receipt (instance.json) alone, under the GPU lease: open (a person plays; console lines appended to the session's commands.txt go to the server), tour (the launch's tour rules drive the game through a tour's views, each captured and filed by label), measure (a tour that is evidence: quiet, on a fresh copy of the template, only for the launch file named) or driver (the launch's declared driver, a trusted project's program, gets the turn token, the lease, the instance.json path and, by the name [lab] env gives it, the runtime cache). Every cache, JDK and member file is hashed against the receipt first, and a JDK of another build is refused. The port, JVM options, window, views, edits and debugger are the session's: they go into session.json with the member hashes, JDK build, GPU and driver, and never into the template. A stop waits at least 180 s for the server's own exit; a failure names the decisive line, the crash report and the next command."
+summary = "One session of an instance lab.build made, from its receipt (instance.json) alone, under the GPU lease: open (a person plays; console lines appended to the session's commands.txt go to the server, and its 'client <action> [<JSON>]' lines to the client's fixture through the session's client channel, the {channel} a launch's JVM arguments name), tour (the launch's tour rules drive the game through a tour's views, each captured and filed by label), measure (a tour that is evidence: quiet, on a fresh copy of the template, only for the launch file named) or driver (the launch's declared driver, a trusted project's program, gets the turn token, the lease, the instance.json path and, by the name [lab] env gives it, the runtime cache). Every cache, JDK and member file is hashed against the receipt first, and a JDK of another build is refused. The port, JVM options, window, views, edits, debugger and desktop (hidden: the client on a hidden Windows desktop that never takes the input) are the session's: they go into session.json with the member hashes, JDK build, GPU and driver, and never into the template. A stop waits at least 180 s for the server's own exit; a failure names the decisive line, the crash report and the next command."
 handler = "wb_lab.run:run"
 runs_on = ["host"]
 resources = { gpu = true, quiet_if = ["kind=measure", "kind=driver"] }
@@ -175,11 +175,28 @@ params.limit = { type = "duration", default = "4h", min = "10s", max = "12h", su
 params.jdk = { type = "path.in", optional = true, summary = "a JDK home to run on instead of the Store's; it must be the receipt's build" }
 params.session = { type = "string", default = "", summary = "the session's id; empty: a new one" }
 params.no_rebuild = { type = "bool", default = false, summary = "the play did not rebuild members compiled against other bytes: the session is not evidence" }
+params.desktop = { type = "enum", values = ["", "hidden"], default = "", summary = "hidden: start the client on a hidden Windows desktop of its own, where it runs and draws but never takes the input; session.json records the desktop and its windows" }
 result.session = { type = "string" }
 result.folder = { type = "string" }
 result.instance = { type = "string" }
 result.evidence = { type = "bool" }
 result.state = { type = "string" }
+
+[[command]]
+name = "send"
+summary = "Send one request to a running session's client fixture through the session's client channel (<session>/channel: request.json in, responses/<id>.json back, one at a time) and wait for its answer. The launch names the folder to its fixture mod as {channel}; what an action means is the fixture's."
+handler = "wb_lab.run:send"
+runs_on = ["host"]
+timeout = "10m"
+params.session = { type = "string", pattern = "^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$", summary = "the running session's id" }
+params.action = { type = "string", pattern = "^[A-Za-z0-9_.:-]+$", summary = "the request's action, as the fixture names them" }
+params.values = { type = "object", default = {}, summary = "the request's other fields" }
+params.timeout = { type = "int", default = 45, min = 1, max = 600, summary = "seconds to wait for the answer" }
+result.session = { type = "string" }
+result.id = { type = "string" }
+result.ok = { type = "bool" }
+result.answer = { type = "object" }
+result.file = { type = "string" }
 
 [[command]]
 name = "keep"
