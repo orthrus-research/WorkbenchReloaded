@@ -419,6 +419,20 @@ def pin_value(document: Any, key: str) -> Any:
 SET_IDENTITY = "WB_SET_IDENTITY"
 JDK_IDENTITY = "WB_JDK_IDENTITY"
 SET_TREE = "set"
+# Where ci.run laid out each project's files a check reads (tools): {"<project>": "<folder>"} as JSON.
+TOOLS_ROOTS = "WB_TOOLS_ROOTS"
+
+
+def tools_files(job: dict[str, Any]) -> list[tuple[str, Path]]:
+    """The files a check's tools globs match where ci.run laid them out, each with its label (<project>:<path>)."""
+    roots = json.loads(os.environ.get(TOOLS_ROOTS) or "{}")
+    found = []
+    for item in job.get("tools") or []:
+        project, _, glob = str(item).partition(":")
+        if project in roots:
+            base = Path(roots[project])
+            found += [(f"{project}:{p.relative_to(base).as_posix()}", p) for p in base.glob(glob) if p.is_file()]
+    return sorted(set(found))
 
 
 def trees(config: Config) -> dict[str, str | None]:
@@ -640,6 +654,9 @@ def input_key(config: Config, name: str, values: dict[str, Any]) -> str | None:
     files = sorted({p for pattern in expanded for p in glob_files(config.root, pattern)})
     for path in files:
         digest.update(input_label(config, path).encode() + b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    for label, path in tools_files(job):  # another project's files the check reads, as laid out for the run
+        digest.update(label.encode() + b"\0")
         digest.update(hashlib.sha256(path.read_bytes()).digest())
     for line in identity(config, values):
         digest.update(line.encode() + b"\0")

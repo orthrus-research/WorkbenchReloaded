@@ -518,6 +518,25 @@ class ProjectManifestTest(Project):
         self.assertNotEqual(first, moved)  # a JDK move reruns a pure check
         self.assertEqual(first, same)      # a line move alone does not
 
+    def test_a_pure_checks_key_covers_the_tools_files_it_reads(self):
+        from unittest import mock
+        self.write_manifest(MANIFEST.replace('[checks.docs]', '[checks.docs]\ntools = ["lib:assets/**"]'))
+        commit_all(self.root)
+        laid = self.root.parent / "Lib"
+        (laid / "assets").mkdir(parents=True)
+        (laid / "assets" / "a.json").write_text("1", encoding="utf-8")
+        (laid / "README").write_text("r", encoding="utf-8")
+        roots = {actions.TOOLS_ROOTS: json.dumps({"lib": str(laid)})}
+        with mock.patch.dict(os.environ, roots):
+            config = self.load()
+            first = actions.input_key(config, "docs", actions.placeholders(config, "r"))
+            (laid / "README").write_text("changed", encoding="utf-8")  # outside the glob: same key
+            same = actions.input_key(config, "docs", actions.placeholders(config, "r"))
+            (laid / "assets" / "a.json").write_text("2", encoding="utf-8")
+            moved = actions.input_key(config, "docs", actions.placeholders(config, "r"))
+        self.assertEqual(first, same)
+        self.assertNotEqual(first, moved)
+
 
 class GateTest(Project):
     def setUp(self):

@@ -556,6 +556,8 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
         launcher, set_revision, gradle_opts = _gradle_launcher(ctx, work, set, _stand_ins(ctx, work, stand_ins or {}))
         tools = _tools(ctx, config, work, set_revision or set)
         identity = _set_identity(ctx, config, set_revision or set)
+        if tools:  # a pure check's key covers the files it reads from another project, as laid out here
+            identity["WB_TOOLS_ROOTS"] = json.dumps({p: str(work / _project(ctx, p)["source"].name) for p in tools})
         if stand_ins:
             # Against stand-in bytes a run vouches for nothing: its records go one level down, where the gate, which
             # reads <records>/<run>/summary.json, never counts them, and its step logs stay readable.
