@@ -437,7 +437,7 @@ class EngineInProcess(unittest.TestCase):
                                              {"GIVEN": "given"}, sys.executable,
                                              identity={"set": "a" * 64, "jdk": "b" * 64, "tools": {}})
         self.assertEqual(document["status"], "ok", document)
-        self.assertEqual(document["result"]["trees"]["set"], "a" * 64)
+        self.assertEqual(document["result"]["trees"]["@set"], "a" * 64)
         log = next((self.records / "run-1" / "show").glob("*.log")).read_text(encoding="utf-8")
         self.assertIn("[] given", log)  # no WB_ variable reached the step: neither the token nor the identities
         self.assertIn(str(Path(sys.executable)), log)
