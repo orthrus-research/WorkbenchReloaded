@@ -200,7 +200,7 @@ def import_ci(ctx: Context, project: str, runs=None):
     folder = Path(runs) if runs else state_dir / "ci" / "records" / project
     if not folder.is_dir():
         raise ParamError(f"no CI run records at {ctx.host_path(folder)}" + ("" if runs else (
-            "; ci.run keeps a project's records there unless [modules.ci] records names another folder, which runs "
+            "; ci.run keeps a project's records there unless [paths] out is set (then <out>/ci/records), which runs "
             "can name")))
     readings, refused, unfinished = [], [], []
     for run_folder in sorted(p for p in folder.iterdir() if p.is_dir()):

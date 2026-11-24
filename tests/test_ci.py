@@ -782,7 +782,7 @@ class HostChecks(unittest.TestCase):
         from wb_core.module import EnvironmentProblem
         ctx = self.context("r1")
         ctx.config.pop("records")
-        with self.assertRaisesRegex(EnvironmentProblem, "records is not set"):
+        with self.assertRaisesRegex(EnvironmentProblem, r"records are nowhere.*set \[paths\] out"):
             self.commands._records(ctx, "demo")
 
 

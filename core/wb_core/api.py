@@ -173,7 +173,8 @@ def health(h: Handler, query):
                   "image": wb.image_digest, "install": wb.install_id, "uptime_s": round(time.time() - wb.started),
                   "modules": sorted(wb.modules), "commands": {"active": active, "total": len(wb.registry)},
                   "running": len(wb.running), "stalled": wb.stalled,
-                  "hooks_failed": {m: h for m, h in wb.hooks.items() if h.get("outcome") != "ok"}, "host": host})
+                  "hooks_failed": {m: h for m, h in wb.hooks.items() if h.get("outcome") != "ok"}, "host": host,
+                  "config_warnings": list(getattr(wb.settings, "warnings", []))})
 
 
 @route("GET", r"/v1/commands")

@@ -1,12 +1,20 @@
-# [paths]: the folders the container may read (ro) or write (rw). Commands' path parameters must lie under a
-# root; results report host paths. `wb up` mounts exactly these.
+# [paths]: each folder named once, as the host names it; the container's spelling is derived (/mnt/<root>).
+# Commands' path parameters must lie under a root; results report host paths. `wb up` mounts exactly these.
 
+# The read-write root, mounted as the root named out. Workbench keeps its own folders in it: the Store (<out>/store),
+# CI's run records (<out>/ci/records) and the pin cache (<out>/cache/pins), so host tools read what the container
+# wrote.
+out = 'D:\work\out'  # scrub: allow
+
+# Where wb deploy keeps its releases (default ~/.local/share/wb/releases), and where wb backup copies the state that
+# cannot be rebuilt (default ~/wb-backup; best on another volume).
+# releases = '~/.local/share/wb/releases'
+# backup = 'E:\wb-backup'  # scrub: allow
+
+# The other folders the container may read (ro) or write (rw), each mounted at /mnt/<name>.
 [roots.projects]
 host = 'D:\'  # scrub: allow
-container = "/mnt/projects"
 mode = "ro"
 
-[roots.out]
-host = 'D:\work\out'  # scrub: allow
-container = "/mnt/out"
-mode = "rw"
+# Read for one more release, with a warning: [roots.out] for out, a root's container key, and the folder keys
+# [modules.ci] store, records and pin_cache and [modules.toolchain] pin_cache.

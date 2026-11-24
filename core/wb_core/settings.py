@@ -70,8 +70,19 @@ CORE = {
     },
 }
 
-ROOT_FIELDS = {"host": {"type": "string"}, "container": {"type": "string", "optional": True},
+ROOT_FIELDS = {"host": {"type": "string"}, "container": {"type": "string", "optional": True,
+                                                            "summary": "old: derived as /mnt/<name>"},
                "mode": {"type": "enum", "values": ["ro", "rw"], "default": "ro"}}
+# [paths]: each folder named once, in host form (the container spelling is derived), besides [paths.roots].
+PATHS = {
+    "out": {"type": "string", "default": "",
+            "summary": "the read-write root, mounted as the root named out (/mnt/out): the Store (<out>/store), CI's "
+                       "records (<out>/ci/records) and the pin cache (<out>/cache/pins) are folders in it"},
+    "releases": {"type": "string", "default": "",
+                 "summary": "where wb deploy keeps releases; empty: ~/.local/share/wb/releases (WB_RELEASES wins)"},
+    "backup": {"type": "string", "default": "",
+               "summary": "where wb backup copies what cannot be rebuilt, on another volume; empty: ~/wb-backup"},
+}
 SECRET_FIELDS = {"host": {"type": "string"}, "container": {"type": "string", "optional": True}}
 SCHEDULE_FIELDS = {"command": {"type": "string"}, "every": {"type": "duration", "min": "1m"},
                    "params": {"type": "object", "default": {}}, "enabled": {"type": "bool", "default": True}}
@@ -142,6 +153,8 @@ class Settings:
     runner: dict = field(default_factory=dict)
     workspace: dict = field(default_factory=dict)
     lab: dict = field(default_factory=dict)
+    paths: dict = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)  # old keys still read, each with what replaced it
 
     @property
     def state_dir(self) -> Path:
@@ -207,15 +220,22 @@ def resolve(config: wbconfig.Config, module_schemas: dict[str, dict] | None = No
         raise SettingsError(f"{_where(config, 'core.' + key)}unknown table [core.{key}]")
     core = {section: _check(config, f"core.{section}", fields, core_values.get(section))
             for section, fields in CORE.items()}
+    raw_paths = values.get("paths") or {}
+    extra = set(raw_paths) - {"roots"} - set(PATHS)
+    if extra:
+        raise SettingsError(f"{_where(config, 'paths.' + sorted(extra)[0])}unknown key paths.{sorted(extra)[0]} "
+                            f"(known: {', '.join(sorted({'roots', *PATHS}))})")
+    paths = _check(config, "paths", PATHS, {k: v for k, v in raw_paths.items() if k != "roots"})
     roots = []
-    for name, raw in (values.get("paths", {}) or {}).get("roots", {}).items():
+    try:
+        configured_roots = wbconfig.roots(config)
+    except wbconfig.ConfigError as error:
+        raise SettingsError(str(error)) from None
+    for name, raw in configured_roots.items():
         entry = _check(config, f"paths.roots.{name}", ROOT_FIELDS, raw)
         # In the container a root lives where `wb up` mounted it; run natively, it is the host path itself.
         container = wbconfig.root_mount(name, entry) if in_container() else (entry.get("container") or entry["host"])
         roots.append(Root(name=name, host=entry["host"], container=container, mode=entry["mode"]))
-    extra = set((values.get("paths") or {})) - {"roots"}
-    if extra:
-        raise SettingsError(f"{_where(config, 'paths.' + sorted(extra)[0])}unknown key paths.{sorted(extra)[0]}")
     secrets = {}
     for name, raw in (values.get("secrets") or {}).items():
         entry = _check(config, f"secrets.{name}", SECRET_FIELDS, raw)
@@ -236,8 +256,26 @@ def resolve(config: wbconfig.Config, module_schemas: dict[str, dict] | None = No
     runner = _check(config, "runner", HOST_RUNNER, values.get("runner"))
     workspace = _check(config, "workspace", WORKSPACE, values.get("workspace"))
     lab = check_lab(values.get("lab"), config)
+    _out_folders(config, roots, modules)
     return Settings(config=config, core=core, roots=roots, secrets=secrets, schedules=schedules,
-                    modules=modules, runner=runner, workspace=workspace, lab=lab)
+                    modules=modules, runner=runner, workspace=workspace, lab=lab, paths=paths,
+                    warnings=wbconfig.deprecations(config))
+
+
+def _out_folders(config: wbconfig.Config, roots: list[Root], modules: dict[str, dict]) -> None:
+    """The folders under [paths] out given to the modules that keep them, as this machine names them: CI's Store,
+    records and pin cache, and toolchain's pin cache, which is CI's (one folder, named once). An old key that is
+    set still wins for this release, with a warning (``wbconfig.deprecations``)."""
+    out = next((root for root in roots if root.name == wbconfig.OUT_ROOT), None)
+    ci = modules.get("ci")
+    if ci is not None and out is not None and config.get("paths.out"):
+        for key, parts in wbconfig.OUT_FOLDERS.items():
+            if key in ci and not ci[key]:
+                # In the container the mount's spelling; run natively, the host's own.
+                ci[key] = "/".join([out.container.rstrip("/"), *parts]) if in_container()                     else os.path.join(out.container, *parts)
+    toolchain = modules.get("toolchain")
+    if toolchain is not None and "pin_cache" in toolchain and not toolchain["pin_cache"] and ci and ci.get("pin_cache"):
+        toolchain["pin_cache"] = ci["pin_cache"]
 
 
 def check_lab(values, config: wbconfig.Config | None = None) -> dict:

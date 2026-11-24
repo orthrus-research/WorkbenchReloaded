@@ -268,6 +268,88 @@ def root_mount(name: str, root: dict) -> str:
     return root.get("container") or f"/mnt/{name}"
 
 
+# [paths]: each folder named once, in host form; the container spelling is derived (/mnt/<root>).
+#   out       the read-write root, mounted as the root named ``out``; the folders below live in it
+#   releases  where wb deploy keeps releases (WB_RELEASES still wins, for tests and a second checkout)
+#   backup    where wb backup copies what cannot be rebuilt
+#   roots     the other roots the container may read (ro) or write (rw)
+OUT_ROOT = "out"
+# The folders Workbench keeps under [paths] out, by the [modules.ci] key that named each before (the pin cache was
+# also [modules.toolchain] pin_cache): each is named once, by out.
+OUT_FOLDERS = {"store": ("store",), "records": ("ci", "records"), "pin_cache": ("cache", "pins")}
+# The keys each replaces, read for one more release with a warning when set.
+OLD_FOLDER_KEYS = {"store": ("modules.ci.store",), "records": ("modules.ci.records",),
+                   "pin_cache": ("modules.ci.pin_cache", "modules.toolchain.pin_cache")}
+
+
+def roots(config: Config | None) -> dict[str, dict]:
+    """[paths.roots], with [paths] out as the rw root named ``out``: each {host, mode, and container when the old
+    spelling gave one}. Naming the out root twice is refused."""
+    paths = config.table("paths") if config is not None else {}
+    found = {name: dict(root) if isinstance(root, dict) else root for name, root in (paths.get("roots") or {}).items()}
+    out = paths.get("out")
+    if out:
+        if OUT_ROOT in found:
+            where = config.origin(f"paths.roots.{OUT_ROOT}.host") or config.origin("paths.out")
+            raise ConfigError(f"{where + ': ' if where else ''}[paths] out and [paths.roots.{OUT_ROOT}] both name the "
+                              f"out root; keep [paths] out and remove [paths.roots.{OUT_ROOT}]")
+        found[OUT_ROOT] = {"host": str(out), "mode": "rw"}
+    return found
+
+
+def out_root(config: Config | None) -> str | None:
+    """The out root as the host names it: [paths] out, else the old [paths.roots.out] host; None without one."""
+    root = roots(config).get(OUT_ROOT)
+    return str(root["host"]) if root and root.get("host") else None
+
+
+def folders(config: Config | None, container: bool) -> dict[str, str]:
+    """The folders under out by key (store, records, pin_cache), as the container (``container``) or the host names
+    them. An old key that is set still wins for this release; a folder neither names is left out (its default is
+    under the daemon's state)."""
+    found: dict[str, str] = {}
+    root = roots(config).get(OUT_ROOT)
+    for key, parts in OUT_FOLDERS.items():
+        old = next((str(config.get(name)) for name in OLD_FOLDER_KEYS[key] if config is not None
+                    and config.get(name)), None)
+        if old:
+            found[key] = old
+        elif root is not None and config is not None and config.get("paths.out"):
+            base = root_mount(OUT_ROOT, root) if container else str(root["host"])
+            found[key] = "/".join([base.rstrip("/"), *parts]) if container else os.path.join(base, *parts)
+    return found
+
+
+def deprecations(config: Config | None) -> list[str]:
+    """The old path keys this config still sets, each with what replaced it: they are read, with this warning, for
+    one more release."""
+    if config is None:
+        return []
+    warnings = []
+
+    def where(dotted: str) -> str:
+        origin = config.origin(dotted)
+        return f"{origin}: " if origin else ""
+
+    for name, root in (config.table("paths").get("roots") or {}).items():
+        if not isinstance(root, dict):
+            continue
+        if name == OUT_ROOT and not config.get("paths.out"):
+            warnings.append(f"{where(f'paths.roots.{name}.host')}[paths.roots.{name}] is the old spelling of the out "
+                            f"root: write [paths] out = {str(root.get('host', ''))!r} instead (read for one more "
+                            "release)")
+        if root.get("container"):
+            warnings.append(f"{where(f'paths.roots.{name}.container')}paths.roots.{name}.container: container paths "
+                            f"are derived (/mnt/{name}); remove the key (read for one more release)")
+    for key, names in OLD_FOLDER_KEYS.items():
+        for dotted in names:
+            if config.get(dotted):
+                below = "/".join(OUT_FOLDERS[key])
+                warnings.append(f"{where(dotted)}{dotted}: this folder is <out>/{below}, named once by [paths] out; "
+                                "remove the key (read for one more release)")
+    return warnings
+
+
 def flatten(values: dict, prefix: str = "") -> dict[str, object]:
     out = {}
     for key, value in values.items():

@@ -60,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
                  stdout_level=core["logging"]["stdout_level"], color=core["logging"]["color"])
     workbench = Workbench(settings, modules, hub=hub, host_client=HostClient.from_settings(settings))
     workbench.reloader = lambda: load(args.config)[0]
+    for warning in settings.warnings:  # old keys, read for one more release
+        hub.warning(f"config: {warning}")
     for name in sorted(workbench.registry):
         entry = workbench.registry[name]
         if entry.activation.active:

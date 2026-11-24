@@ -6,7 +6,7 @@
     wb store add <file> --as <label> --source <where> --reason <why>
                                                        keep bytes no container can build, with where they came from
 
-The Store is [modules.ci] store in machine config (an rw root's folder, so the host reads it)."""
+The Store is <out>/store, under [paths] out in machine config (the rw root, so the host reads it)."""
 
 from __future__ import annotations
 
@@ -18,16 +18,14 @@ from .workspace import Workspace, WorkspaceError, git
 
 
 def _root(workspace: Workspace) -> Path:
-    configured = workspace.ci.get("store")
-    if not configured:
-        raise WorkspaceError("modules.ci.store is not set, so the host cannot read the Store (set it to a folder in an "
-                             "rw root, such as the out root's store)")
-    return workspace.host_path(str(configured))
+    root = workspace.store_root()
+    if root is None:
+        raise WorkspaceError("[paths] out is not set, so the host cannot read the Store (<out>/store)")
+    return root
 
 
 def _pins(workspace: Workspace) -> Path | None:
-    configured = workspace.ci.get("pin_cache")
-    return workspace.host_path(str(configured)) if configured else None
+    return workspace.folder("pin_cache")
 
 
 def _resolve(workspace: Workspace, project: str | None, ref: str | None):

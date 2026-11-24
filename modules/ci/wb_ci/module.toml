@@ -11,11 +11,11 @@ excludes = { type = "list", items = "string", default = [], summary = "ignore pa
 tool_env = { type = "object", default = {}, summary = "environment for ci.scrub and ci.actions, the absorbed tools: e.g. ORTHRUS_SCRUB_TERMS_FILE and ORTHRUS_SCRUB_RULES_FILE, a private terms file and rules file kept in the machine's config folder (in the container under /etc/wb), never in a repository" }
 git_config = { type = "object", default = {}, summary = "the host's system and global git settings a working-tree run applies, by key (core.autocrlf, ...), for a container that cannot read them; the repository's own config still wins. Empty: git's own config" }
 workdir = { type = "string", default = "", summary = "where clean trees are built; empty: <state>/ci/trees" }
-records = { type = "string", default = "", summary = "where run records are kept, one folder per project; inside an rw root, given to Workbench's user at container start; empty: <state>/ci/records" }
+records = { type = "string", default = "", summary = "old: CI's records are <out>/ci/records under [paths] out; read for one more release (a container path in an rw root), then the key goes; empty: <out>/ci/records, or <state>/ci/records without [paths] out" }
 gradle_home = { type = "string", default = "", summary = "a Gradle home that survives the container, whose init.d serves toolchain's rescue repository and substitutions to every build (written each run); empty: <state>/cache/gradle" }
-store = { type = "string", default = "", summary = "the Store: what producing jobs built, by SHA-256 and by project and tree; inside an rw root, given to Workbench's user at container start; empty: <state>/store" }
+store = { type = "string", default = "", summary = "old: the Store (what producing jobs built, by SHA-256 and by project and tree) is <out>/store under [paths] out; read for one more release, then the key goes; empty: <out>/store, or <state>/store without [paths] out" }
 store_hosts = { type = "list", items = "string", default = [], summary = "the hosts a URL the Set names may be fetched from (platform JDKs, Gradle, third-party files); a URL on any other host is refused" }
-pin_cache = { type = "string", default = "", summary = "the shared cache of pinned files by SHA-256 (WB_PIN_CACHE in every job); inside an rw root, given to Workbench's user at container start; empty: <state>/cache/pins" }
+pin_cache = { type = "string", default = "", summary = "old: the pin cache (pinned files by SHA-256, WB_PIN_CACHE in every job) is <out>/cache/pins under [paths] out; read for one more release, then the key goes; empty: <out>/cache/pins, or <state>/cache/pins without [paths] out" }
 python_cache = { type = "string", default = "", summary = "where projects' Python environments are cached by requirements; empty: <state>/cache/python" }
 
 [[command]]

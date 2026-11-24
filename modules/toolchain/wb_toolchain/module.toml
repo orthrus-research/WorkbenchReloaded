@@ -4,7 +4,7 @@ version = "0.1.0"
 summary = "JDKs, pinned inputs, dependency repair and the rescue repository."
 
 [config]
-pin_cache = { type = "string", default = "", summary = "the folder of pinned files by SHA-256 vast.lab-inputs reads first and fills after, when WB_PIN_CACHE is unset; inside an rw root, given to Workbench's user at container start; empty: <state>/cache/pins, as ci" }
+pin_cache = { type = "string", default = "", summary = "old: the pin cache vast.lab-inputs reads first and fills after (when WB_PIN_CACHE is unset) is CI's, <out>/cache/pins under [paths] out; read for one more release, then the key goes; empty: CI's pin cache" }
 repository = { type = "string", default = "", summary = "the rescue repository, a Maven layout folder of coordinates public repositories no longer serve: a host path under a configured root (the out root), so builds on the host can read it too, or a folder only the container has; empty: <state>/toolchain/repository" }
 substitutions = { type = "object", default = {}, summary = "vanished coordinates and the coordinates every build gets instead, \"group:artifact:version\" = \"group:artifact:version\"; a plugin marker's coordinates (<id>:<id>.gradle.plugin:<version>) name the plugin request id '<id>' version '<version>' (see wb_toolchain/repository.py)" }
 

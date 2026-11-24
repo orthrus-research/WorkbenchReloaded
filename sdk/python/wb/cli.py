@@ -405,6 +405,8 @@ def cmd_config(args) -> int:
     if args.local:
         config = wbconfig.load()
         values, origins = config.values, config.origins
+        for warning in wbconfig.deprecations(config):  # old keys, read for one more release
+            print(f"wb: config: {warning}", file=sys.stderr)
     else:
         body = _client().config(origin=args.origin)
         values, origins = body["values"], body.get("origins", {})
@@ -479,6 +481,8 @@ def cmd_status(args) -> int:
             lines.append(f"  stalled: {item['job']}: {item['reason']}")
         for module, hook in (health.get("hooks_failed") or {}).items():
             lines.append(f"  start-up hook of {module} failed: {hook.get('summary')}")
+        for warning in health.get("config_warnings") or []:
+            lines.append(f"  config: {warning}")
         print("\n".join(lines))
     return 0
 

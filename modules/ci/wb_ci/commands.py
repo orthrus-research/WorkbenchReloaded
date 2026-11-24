@@ -62,9 +62,11 @@ def _state() -> Path:
 
 
 def _folder(ctx: Context, key: str, default: Path) -> Path:
-    """A folder ``[modules.ci]`` names, else its default in Workbench's state. On the host (ci.host-run) a configured
-    container path is translated back through the machine's roots, and a default is under the lab home's
-    ``wb-state``, since the container's state is not the host's to write; the records must be reachable from both."""
+    """A folder of ci's, else its default in Workbench's state. The Store, the records and the pin cache are folders
+    under [paths] out, which the daemon gives this module as its ``store``, ``records`` and ``pin_cache`` (the old
+    keys of the same names, when set, for one more release). On the host (ci.host-run) a container path is
+    translated back through the machine's roots, and a default is under the lab home's ``wb-state``, since the
+    container's state is not the host's to write; the records must be reachable from both."""
     value = ctx.config.get(key)
     if ctx.machine != "host":
         return Path(value) if value else default
@@ -72,9 +74,9 @@ def _folder(ctx: Context, key: str, default: Path) -> Path:
     if found is not None:
         return found
     if key == "records":
-        where = f"= {str(value)!r} is under no root this host has" if value else "is not set"
-        raise EnvironmentProblem(f"[modules.ci] records {where}, so a host check's pass would be kept where ci.run "
-                                 "never looks; set it to a folder in an rw root (the out root's ci/records)")
+        where = f"{str(value)!r} is under no root this host has" if value else "are nowhere"
+        raise EnvironmentProblem(f"CI's records {where}, so a host check's pass would be kept where ci.run never "
+                                 "looks; set [paths] out, the read-write root they are kept in (<out>/ci/records)")
     return _host_state(ctx) / default.relative_to(_state())
 
 
