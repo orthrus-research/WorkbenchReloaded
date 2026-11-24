@@ -151,7 +151,7 @@ def cmd_run(args) -> int:
         return 2
     params = parse_params(args.params, described.get("params"))
     out = str(Path(args.out).resolve()) if args.out and not os.path.isabs(args.out) else args.out
-    job = client.submit(args.command, params, out=out, fresh=args.fresh)
+    job = client.submit(args.command, params, out=out, fresh=args.fresh, locks=list(args.lock or []))
     if args.detach:
         print(job.id if not args.json else json.dumps(job.envelope, indent=1))
         return 0
@@ -602,6 +602,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("params", nargs="*", metavar="key=value")
     p.add_argument("--out")
     p.add_argument("--fresh", action="store_true")
+    p.add_argument("--lock", action="append", metavar="NAME",
+                   help="a named lock the job takes beside its command's own, all or none (repeatable)")
     p.add_argument("--detach", action="store_true")
     p.add_argument("--quiet", action="store_true", help="print nothing but the result: no job id, no progress")
     p.add_argument("--timeout")

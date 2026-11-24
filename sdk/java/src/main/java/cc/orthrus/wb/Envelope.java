@@ -70,7 +70,12 @@ public final class Envelope {
         return Json.asString(raw.get("caller"));
     }
 
-    /** why a queued job has not started: budget, behind <job>, gpu or lock <name> held by <job>, quiet, approval */
+    /** the named locks the submit asked for, taken with the command's own, all or none */
+    public java.util.List<Object> locks() {
+        return Json.asList(raw.get("locks"));
+    }
+
+    /** why a queued job has not started: budget, behind <job>, gpu or lock <name> held by <job> (with every lock it takes, all or none, and those its submit asked for), quiet, approval */
     public java.util.Map<String, Object> waiting() {
         return Json.asMap(raw.get("waiting"));
     }

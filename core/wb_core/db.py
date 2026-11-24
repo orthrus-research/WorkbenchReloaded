@@ -89,6 +89,8 @@ CORE_SCHEMA = [
     "ALTER TABLE job ADD COLUMN parent TEXT;",
     # 4: a label the submitter gives itself (WB_CALLER), shown and filtered on, never enforced
     "ALTER TABLE job ADD COLUMN caller TEXT;",
+    # 5: the named locks a submit asked for, taken with its command's own, all or none (a JSON list)
+    "ALTER TABLE job ADD COLUMN locks TEXT;",
 ]
 
 

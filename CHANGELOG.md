@@ -8,7 +8,9 @@
   logs with a JSONL sidecar; retention.
 - Admission that cannot deadlock: a running job's descendants go ahead of the queue, a job that ends cancels
   them, every queued job says why it waits (`waiting` in the envelope), health names stalled jobs. Commands may
-  declare named locks and `quiet_if` params, and `inline` commands a running job calls in its own reservation.
+  declare named locks and `quiet_if` params, and `inline` commands a running job calls in its own reservation. A
+  submit may ask for more locks (`wb run --lock <name>`, `locks` in `POST /v1/jobs`), taken with the command's all
+  or none; a lock wait names every lock the job takes and those its submit asked for (`locks` in the envelope).
 - A tool runs until its process exits, not its pipe; deadlines fire without output; nothing a job started
   outlives it (a Job Object on Windows, a child subreaper on Linux); a run stopped at its limit is a finding with
   reason kind timeout, never cached.

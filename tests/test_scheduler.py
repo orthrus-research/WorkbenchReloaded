@@ -48,6 +48,24 @@ class Admission(unittest.TestCase):
             result = job.result(timeout=120)
             self.assertEqual((result.outcome, result.data.inner_outcome), ("ok", "ok"), result.summary)
 
+    def test_locks_asked_at_submit_are_taken_all_or_none(self):
+        from wb.client import WbError
+        holder = self.c.submit("selftest.sleep", {"seconds": "3s"}, locks=["instance:demo"])
+        until(lambda: holder.refresh().state == "running", 20)
+        self.assertEqual(holder.refresh().get("locks"), ["instance:demo"])
+        both = self.c.submit("selftest.echo", {"text": "both"}, locks=["set", "instance:demo", "set"])
+        reason = until(lambda: (both.refresh().get("waiting") or {}).get("reason"), 20)
+        self.assertEqual(reason, f"lock instance:demo held by {holder.id} (it takes instance:demo, set, all or none; "
+                                 "asked at submit: instance:demo, set)")
+        self.assertEqual(both.refresh().get("locks"), ["instance:demo", "set"])
+        self.assertEqual(both.result(timeout=60).outcome, "ok")
+        self.assertEqual(holder.result(timeout=60).outcome, "ok")
+        self.assertEqual(self.c.submit("selftest.echo", {"text": "none"}).refresh().get("locks"), [])
+        with self.assertRaises(WbError) as raised:
+            self.c.submit("selftest.echo", {"text": "bad"}, locks=["../x"])
+        self.assertEqual(raised.exception.status, 400)
+        self.assertIn("is not a lock name", str(raised.exception))
+
     def test_a_queued_job_says_why_it_waits(self):
         holders = [self.c.submit("selftest.nest", {"text": f"h{n}", "hold": "4s"}) for n in range(3)]
         waiting = self.c.submit("selftest.nest", {"text": "w", "hold": "0s"})
@@ -183,6 +201,15 @@ class Rules(unittest.TestCase):
         self.assertEqual(service._blocker("container", 1.0, 1.0, set(), False, None, locks),
                          "lock project:demo held by j1")
         self.assertIsNone(service._blocker("container", 1.0, 1.0, set(), False, None, {"project:other"}))
+
+    def test_a_submits_own_locks_are_named_with_the_rest_when_it_waits(self):
+        service = self.service()
+        service.running = {"j1": Running("j1", "container", 1.0, 1.0, set(), False, {"gradle-home"})}
+        self.assertEqual(service._blocker("container", 1.0, 1.0, set(), False, None, {"set", "gradle-home"},
+                                          {"gradle-home"}),
+                         "lock gradle-home held by j1 (it takes gradle-home, set, all or none; asked at submit: "
+                         "gradle-home)")
+        self.assertIsNone(service._blocker("container", 1.0, 1.0, set(), False, None, {"set"}, {"set"}))
 
     def test_an_open_game_no_longer_blocks_the_machine(self):
         service = self.service()

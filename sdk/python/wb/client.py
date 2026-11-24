@@ -167,10 +167,13 @@ class Client:
         return self.request("GET", "/v1/commands/" + urllib.parse.quote(name))
 
     def submit(self, command: str, params: dict | None = None, *, out: str | None = None,
-               fresh: bool = False, idempotency_key: str | None = None) -> "Job":
+               fresh: bool = False, idempotency_key: str | None = None, locks: list[str] | None = None) -> "Job":
+        """Submits a job. ``locks`` names locks the job takes beside its command's own, all or none."""
         body = {"command": command, "params": params or {}, "fresh": fresh, "path_style": self.path_style}
         if out:
             body["out"] = str(out)
+        if locks:
+            body["locks"] = list(locks)
         key = idempotency_key or uuid.uuid4().hex
         headers = {"Idempotency-Key": key}
         if os.environ.get("WB_JOB"):  # submitted from inside a job: the scheduler must not make it wait on us

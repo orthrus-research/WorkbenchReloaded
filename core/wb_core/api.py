@@ -201,7 +201,7 @@ def submit(h: Handler, query):
     body = h._body()
     if not body.get("command"):
         raise ApiError(400, "command is required")
-    unknown = set(body) - {"command", "params", "out", "fresh", "path_style"}
+    unknown = set(body) - {"command", "params", "out", "fresh", "path_style", "locks"}
     if unknown:
         raise ApiError(400, f"unknown fields {sorted(unknown)}")
     _same_code(h)
@@ -209,7 +209,8 @@ def submit(h: Handler, query):
                                          fresh=bool(body.get("fresh")),
                                          path_style=body.get("path_style", "windows"),
                                          idempotency_key=h.headers.get("Idempotency-Key"),
-                                         parent=h.headers.get("X-Wb-Parent"), caller=h.headers.get("X-Wb-Caller"))
+                                         parent=h.headers.get("X-Wb-Parent"), caller=h.headers.get("X-Wb-Caller"),
+                                         locks=body.get("locks"))
     h._send(202, envelope, {"Location": f"/v1/jobs/{envelope['job']}"})
 
 
