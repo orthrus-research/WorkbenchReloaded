@@ -1,9 +1,12 @@
-# Workbench's own checks: its test suite (tests/run_all.py, which wb deploy runs whole) in its four parts.
+# Workbench's own checks: its test suite (tests/run_all.py, which wb deploy runs whole) in its four parts. The core
+# and module suites drive the Windows host (its paths, processes and the host runner), so they are host checks, which
+# wb check core modules runs on the host and wb deploy runs before every release; the gate is the two that run anywhere.
 schema = 1
-gate = ["generated", "core", "modules", "engine"]
+gate = ["generated", "engine"]
 
 [project]
 name = "workbench"
+python = ["tests/requirements.txt"]
 
 [checks.generated]
 description = "lock files, the SDKs' envelope types and the command tables match their sources"
@@ -15,10 +18,12 @@ inputs = ["image/*.py", "image/*.toml", "image/*.lock", "image/*.txt", "schema/*
 
 [checks.core]
 description = "the core, the CLI and the host runner (tests/)"
+on = "host"
 steps = [["{python}", "-B", "tests/run_all.py", "--part", "core"]]
 
 [checks.modules]
 description = "every module's own tests"
+on = "host"
 steps = [["{python}", "-B", "tests/run_all.py", "--part", "modules"]]
 
 [checks.engine]

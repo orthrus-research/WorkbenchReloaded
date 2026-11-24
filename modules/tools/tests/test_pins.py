@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,6 +32,11 @@ class PinsTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
+        # The machine's shared pin cache (a CI step always has one) is not these tests' to read: a file kept there
+        # would answer a fetch the test expects to download.
+        cache = os.environ.pop(pins.CACHE_ENV, None)
+        if cache is not None:
+            self.addCleanup(os.environ.__setitem__, pins.CACHE_ENV, cache)
 
     def tearDown(self):
         self.temporary.cleanup()

@@ -1,0 +1,3 @@
+# What Workbench's own checks need beyond the standard library, at the versions its image carries.
+numpy==2.3.5
+pillow==12.1.1
