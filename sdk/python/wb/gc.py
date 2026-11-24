@@ -23,6 +23,8 @@ The classes (``RULES`` here and the daemon's ``wb_core.retention.DAEMON_RULES``)
 Roots, which no class ever removes or lists:
 
 - a pass record: a run's summary.json that records a passed check, and every run a pass cache entry names;
+- the Store's pass and gate records (passes/<project>/<tree>/<check>.<key>.json, gate/<project>/<tree>.json), never
+  removed by age, every SHA-256 they name and every run folder a pass record names;
 - every set export (<out>/sets/<revision>/set.json) and every SHA-256 any of them names: lines, holds, third
   entries, platform files;
 - the Store's index entries and the files they name, seeded entries and their files, landing records and what
@@ -74,7 +76,8 @@ RULES = [
     Rule("ci.copies", "a run's copy of an artifact (<run>/<check>/artifacts/<file>) whose bytes the Store keeps "
          "under the same name and SHA-256, once the run is [core.retention] days old", True),
     Rule("store.files", "a Store file (files/<sha256>/) that no index entry, set export, seeded entry, landing "
-         "record or kept session names, untouched for a day; a partial write (.part) a day old", True),
+         "record, pass or gate record or kept session names, untouched for a day; a partial write (.part) a day old",
+         True),
     Rule("releases", "a release folder other than the one in service and the one deployed before it", True),
     Rule("lab.instances", "an instance lab.build made (it holds instance.json) that no kept session names, unused "
          "for [core.retention] days", False, lab=True),
@@ -96,7 +99,7 @@ class GcError(Exception):
 
 @dataclass
 class Places:
-    store: Path | None = None            # the Store: files/, index/, seeded/, landings/
+    store: Path | None = None            # the Store: files/, index/, seeded/, landings/, passes/, gate/
     records: Path | None = None          # CI's run records: <records>/<project>/<run>/
     sets: Path | None = None             # set exports: <sets>/<revision>/set.json
     out: Path | None = None              # the out folder sessions live under
@@ -231,7 +234,34 @@ def _store_hexes(store: Path | None) -> set[str]:
             found |= _hexes(_json(path))
             if folder == "seeded":
                 found.add(path.stem)
+    for path in _pass_records(store):  # pass and gate records: every file a pass vouched for
+        found |= _hexes(_json(path)) or set()
     return found
+
+
+def _pass_records(store: Path | None) -> list[Path]:
+    """The Store's pass records (passes/<project>/<tree>/<check>.<key>.json) and gate records
+    (gate/<project>/<tree>.json)."""
+    if store is None:
+        return []
+    found = []
+    for folder, pattern in (("passes", "*/*/*.json"), ("gate", "*/*.json")):
+        if (store / folder).is_dir():
+            found += sorted(p for p in (store / folder).glob(pattern) if p.is_file() and not is_link(p))
+    return found
+
+
+def _recorded_runs(store: Path | None, records: Path | None) -> set[Path]:
+    """The run folders the Store's pass records name (<records>/<project>/<run>)."""
+    needed = set()
+    if records is None:
+        return needed
+    for path in _pass_records(store):
+        data = _json(path) or {}
+        run, project = data.get("run"), data.get("project")
+        if isinstance(run, str) and run and isinstance(project, str) and project:
+            needed.add(records / project / run)
+    return needed
 
 
 def _pass_runs(records: Path | None) -> set[Path]:
@@ -257,7 +287,8 @@ def _pass_runs(records: Path | None) -> set[Path]:
 
 def roots(places: Places) -> Roots:
     kept = kept_roots(places.out, places.lab_home)
-    return Roots(_set_hexes(places) | _store_hexes(places.store) | kept.sha256, kept, _pass_runs(places.records))
+    return Roots(_set_hexes(places) | _store_hexes(places.store) | kept.sha256, kept,
+                 _pass_runs(places.records) | _recorded_runs(places.store, places.records))
 
 
 # ---------------------------------------------------------------------------------------------------------------

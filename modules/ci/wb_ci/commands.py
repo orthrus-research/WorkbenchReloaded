@@ -424,6 +424,39 @@ def _stand_ins(ctx: Context, work: Path, wanted: dict) -> list[str]:
     return args
 
 
+def _tools_wanted(config) -> dict[str, set[str]]:
+    """Each project whose tree lends this config's checks files (tools = ['<project>:<glob>']), with its globs."""
+    wanted: dict[str, set[str]] = {}
+    for job in config.jobs.values():
+        for item in job.get("tools") or []:
+            project, glob = str(item).split(":", 1)
+            wanted.setdefault(project, set()).add(glob)
+    return wanted
+
+
+def _tools_commits(ctx: Context, projects, lines: dict, revision: str = "") -> dict[str, str]:
+    """The commit each project's files are lent from: its line's in the set (``lines``), else, for a project with no
+    line, its branch in its home repository (origin's when it has a remote, never whatever its home checkout happens
+    to have checked out), which the run's log names."""
+    found = {}
+    for project in sorted(projects):
+        entry = _project(ctx, project)
+        source = entry["source"]
+        line = lines.get(project)
+        if line:
+            found[project] = _resolve(ctx, source, line["commit"])
+            continue
+        branch = str(entry.get("branch") or "main")
+        git_dir = str(_git_dir(ctx, source))
+        ref = next((r for r in (f"refs/remotes/origin/{branch}", f"refs/heads/{branch}", "HEAD")
+                    if _git(ctx, ["--git-dir", git_dir, "rev-parse", "--verify", "-q", f"{r}^{{commit}}"],
+                            check=False)), "HEAD")
+        found[project] = _resolve(ctx, source, ref)
+        ctx.log.info(f"tools: {project} has no line in the set {revision[:12] or '(none)'}; {ref} at "
+                     f"{found[project][:12]}")
+    return found
+
+
 def _tools(ctx: Context, config, work: Path, revision: str) -> dict[str, str]:
     """Files a check reads from another project's tree (tools = ['<project>:<glob>']), exported at the commit the
     run's set names for that project (a project with no line: its branch in its home repository), into the folder beside the
@@ -433,11 +466,7 @@ def _tools(ctx: Context, config, work: Path, revision: str) -> dict[str, str]:
     import io
     import tarfile
     from wb_core import setfile
-    wanted: dict[str, set[str]] = {}
-    for job in config.jobs.values():
-        for item in job.get("tools") or []:
-            project, glob = str(item).split(":", 1)
-            wanted.setdefault(project, set()).add(glob)
+    wanted = _tools_wanted(config)
     if not wanted:
         return {}
     sets = _store_root(ctx).parent / "sets"
@@ -446,23 +475,11 @@ def _tools(ctx: Context, config, work: Path, revision: str) -> dict[str, str]:
         lines = (setfile.read_export(sets, revision).get("projects") or {}) if revision else {}
     except setfile.SetError as error:
         raise EnvironmentProblem(f"tools: the set {revision[:12]} cannot be read: {error}") from None
+    commits = _tools_commits(ctx, wanted, lines, revision)
     laid = {}
     for project, globs in sorted(wanted.items()):
-        line = lines.get(project)
-        entry = _project(ctx, project)
-        source = entry["source"]
-        if line:
-            sha = _resolve(ctx, source, line["commit"])
-        else:
-            # A project with no line follows its branch in its home repository (origin's when it has a remote, never
-            # whatever its home checkout happens to have checked out), and the run says which commit.
-            branch = str(entry.get("branch") or "main")
-            git_dir = str(_git_dir(ctx, source))
-            ref = next((r for r in (f"refs/remotes/origin/{branch}", f"refs/heads/{branch}", "HEAD")
-                        if _git(ctx, ["--git-dir", git_dir, "rev-parse", "--verify", "-q", f"{r}^{{commit}}"],
-                                check=False)), "HEAD")
-            sha = _resolve(ctx, source, ref)
-            ctx.log.info(f"tools: {project} has no line in the set {revision[:12] or '(none)'}; {ref} at {sha[:12]}")
+        source = _project(ctx, project)["source"]
+        sha = commits[project]
         git_dir = str(_git_dir(ctx, source))
         names = _git(ctx, ["--git-dir", git_dir, "ls-tree", "-r", "--name-only", sha]).splitlines()
         chosen = sorted(n for n in names if any(fnmatch.fnmatchcase(n, g) for g in globs))
@@ -481,18 +498,11 @@ def _tools(ctx: Context, config, work: Path, revision: str) -> dict[str, str]:
     return laid
 
 
-def _set_identity(ctx: Context, config, revision: str) -> dict[str, str]:
-    """For a project that builds from a set (project.toml): WB_SET_IDENTITY, a digest of the set's platform and of the
-    lines, holds and third entries the project uses, and WB_JDK_IDENTITY, a digest of the platform's JDK builds. Empty
-    for a project still on actions.toml, or with no set revision."""
+def _identity_of(config, doc: dict, tools: dict[str, str] | None = None) -> dict[str, str]:
+    """WB_SET_IDENTITY, a digest of the set's platform and of the lines, holds and third entries the project uses
+    (and, when its checks read another project's files, the commits those come from), and WB_JDK_IDENTITY, a digest
+    of the platform's JDK builds, for a project.toml config under the set ``doc``."""
     import hashlib
-    from wb_core import setfile
-    if config.path.name != engine.PROJECT_FILE or not revision:
-        return {}
-    try:
-        doc = setfile.read_export(_store_root(ctx).parent / "sets", revision)
-    except setfile.SetError:
-        return {}
     uses = set((config.data.get("uses") or {}).keys())
     lines = {n: line for n, line in (doc.get("projects") or {}).items() if n in uses}
     thirds = {n: entry for n, entry in (doc.get("third") or {}).items() if n in uses}
@@ -503,8 +513,34 @@ def _set_identity(ctx: Context, config, revision: str) -> dict[str, str]:
     def digest(value) -> str:
         return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
-    return {"WB_SET_IDENTITY": digest({"platform": platform, "lines": lines, "holds": holds, "third": thirds}),
-            "WB_JDK_IDENTITY": digest(platform.get("jdk") or {})}
+    parts = {"platform": platform, "lines": lines, "holds": holds, "third": thirds}
+    if tools:  # left out when there are none, so a project that reads no other tree keeps the identity it had
+        parts["tools"] = dict(sorted(tools.items()))
+    return {"WB_SET_IDENTITY": digest(parts), "WB_JDK_IDENTITY": digest(platform.get("jdk") or {})}
+
+
+def _set_identity(ctx: Context, config, revision: str, tools: dict[str, str] | None = None) -> dict[str, str]:
+    """For a project that builds from a set (project.toml): its identities under the set ``revision`` (_identity_of),
+    ``tools`` being the commits its checks' tools files came from. Empty for a project still on actions.toml, or
+    with no set revision."""
+    from wb_core import setfile
+    if config.path.name != engine.PROJECT_FILE or not revision:
+        return {}
+    try:
+        doc = setfile.read_export(_store_root(ctx).parent / "sets", revision)
+    except setfile.SetError:
+        return {}
+    return _identity_of(config, doc, tools)
+
+
+def pass_keys(ctx: Context, config, tree: str, doc: dict, revision: str = "") -> tuple[str, dict[str, str]]:
+    """The set identity of a project.toml config under the set ``doc``, and the key ({check: key}) each of its
+    container checks has on ``tree`` there: what a run against that set files its pass records under."""
+    from wb_core import passes
+    tools = _tools_commits(ctx, _tools_wanted(config), doc.get("projects") or {}, revision)
+    identity = _identity_of(config, doc, tools)["WB_SET_IDENTITY"]
+    return identity, {check: passes.key(check, tree, identity) for check, job in config.jobs.items()
+                      if not engine.on_host(job)}
 
 
 def _gradle_launcher(ctx: Context, work: Path, revision: str, extra: list | None = None) -> tuple[Path, str]:
@@ -605,9 +641,14 @@ def _environment(ctx: Context, entry: dict, config, root: Path, work: Path, set:
     pins = _folder(ctx, "pin_cache", _state() / "cache" / "pins")
     pins.mkdir(parents=True, exist_ok=True)
     gradle_home, served = _gradle_home(ctx)
+    from wb_core import setfile
     launcher, set_revision, gradle_opts = _gradle_launcher(ctx, work, set, _stand_ins(ctx, work, stand_ins or {}))
-    tools = _tools(ctx, config, work, set_revision or set)
-    identities = _set_identity(ctx, config, set_revision or set)
+    # The revision the run's set identity and tools are read from: the one {gradle} builds against, else the one asked
+    # for, else the head wb last exported (as set.land and set.reach read it, so their keys are this run's).
+    revision = set_revision or set or setfile.read_head(_store_root(ctx).parent / "sets") or ""
+    set_revision = set_revision or revision
+    tools = _tools(ctx, config, work, revision)
+    identities = _set_identity(ctx, config, revision, tools)
     identity = {"set": identities.get("WB_SET_IDENTITY", ""), "jdk": identities.get("WB_JDK_IDENTITY", ""),
                 # a pure check's key covers the files it reads from another project, as laid out here
                 "tools": {p: str(work / _project(ctx, p)["source"].name) for p in tools}}
@@ -681,6 +722,11 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
         document = _engine(ctx, root, jobs_file, options, prepared["env"], prepared["python"],
                            identity=prepared["identity"])
         _failing_tails(ctx, (document.get("result") or {}).get("jobs") or {})
+        # The tree the run vouches for: the engine's record of it, or, when every check had passed already and the
+        # engine ran nothing, the clone's.
+        tested = (document.get("result") or {}).get("trees") or {}
+        own_tree = tested.get(config.tested[0].name) if tested else (
+            None if stand_ins or dry_run else engine.working_tree(root, records, {**os.environ, **GIT_SAFE}))
     finally:
         if not keep:
             shutil.rmtree(work, ignore_errors=True)
@@ -699,10 +745,59 @@ def run(ctx: Context, project: str, commit: str, workflow: str, jobs: list, if_n
     failed = [n for n, j in jobs_done.items() if j.get("status") == "failed"]
     passed = [n for n, j in jobs_done.items() if j.get("status") == "passed"]
     trees = result.get("trees") or {}
+    recorded = {} if result.get("treesChanged") or stand_ins or dry_run or not own_tree else _record_passes(
+        ctx, project, sha, own_tree, config, prepared["identity"].get("set") or "", set_revision, jobs_done,
+        list(result.get("alreadyPassed") or []), run_id)
     _conclude(ctx, project, sha, document, jobs_done, passed)
     return {"project": project, "commit": sha, "worktree": worktree, "pinned": pinned, "run": run_id,
             "trees": trees, "passed": passed, "failed": failed, "repository": served, "stored": stored,
-            "engine": result, "set": set_revision, "stand_ins": dict(stand_ins or {}), "tools": tools}
+            "engine": result, "set": set_revision, "stand_ins": dict(stand_ins or {}), "tools": tools,
+            "passes": recorded.get("passes", {}), "gate": recorded.get("gate")}
+
+
+def _record_passes(ctx: Context, project: str, sha: str, tree: str, config, identity: str, revision: str,
+                   jobs_done: dict, already: list, run_id: str | None) -> dict:
+    """Writes the Store's pass record of each check that passed (or had passed for these trees already, which the
+    engine read from CI's run summaries) under its key, and the tree's gate record once every gate check has one
+    under this set identity. Only for a project.toml project: a commit on actions.toml is judged by its run
+    summaries."""
+    from wb_core import passes, setfile
+    if config.path.name != engine.PROJECT_FILE:
+        return {}
+    root = _store_root(ctx)
+    try:
+        platform = setfile.read_export(root.parent / "sets", revision).get("platform") or {} if revision else {}
+    except setfile.SetError:
+        platform = {}
+    jdks = {str(major): str((jdk or {}).get("build") or "") for major, jdk in (platform.get("jdk") or {}).items()}
+    written = {}
+    for name in [*[n for n, j in jobs_done.items() if j.get("status") == "passed"], *already]:
+        if name in written or engine.on_host(config.jobs.get(name) or {}):
+            continue
+        job = jobs_done.get(name) or {}
+        digest = passes.key(name, tree, identity)
+        record = {"commit": sha, "set": revision, "identity": identity, "job": ctx.job,
+                  "run": job.get("cached") or (run_id if name in jobs_done else None),
+                  "artifacts": {f: {"sha256": item["sha256"], "file": f} for f, item in (job.get("artifacts") or {}).items()},
+                  "jdks": jdks, "runner": os.environ.get("WB_IMAGE_DIGEST") or ""}
+        if name not in jobs_done:
+            record["vouched_by"] = "an earlier run's summary in CI's records"
+        try:
+            passes.write(root, project, tree, name, digest, record)
+        except (OSError, passes.PassError) as error:
+            ctx.reason("store", name, f"no pass record written: {error}", None)
+            continue
+        written[name] = digest
+    required = config.required()
+    keys = {check: passes.key(check, tree, identity) for check in required}
+    gate = None
+    if passes.passed(root, project, tree, keys) == set(required):
+        passes.write_gate(root, project, tree, {"commit": sha, "set": revision, "identity": identity,
+                                                "checks": keys, "job": ctx.job})
+        gate = str(tree)
+        ctx.log.info(f"{project} tree {tree[:12]}: every gate check has passed under set {revision[:12] or '(none)'}"
+                     "; the gate record is in the Store")
+    return {"passes": written, "gate": gate}
 
 
 def _conclude(ctx: Context, project: str, sha: str, document: dict, jobs_done: dict, passed: list):
