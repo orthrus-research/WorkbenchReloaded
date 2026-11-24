@@ -91,8 +91,8 @@ file names checked out at the commit the project pins. The checkouts are only re
 `ci.hook project=NAME` installs a pre-push hook that refuses a commit whose tree has not passed. `commit=worktree`
 runs the checkout's working tree as it would be committed. Projects are declared in `[modules.ci.projects]`.
 A run's summary keeps each check's and step's time and peak memory (`peakRssBytes`: the most resident memory the
-step's process tree, a Gradle daemon included, held at once, sampled every half second while it ran), and `wb show`
-prints them under the job.
+step's process tree held at once, sampled every half second while it ran; a Gradle daemon counts, the step's own or
+one it reuses), and `wb show` prints them under the job.
 
 Host checks (`on = "host"`, `gpu = true` in project.toml) run only when named and only for a project in the machine's
 `[lab] trusted`: `wb check gl` sends them to `ci.host-run`, which runs them natively from a clean clone on the host,

@@ -213,7 +213,9 @@ A step's `peakRssBytes` is the most resident memory its process tree held at onc
 process, what it started and, on Linux, the rest of the session it leads (so a Gradle daemon
 counts), summed every half second while it ran, and never less than the largest high-water mark
 any one of them reported. On Windows the step is put in a Job Object (no limits, no kill on
-close) whose members are the tree. Where it cannot be read the key is absent.
+close) whose members are the tree. A JVM the step did not start but is connected to over TCP on
+this machine (a Gradle daemon an earlier step started and this one reuses) counts with its
+descendants while the connection lasts. Where it cannot be read the key is absent.
 
 A job's `artifacts` are glob patterns (relative to the root, or absolute; `**` crosses folders)
 for the files it builds. Once its steps pass, each match is copied to

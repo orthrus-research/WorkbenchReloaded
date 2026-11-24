@@ -128,8 +128,9 @@
   identities from WB_SET_IDENTITY, WB_JDK_IDENTITY and WB_TOOLS_ROOTS.
 - Each check's and step's peak memory in the run summary (`peakRssBytes`): the most resident memory the step's
   process tree held at once, sampled while it ran from `/proc` (the step's descendants and its session, so a Gradle
-  daemon counts) or, on Windows, a Job Object the step is put in; `wb show` prints it per check and step, and
-  `timing.md` has a column for it.
+  daemon counts) or, on Windows, a Job Object the step is put in, and a JVM the step reuses over a local TCP
+  connection (an earlier step's Gradle daemon); `wb show` prints it per check and step, and `timing.md` has a
+  column for it.
 - `[paths]` names each folder once, as the host names it: `out` (the read-write root, mounted at `/mnt/out`, holding
   the Store, the run records and the one pin cache as `store`, `ci/records` and `cache/pins`), `releases`, `backup`
   and `[paths.roots]` for the rest, each mounted at `/mnt/<name>`. The old spellings, `[paths.roots.out]`, a root's
