@@ -59,6 +59,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
+from wb_core import process as owned_processes
 from wb_core.module import Cancelled, Context, EnvironmentProblem, ParamError, sha256_file
 
 from . import channel as channels
@@ -299,14 +300,12 @@ def set_key(text: str, key: str, value: str, name: str) -> str:
 
 
 def start(argv: list[str], cwd: Path, env: dict) -> subprocess.Popen:
-    """A game process with its console on a pipe and its stdin for commands, and no console window of its own."""
-    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    """A game process with its console on a pipe and its stdin for commands, and no console window of its own,
+    started by the core so it dies with whatever owns this process's tree (a worker, or wb play)."""
     try:
-        return subprocess.Popen([str(a) for a in argv], cwd=str(cwd), env=env, stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                                errors="replace", creationflags=flags, start_new_session=os.name != "nt")
-    except OSError as error:
-        raise EnvironmentProblem(f"cannot start {Path(argv[0]).name}: {error}") from None
+        return owned_processes.start(argv, cwd=str(cwd), env=env, stdin=True, owned=True, no_window=True)
+    except owned_processes.StartError as error:
+        raise EnvironmentProblem(str(error)) from None
 
 
 class Side:

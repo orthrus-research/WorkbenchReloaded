@@ -60,6 +60,26 @@ class Primitive(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 8)
 
 
+# Owns its tree as a worker or wb play does, starts a sleeper through the core, prints its pid, then waits.
+OWNER = ("import sys, time; from wb_core import process; process.own_tree(); "
+         "p = process.start([sys.executable, '-c', 'import time; time.sleep(60)'], owned=True, no_window=True); "
+         "print(p.pid, flush=True); time.sleep(60)")
+
+
+class Owner(unittest.TestCase):
+    def test_what_an_owner_started_dies_when_the_owner_is_killed(self):
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path))
+        owner = subprocess.Popen([sys.executable, "-c", OWNER], stdout=subprocess.PIPE, text=True, env=env)
+        child = int(owner.stdout.readline())
+        self.assertTrue(alive(child))
+        owner.kill()  # TerminateProcess on Windows, SIGKILL elsewhere: no clean-up code runs
+        owner.wait(10)
+        end = time.time() + 15
+        while alive(child) and time.time() < end:
+            time.sleep(0.2)
+        self.assertFalse(alive(child), f"process {child} outlived the owner that was killed")
+
+
 class Jobs(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
