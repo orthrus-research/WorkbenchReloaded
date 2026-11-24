@@ -15,9 +15,10 @@ resolves nothing again. It builds in stages:
    ``server/mods`` and/or ``client/mods`` (by its side) under its ``place`` or its file name.
 3. base: the files, JVM profile, player and command lines of the launch's base (launch.json ``base``: the base
    project's ``[launch.<name>]`` as lab.resolve read it), its overlay folder exported from the base project's
-   repository by the tree id the launch names (``git archive``), then the product's own overlay folder, then the
-   product's configure script (launch.json ``configure``, exported by its blob id) or the hook the request names: a
-   Python file whose ``configure(instance, launch, params, placed)`` makes a launched product's own changes. An
+   repository by the tree id the launch names (``git archive``), then each launch's own overlay folder (a launch that
+   inherits another launch lays that launch's first: launch.json ``overlays``), then the configure script
+   (launch.json ``configure``, exported by its blob id; an inherited one is its own project's, which must be
+   trusted) or the hook the request names: a Python file whose ``configure(instance, launch, params, placed)`` makes a launched product's own changes. An
    overlay's text files are written with the platform's line ends and ``{port}``, ``{seed}``, ``{player}`` and
    ``{player_uuid}`` filled in. A launch file that names no base, or a request naming one of ``wb_lab.bases``, takes
    Workbench's interim copy, with a warning. Workbench names no product; the script is the product's.
@@ -600,7 +601,8 @@ def base_of(ctx: Context, doc: dict, requested: str) -> tuple[str, dict, list[di
     the base's folder and then the product's, each {project, tree, path}."""
     launched = doc.get("base")
     own = doc.get("overlay")
-    overlays = [own] if own else []
+    # A launch that inherits another names every launch's overlay in order (``overlays``), else only its own.
+    overlays = list(doc.get("overlays") or ([own] if own else []))
     if requested:
         if requested not in INTERIM_BASES:
             raise ParamError(f"base: {requested!r} is no interim base (known: {', '.join(sorted(INTERIM_BASES))}); "
@@ -658,9 +660,11 @@ def build(ctx: Context, launch: str, name: str, base: str = "", params: dict | N
         raise ParamError(f"configure: {configure} is not a file")
     if hook is not None and doc.get("configure"):
         ctx.log.warning(f"configure: {hook.name} replaces the launch's {doc['configure']['path']}")
-    if hook is not None or doc.get("configure"):  # before anything is made: the script is the launched project's
+    if hook is not None or doc.get("configure"):  # before anything is made: the script is its project's code
         what = f"configure hook {hook.name}" if hook else f"configure script {doc['configure']['path']}"
-        machines.require_trusted(ctx, project, what)
+        # An inherited script is its own project's (the base launch's), so that project is the one trusted.
+        owner = project if hook is not None else str(doc["configure"].get("project") or project)
+        machines.require_trusted(ctx, owner, what)
     if hook is None and doc.get("configure"):
         script = doc["configure"]
         hook = export_blob(machine.repository(script["project"]), script["blob"],

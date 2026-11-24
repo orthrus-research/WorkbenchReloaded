@@ -63,7 +63,7 @@ params.args = { type = "list", items = "string", default = [] }
 
 [[command]]
 name = "resolve"
-summary = "Resolve a launch once into launch.json: the [launch.<name>] of the project.toml at a worktree's HEAD, every member taken by SHA-256 from the worktree's set revision (a line, a hold or a third entry) or, for the project itself, from the Store by the tree CI built; the base project's [launch.<name>] and the tree id of its launch/ overlay at the commit the set names for it; the product's configure script and launch/ tree at its commit; refuses a member the set or the Store lacks and two builds of one mod id. Written to <worktree>/.local/launch/<name>.json unless out is given."
+summary = "Resolve a launch once into launch.json: the [launch.<name>] of the project.toml at a worktree's HEAD, every member taken by SHA-256 from the worktree's set revision (a line, a hold or a third entry) or, for the project itself, from the Store by the tree CI built; the base project's [launch.<name>] and the tree id of its launch/ overlay at the commit the set names for it (its branch in its home repository when it has no line), or, when that is another product's launch, that launch inherited (members, base, configure, overlays, params, JVM arguments, tour rules) with the launch's own added; the product's configure script and launch/ tree at its commit; refuses a member the set or the Store lacks and two builds of one mod id. Written to <worktree>/.local/launch/<name>.json unless out is given."
 handler = "wb_lab.resolve:resolve_command"
 runs_on = ["host"]
 timeout = "5m"

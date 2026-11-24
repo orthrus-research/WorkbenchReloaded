@@ -69,6 +69,12 @@
   JDWP on loopback and writes an attach configuration. A stop waits at least 180 s for the server; a failure names
   the decisive line, the crash report and the next command. `lab.keep` keeps a session as a retention root.
   `lab.resolve` carries a launch's `tour` rules and `drivers` into launch.json.
+- A launch may name another product's launch as its base (`base = "riven:default"`): it inherits that launch's
+  members, base, configure script, overlays, typed params, JVM arguments and tour rules, resolved at the base
+  project's commit (its line, or its branch in its home repository when it has none), and adds its own, with one
+  build per mod id across both; a cycle or a chain more than four launches deep is refused, and launch.json's
+  `inherits` names each launch with its commit and how it was chosen. A member of a project with no line follows
+  that project's branch the same way. `lab.build` trusts an inherited configure script by its own project.
 - `wb gpu`: the lease's holder, its waiters in the order they are served and stuck lanes; `wb gpu run` gives any
   command a turn in a lane of its own, with a note, a limit, `--detach` (outlives the shell) and `--quiet`; a
   waiter started again keeps its place; `wb gpu leave` withdraws a lane. The old lock path and variable names stay

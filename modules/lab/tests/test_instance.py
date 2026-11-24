@@ -423,6 +423,32 @@ class ProjectBase(Fixture):
         self.assertEqual(receipt["configure"]["path"], "launch/configure.py")
         self.assertEqual(receipt["configure"]["record"], {"scale": 1.0})
 
+    def test_an_inheriting_launch_lays_each_launchs_overlay_and_trusts_the_scripts_project(self):
+        for name, text in (("inherited", "from=host\nhost=yes\n"), ("own", "from=game\n")):
+            (self.repo / "launch" / name / "server").mkdir(parents=True)
+            (self.repo / "launch" / name / "server" / "extra.txt").write_text(text, encoding="utf-8")
+        (self.repo / "launch" / "inherited" / "server" / "host.txt").write_text("host\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "launch overlays")
+        doc = json.loads(json.dumps(self.launch_doc))
+        doc["overlays"] = [{"project": project, "commit": self.commit, "path": f"launch/{name}",
+                            "tree": git(self.repo, "rev-parse", f"HEAD:launch/{name}")}
+                           for project, name in (("host", "inherited"), ("game", "own"))]
+        doc["overlay"] = doc["overlays"][1]
+        doc["configure"]["project"] = "host"  # the base launch's script, inherited
+        doc["inherits"] = [{"name": "host:default", "project": "host", "launch": "default", "commit": self.commit,
+                            "tree": "d" * 40, "chosen": "branch", "ref": "refs/heads/main"}]
+        launch = self.write_launch(doc, "inherited.json")
+        with self.assertRaisesRegex(ParamError, r"configure script launch/configure.py is host's code"):
+            self.run_build(launch=launch)
+        self.lab["trusted"] = ["host"]
+        ctx, result = self.run_build(launch=launch)
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+        server = Path(result["instance"]) / "server"
+        self.assertEqual((server / "extra.txt").read_text(encoding="utf-8").splitlines(), ["from=game"])
+        self.assertTrue((server / "host.txt").is_file())
+        self.assertTrue((server / "ops.json").is_file())  # the base table's overlay is still laid first
+
     def test_the_launchs_configure_script_needs_a_trusted_project(self):
         self.lab["trusted"] = []
         with self.assertRaisesRegex(ParamError, r"configure script launch/configure.py is game's code"):
