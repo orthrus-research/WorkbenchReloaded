@@ -555,5 +555,78 @@ class Deploy(unittest.TestCase):
             self.patches[6].start()
 
 
+# -- wb setup: the shim on PATH and the first release ---------------------------------------------------------------
+class Setup(unittest.TestCase):
+    def setUp(self):
+        from unittest import mock
+        self.folder = tempfile.TemporaryDirectory()
+        self.base = Path(self.folder.name)
+        self.repo = workbench_repo(self.base)
+        self.bin = self.base / "bin"
+        self.env = mock.patch.dict(os.environ, {"WB_RELEASES": str(self.base / "releases"), "WB_BIN": str(self.bin)})
+        self.env.start()
+        self.config = Config({}, self.base / "config")
+
+    def tearDown(self):
+        link = releases.current(self.config)
+        if link.exists() or link.is_symlink():
+            os.rmdir(link) if os.name == "nt" else link.unlink()
+        self.env.stop()
+        self.folder.cleanup()
+
+    def install(self, path_value: str = "") -> tuple[int, str]:
+        import contextlib
+        import io
+        from unittest import mock
+        from wb import setup
+        with mock.patch.dict(os.environ, {"PATH": path_value}), contextlib.redirect_stdout(io.StringIO()) as out:
+            code = setup.install_shims(self.config)
+        return code, out.getvalue()
+
+    def test_the_shim_runs_the_release_in_service_and_path_is_only_ever_printed(self):
+        from wb import setup
+        code, said = self.install()
+        self.assertEqual(code, 0)
+        target = releases.current(self.config) / "bin"
+        names = sorted(p.name for p in self.bin.iterdir())
+        self.assertEqual(names, ["wb", "wb.cmd"] if os.name == "nt" else ["wb"])
+        for path in self.bin.iterdir():
+            text = path.read_text(encoding="utf-8")
+            self.assertIn(setup.SHIM_MARKER, text)
+            self.assertTrue(str(target) in text or target.as_posix() in text, text)
+        self.assertIn("does not change PATH", said)
+        self.assertIn(setup.path_command(self.bin), said)  # the exact command, for the person to run
+        self.assertIn(str(self.bin), setup.path_command(self.bin))
+        code, said = self.install(str(self.bin))
+        self.assertEqual((code, said.count("not on PATH")), (0, 0))  # on PATH: nothing to print
+        self.assertIn("keep (already the shim)", [s["action"] for s in setup.shim_steps(self.config)])
+
+    def test_another_file_named_wb_is_never_overwritten(self):
+        self.bin.mkdir()
+        (self.bin / "wb").write_text("someone else's\n", encoding="utf-8")
+        code, said = self.install()
+        self.assertEqual(code, 1)
+        self.assertIn("another file", said)
+        self.assertEqual((self.bin / "wb").read_text(encoding="utf-8"), "someone else's\n")
+
+    def test_a_machine_with_no_release_gets_a_bootstrap_release_from_the_clone(self):
+        from unittest import mock
+        from wb import deploy, setup
+        sha = git(self.repo, "rev-parse", "HEAD")
+        answer = {"passed": False, "project": "workbench", "required": ["check"], "runs": [], "reason": "untested"}
+        with mock.patch.object(setup, "REPO", self.repo), \
+                mock.patch.object(deploy, "container_pass", return_value=answer):
+            steps = setup.release_step(self.config)
+            self.assertIn(f"make the first from {sha[:12]} (marked bootstrap)", steps["action"])
+            made = setup.bootstrap(self.config)
+            self.assertEqual(made["release"].name, sha[:12])
+            self.assertEqual(releases.serving(self.config), made["release"])
+            record = releases.info(made["release"])
+            self.assertEqual((record["bootstrap"], record["commit"], record["ci"]["reason"]), (True, sha, "untested"))
+            self.assertIsNone(setup.bootstrap(self.config))  # one release is enough; wb deploy makes the rest
+            self.assertIn("in service", setup.release_step(self.config)["action"])
+        self.assertTrue(setup.cli_command(self.config).endswith(("wb.cmd", "wb")))
+
+
 if __name__ == "__main__":
     unittest.main()
