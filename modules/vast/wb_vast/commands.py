@@ -522,7 +522,7 @@ def bootstrap_script(b: bundles.Bundle) -> str:
     spec.loader.exec_module(pins)
     # A bundle that carries its JDK (a launch bundle: the platform's Linux archive) gets none from the image's pins.
     jdks = b.jdks or ([] if b.own_jdk else ["26"])
-    return pins.bootstrap(pins.load(REPO_ROOT / "image" / "pins.toml"), jdks, b.gpu)
+    return pins.bootstrap(pins.load(REPO_ROOT / "image" / "pins.toml"), jdks, b.gpu, b.display)
 
 
 # ----------------------------------------------------------------------------------------------

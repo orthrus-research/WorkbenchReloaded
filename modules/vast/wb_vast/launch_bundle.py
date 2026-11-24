@@ -15,7 +15,9 @@ A launch bundle's ``files/`` (uploaded to ``/root/bundle``) holds:
   bundle, and ``launch_run.py`` (``wb_vast.launch_runner``), which builds the instance with ``wb_lab.instance.build``
   and plays the tour with ``wb_lab.run.run``;
 - ``run.sh``: checks every file in ``checksums.sha256``, unpacks the JDK, builds the instance, starts a display
-  (VirtualGL on the GPU when the bundle asks for it) and plays the tour headless; ``results/`` gets the build's and
+  (Xvfb, stopping with a RUN line when it does not start; VirtualGL on the GPU when the bundle asks for it, Mesa's
+  software OpenGL otherwise, which the bundle's ``needs.display`` has the bootstrap install) and plays the tour
+  headless; ``results/`` gets the build's and
   the session's logs, ``instance.json``, ``session.json`` and the session folder, packed into ``results.tar``.
   ``run.sh <bundle> build`` stops once the instance is built;
 - ``bundle-launch.json`` (``wb.bundle-launch.v1``): what the bundle carries and was made from.
@@ -49,7 +51,8 @@ CODE = (("core", "wb_core"), ("sdk/python", "wb"), ("modules/lab", "wb_lab"))
 
 RUN_SH = r"""#!/bin/bash
 # The entry script of a launch bundle (vast.bundle-launch). vast.rent runs it on a machine its bootstrap made ready
-# (Python, and Xvfb and VirtualGL when the bundle needs the GPU), with the bundle in $1. A second argument "build"
+# (Python and Xvfb, with VirtualGL when the bundle needs the GPU and Mesa's software OpenGL when it does not), with
+# the bundle in $1. A second argument "build"
 # stops once the instance is built. bundle.env names the JDK build and archive, the window and the GPU.
 set -uo pipefail
 BUNDLE=${1:?bundle directory}
@@ -83,10 +86,23 @@ log "build $INSTANCE"
 step build build.log || finish 1
 [ "$UNTIL" = "build" ] && finish 0
 if ! pgrep -x Xvfb >/dev/null; then
-  Xvfb :1 -screen 0 3840x2160x24 >/dev/null 2>&1 &
-  sleep 3
+  Xvfb :1 -screen 0 3840x2160x24 > results/xvfb.log 2>&1 &
+  xvfb=$!
+  for _ in $(seq 1 30); do  # up to 15 s for the display's socket, unless Xvfb has already exited
+    [ -S /tmp/.X11-unix/X1 ] && break
+    kill -0 "$xvfb" 2>/dev/null || break
+    sleep 0.5
+  done
+  if ! kill -0 "$xvfb" 2>/dev/null || [ ! -S /tmp/.X11-unix/X1 ]; then
+    log "session failed: the display did not start (Xvfb :1): $(tail -1 results/xvfb.log 2>/dev/null)"
+    finish 1
+  fi
 fi
 export DISPLAY=:1
+if [ "$GPU" != "1" ] && command -v glxinfo >/dev/null; then
+  glxinfo -B > results/display.txt 2>&1  # the software renderer the client draws with (llvmpipe)
+  log "display :1, $(grep -m1 'Device:' results/display.txt | sed 's/^ *//')"
+fi
 WRAP=""
 sampler=""
 if [ "$GPU" = "1" ]; then
@@ -249,6 +265,17 @@ def make(ctx: Context, launch: str, tour: str, name: str | None, window: str, gp
         json.loads(tour_path.read_text(encoding="utf-8"))
     except ValueError as error:
         raise ParamError(f"tour: {tour_path.name} is not JSON ({error})") from None
+    if not (doc.get("tour") or {}).get("captured"):
+        # lab.run plays a tour only by the launch's tour rules (wb_lab.run, "the launch has no tour rules"), which
+        # lab.resolve carries into launch.json from the launch and every launch it inherits: refused here, before a
+        # rental is spent finding out.
+        chain = ", ".join(f"{s.get('name')} at {str(s.get('commit'))[:12]}" for s in doc.get("inherits") or [])
+        raise ParamError(f"tour: launch {doc.get('project')}:{doc.get('launch')} has no tour rules (tour.captured: "
+                         "the client's line for a captured view)"
+                         + (f", and none of the launches it inherits gives them ({chain})" if chain else "")
+                         + f", so lab.run on the rental would refuse to play {tour_path.name}; name them in "
+                         f"[launch.{doc.get('launch')}.tour] of {doc.get('project')}'s project.toml (or of a launch "
+                         "it inherits), then resolve the launch again (wb run lab.resolve)")
     if window and not re.match(r"^[0-9]+x[0-9]+$", window):
         raise ParamError(f"window: {window!r} is not WIDTHxHEIGHT")
     store = readable(str(doc["store"]))
@@ -374,7 +401,7 @@ def make(ctx: Context, launch: str, tour: str, name: str | None, window: str, gp
             shutil.copyfile(source, target)
     text = bundles.render(
         {"name": label, "purpose": purpose, "kind": "launch"},
-        {"gpu": bool(gpu), "disk_gb": disk_gb, "own_jdk": True, "ram_gb": ram_needed(doc)},
+        {"gpu": bool(gpu), "display": True, "disk_gb": disk_gb, "own_jdk": True, "ram_gb": ram_needed(doc)},
         [{"path": bundles.FILES, "contents": True}],
         {"script": f"{bundles.FILES}/run.sh", "args": [bundles.REMOTE], "progress": "^RUN ", "done": "RUN done",
          "failed": "^RUN (verify|build|session) failed", "results": [f"{bundles.REMOTE}/results.tar", "/root/run.log"],

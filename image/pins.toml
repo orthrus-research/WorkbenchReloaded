@@ -67,8 +67,13 @@ image = [
   "ffmpeg", "xvfb", "xauth", "mesa-utils", "libegl1", "libegl-mesa0", "libgl1", "libgl1-mesa-dri",
   "libglu1-mesa", "libvulkan1", "glslang-tools", "fonts-dejavu-core",
 ]
-# What a rented machine's bootstrap may install, by need.
+# What a rented machine's bootstrap may install, by need, from the snapshot above (so a rebuild installs the same
+# versions).
 rental_base = ["ca-certificates", "wget", "python3", "procps", "xz-utils"]
-rental_gpu = ["xvfb", "xauth", "mesa-utils", "libegl1", "libgl1", "libglx0", "libglu1-mesa", "libxrandr2",
-              "libxcursor1", "libxi6", "libxinerama1", "libxxf86vm1", "libxtst6", "libxrender1", "libxext6",
-              "libx11-6", "libasound2t64", "libfreetype6", "libfontconfig1"]
+# The display (Xvfb) and the game client's own libraries: for a bundle that draws, on the GPU or not.
+rental_display = ["xvfb", "xauth", "mesa-utils", "libegl1", "libgl1", "libglx0", "libglu1-mesa", "libxrandr2",
+                  "libxcursor1", "libxi6", "libxinerama1", "libxxf86vm1", "libxtst6", "libxrender1", "libxext6",
+                  "libx11-6", "libasound2t64", "libfreetype6", "libfontconfig1"]
+# Mesa's software OpenGL (llvmpipe) for a bundle that draws without a GPU (needs.display, no needs.gpu); a GPU
+# bundle draws through the driver's own libraries and VirtualGL instead.
+rental_software_gl = ["libgl1-mesa-dri", "libglx-mesa0", "libegl-mesa0"]

@@ -27,6 +27,9 @@
   setup command its own tree carries, then still runs its `actions.toml` checks; `wb status --doctor` names every
   `WB_PIN_CACHE` read, `sourceCommit`, pin file, refresh task, refresh schedule and sibling commit on the
   registered projects' set-named branches with file and line, and confirms that the old lock path is the lease file.
+  A commit permalink (`https://github.com/<org>/<repo>/blob/<sha>/...`, `/tree/<sha>`, `/commit/<sha>`) is a
+  citation, not a sibling commit, as is a Markdown link's text that shows its own SHA; a bare SHA or a pin field
+  beside it still is one.
 - The Store: a producing job's artifacts are kept by SHA-256 and by project and tree, and in the pin cache;
   `wb store` finds them, gives a kept file's path, or seeds bytes no container builds. A pinned repository with
   `passed` must have passed its own checks, so a consumer need not build and test it again.
@@ -127,7 +130,11 @@
   Workbench's own lab code, and a run script that builds the instance with `lab.build`'s code and plays one tour
   session headless, writing `session.json`. Every load of such a bundle (`vast.bundle-check`, the quote,
   `vast.rent`) refuses one whose member or JDK archive is missing or other bytes, and the quote refuses one
-  without the EULA's acceptance. `lab.build` takes `store` and `sources`, the copies a bundle carries.
+  without the EULA's acceptance. A tour for a launch with no tour rules (its own or inherited) is refused when the
+  bundle is made, naming the `[launch.<name>.tour]` to write, instead of failing on the rental. A launch bundle
+  needs a display (`needs.display`): its bootstrap installs Xvfb and the client's libraries, and without a GPU
+  Mesa's software OpenGL (llvmpipe), all from the image's apt snapshot; its run script stops with a RUN line when
+  Xvfb does not start, and records the software renderer in `results/display.txt`. `lab.build` takes `store` and `sources`, the copies a bundle carries.
 - The template rental route is retired: `vast.bundle` (a bundle from a template in config) and `vast.lab-inputs`
   (its input archives) answer `vast.bundle-launch` for one release, and a plan with `machine = "rental"` or a
   `[rental]` table is refused with the same pointer; `plan.check` and `plan.run` lose `machine`. `[modules.vast]
@@ -148,7 +155,10 @@
   giving it the steps' whole environment, the project's interpreter as `{python}` and the set's identities, instead
   of starting the engine as a process and reading its JSON from the output. Steps still run as processes of their
   own under the project's interpreter, and cancelling the job kills them; the `actions` command line still reads the
-  identities from WB_SET_IDENTITY, WB_JDK_IDENTITY and WB_TOOLS_ROOTS.
+  identities from WB_SET_IDENTITY, WB_JDK_IDENTITY, WB_USES_IDENTITY and WB_TOOLS_ROOTS.
+- A pure check's key covers the SHA-256 of each third entry the project's `[uses]` names and of each hold that
+  applies to it (`WB_USES_IDENTITY`), beside the platform's JDK: a candidate set with other bytes for a used third
+  entry reruns it, and one that moves only a third entry the project does not use reuses its pass.
 - Each check's and step's peak memory in the run summary (`peakRssBytes`): the most resident memory the step's
   process tree held at once, sampled while it ran from `/proc` (the step's descendants and its session, so a Gradle
   daemon counts) or, on Windows, a Job Object the step is put in, and a JVM the step reuses over a local TCP

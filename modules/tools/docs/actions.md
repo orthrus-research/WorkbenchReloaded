@@ -116,8 +116,10 @@ folder beside the clone where that project's checkout would be.
 A project.toml run that builds from a set is keyed on more than its tree. `ci.run` gives the engine the set's
 identity (`WB_SET_IDENTITY`: a digest of the platform and of the lines, holds and third entries the project
 `[uses]`), which a run records as a tree named `@set`, so a platform or line move needs a new pass; and the
-platform's JDK digest (`WB_JDK_IDENTITY`), which joins a pure check's key, so a JDK move reruns it and a line
-move alone does not. The push gate judges a commit by its tree, whatever set it passed on.
+platform's JDK digest (`WB_JDK_IDENTITY`) and a digest of the SHA-256 of each third entry the project `[uses]`
+and each hold that applies to it (`WB_USES_IDENTITY`, empty when there are none), which join a pure check's key:
+a JDK move or other bytes for a used third entry or hold rerun it, and a line move alone does not. The push gate
+judges a commit by its tree, whatever set it passed on.
 
 ### Host checks
 
@@ -195,8 +197,8 @@ repository's working tree against its own HEAD, matched against `[[quick.<name>]
 `actions.execute(root, targets, ...)` is `run --json` as a library call, returning the same
 document. Workbench's `ci.run` uses it inside its job. The caller gives everything a run would
 otherwise read from its process: `environ` (the whole environment the steps start from and git
-runs in), `python` (what `{python}` names) and `identity` (`set`, `jdk` and `tools`, which the
-command line reads from `WB_SET_IDENTITY`, `WB_JDK_IDENTITY` and `WB_TOOLS_ROOTS`). Steps still
+runs in), `python` (what `{python}` names) and `identity` (`set`, `jdk`, `uses` and `tools`, which
+the command line reads from `WB_SET_IDENTITY`, `WB_JDK_IDENTITY`, `WB_USES_IDENTITY` and `WB_TOOLS_ROOTS`). Steps still
 run as processes of their own. Setting the `stop` event kills the running steps, and the call
 raises `Stopped` after the run's summary is written.
 

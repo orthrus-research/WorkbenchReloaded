@@ -210,6 +210,21 @@ class Doctor(unittest.TestCase):
         self.assertIn(f"alpha  main (landed {self.alpha[:12]} = tip)  docs/notes.md:2  sibling commit: beta "
                       f"{self.beta_old[:12]}", text)
 
+    def test_a_commit_permalink_is_a_citation_and_a_bare_sha_beside_it_still_a_pin(self):
+        beta = "https://github.com/example-org/Beta"
+        tip = commit(self.root / "Alpha", {"docs/links.md": (
+            f"The rule: {beta}/blob/{self.beta}/src/b.txt#L1.\n"
+            f"Its tree {beta}/tree/{self.beta_old}/src and the commit {beta}/commit/{self.beta}.\n"
+            f"Pinned {self.beta}, as {beta}/commit/{self.beta} shows.\n"
+            f'"commit": "{self.beta_old}"\n'
+            f"Not a permalink: https://example.org/beta/blob/{self.beta_old}/x\n"
+            f"Pinned to [`{self.beta}`]({beta}/commit/{self.beta}).\n"
+            f"Shown as another: [`{self.beta_old}`]({beta}/commit/{self.beta}).\n")}, "alpha three")
+        at_tip = {(f["kind"], f["line"]) for f in self.report()["findings"]
+                  if f["branch"] == f"main (main {tip[:12]})" and f["file"] == "docs/links.md"}
+        self.assertEqual(at_tip, {("sibling commit", 3), ("sibling commit", 4), ("sibling commit", 5),
+                                  ("sibling commit", 7)})
+
     def test_exempt_paths_and_unconverted_branches_are_not_read(self):
         report = self.report()
         self.assertFalse([f for f in report["findings"] if f["file"].startswith("evidence/")])

@@ -4,7 +4,9 @@
   set-named branch's tip (the published branch where the checkout has one): a WB_PIN_CACHE read, a sourceCommit
   field, a pin file (cc.lock.json, anything in a pins/ folder), a refresh or sync task in its build or checks files,
   and a sibling commit, which is a 40-hex literal naming a commit the Set lists for another project or a commit in
-  another registered project's repository. A branch that carries no project.toml is not converted yet and is only
+  another registered project's repository. A commit permalink (``https://github.com/<org>/<repo>/blob/<sha>/...``,
+  ``/tree/<sha>``, ``/commit/<sha>``) cites a commit and pins nothing, so its SHA is not one, nor is the SHA a
+  Markdown link shows as its own text (``[`<sha>`](<its permalink>)``). A branch that carries no project.toml is not converted yet and is only
   named. Paths that set.json ``doctor.exempt`` lists for every project, or for that project, are never read.
 - Workbench's own schedules: none may refresh or sync pins.
 - The lease: the old lock path (``[runner] lease_file``, the configured alias) is the file the lease is taken on,
@@ -25,6 +27,12 @@ from pathlib import Path
 
 GIT_ENV = {"GIT_OPTIONAL_LOCKS": "0"}
 HEX40 = re.compile(r"(?<![0-9A-Fa-f])[0-9a-f]{40}(?![0-9A-Fa-f])")
+# A link to a commit, a file or a tree at a commit: a citation, which nothing builds or fetches from.
+PERMALINK = re.compile(r"https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(?:blob|tree|commit)/[0-9a-f]{40}"
+                       r"(?![0-9A-Fa-f])")
+# A Markdown link whose text is the SHA of its own permalink: [`<sha>`](https://github.com/.../commit/<sha>).
+PERMALINK_SHOWN = re.compile(r"\[`?(?P<sha>[0-9a-f]{40})`?\]\(https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/"
+                             r"(?:blob|tree|commit)/(?P=sha)(?![0-9A-Fa-f])[^)\s]*\)")
 REFRESH = re.compile(r"(?<![A-Za-z0-9_])(?:refresh|sync)[A-Z][A-Za-z0-9]*")
 REFRESH_FILES = ["*.gradle", "*.gradle.kts", "actions.toml", "project.toml"]
 PIN_FILE = re.compile(r"(^|/)cc\.lock\.json$|(^|/)pins/")
@@ -64,6 +72,11 @@ def _grep(repo: Path, commit: str, args: list[str], paths: list[str], exempt: li
     return found
 
 
+def _literals(text: str) -> list[str]:
+    """The 40-hex literals of a line that may pin a commit: every one outside a commit permalink."""
+    return HEX40.findall(PERMALINK.sub(" ", PERMALINK_SHOWN.sub(" ", text)))
+
+
 def _commits(repo: Path, tokens: set[str]) -> set[str]:
     """The tokens that name a commit in ``repo``."""
     if not tokens or not repo.is_dir():
@@ -96,14 +109,14 @@ def scan(project, commit: str, siblings: dict, exempt: list[str], listed: dict[s
         if name and PIN_FILE.search(name) and not any(p.match(name) for p in patterns):
             add("pin file", name, 1, "a pin file")
     hits = _grep(repo, commit, ["-w", "-E", "-e", "[0-9a-f]{40}"], [], exempt)
-    tokens = {token for _, _, text in hits for token in HEX40.findall(text)}
+    tokens = {token for _, _, text in hits for token in _literals(text)}
     own = _commits(repo, tokens)
     owner = {token: name for token, name in listed.items() if name != project.name and token in tokens}
     for name, other in siblings.items():
         for token in _commits(other, tokens - own - set(owner)):
             owner.setdefault(token, name)
     for file, line, text in hits:
-        for token in dict.fromkeys(HEX40.findall(text)):
+        for token in dict.fromkeys(_literals(text)):
             if token in owner:
                 add("sibling commit", file, line, f"{owner[token]} {token[:12]}: {text}")
     return found

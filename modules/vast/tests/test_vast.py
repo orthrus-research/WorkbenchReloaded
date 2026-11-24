@@ -353,7 +353,8 @@ class LaunchBundles(unittest.TestCase):
                     "runtime": {"kind": "cleanroom", "version": "0.7.14-alpha", "java": 26, "jdk": self.BUILD,
                                 "files": runtime},
                     "members": members, "jvm": {"client": [], "server": []}, "collect": [], "failures": [],
-                    "params": {"seed": 1}, "param_types": {"seed": {"type": "int"}}}
+                    "params": {"seed": 1}, "param_types": {"seed": {"type": "int"}},
+                    "tour": {"captured": "view captured"}}
         self.tour = self.root / "views.json"
         self.tour.write_text('[{"label": "a", "x": 0, "y": 80, "z": 0, "yaw": 0, "pitch": 0}]', encoding="utf-8")
         self.lab = {"trusted": [], "eula": True}
@@ -481,6 +482,67 @@ class LaunchBundles(unittest.TestCase):
                        "out": str(self.root / "co")}, lambda event: None)
         commands.bundle_check(ctx, str(out))
         return ctx.summary_text
+
+    def test_a_tour_for_a_launch_without_tour_rules_is_refused_naming_the_fix(self):
+        """lab.run plays a tour only by the launch's tour rules, which launch.json carries from the launch and every
+        launch it inherits: a bundle of a tour for a launch with none is refused here, not on the rental."""
+        doc = {k: v for k, v in self.doc.items() if k != "tour"}
+        with self.assertRaisesRegex(ParamError, r"tour: launch game:default has no tour rules \(tour.captured: .*"
+                                                r"would refuse to play views.json; name them in "
+                                                r"\[launch.default.tour\] of game's project.toml .*lab.resolve"):
+            self.make(doc)
+        self.assertFalse((self.root / "bundle" / "bundle.toml").exists())
+        inherited = {**doc, "tour": {"setup": ["time set 6000"]},
+                     "inherits": [{"name": "base:default", "commit": "d" * 40, "chosen": "line"}]}
+        with self.assertRaisesRegex(ParamError, r"none of the launches it inherits gives them "
+                                                r"\(base:default at dddddddddddd\)"):
+            self.make(inherited)
+        ctx, _, _ = self.make({**inherited, "tour": {"captured": "view captured"}})  # inherited rules are enough
+        self.assertEqual(ctx.outcome, "ok", ctx.findings)
+
+    def test_a_bundle_without_a_gpu_installs_a_display_and_software_opengl(self):
+        """A launch bundle draws: its bootstrap installs Xvfb and the client's libraries, and without a GPU Mesa's
+        software OpenGL (llvmpipe) instead of VirtualGL."""
+        _, _, out = self.make(gpu=False)
+        toml = tomllib.loads((out / "bundle.toml").read_text(encoding="utf-8"))
+        self.assertEqual((toml["needs"]["gpu"], toml["needs"]["display"]), (False, True))
+        software = self.check(out)["bootstrap"]
+        for package in ("xvfb", "libgl1", "libgl1-mesa-dri", "libglx-mesa0", "libegl-mesa0"):
+            self.assertRegex(software, rf"apt-get install .* {package}( |$)", package)
+        self.assertNotIn("vgl.deb", software)  # no VirtualGL
+        _, _, out = self.make(gpu=True)
+        gpu = self.check(out)["bootstrap"]
+        self.assertIn(" xvfb ", gpu)
+        self.assertIn("vgl.deb", gpu)
+        self.assertNotIn("libgl1-mesa-dri", gpu)  # the driver's own GL, through VirtualGL
+
+    def test_run_sh_stops_with_a_run_line_when_the_display_does_not_start(self):
+        """run.sh starts Xvfb and stops with a RUN line naming its last word when it does not start, instead of
+        playing on a display that is not there."""
+        import subprocess
+        bash = shutil.which("bash")
+        if not bash or os.name == "nt":
+            self.skipTest("needs bash and a POSIX shell's tools")
+        _, _, out = self.make(gpu=False)
+        files = out / "files"
+        jdk = files / "store" / "jdks" / self.BUILD / "linux"
+        jdk.mkdir(parents=True)
+        (jdk / "release").write_text("JAVA_VERSION=26", encoding="utf-8")  # already unpacked
+        stubs = self.root / "stubs"
+        stubs.mkdir()
+        for name, body in (("pgrep", "exit 1"),  # no display running yet, whatever this machine has
+                           ("Xvfb", "echo '(EE) Fatal server error: stub cannot open the screen' >&2; exit 1"),
+                           ("python3", "echo 'RUN built rental from template k (new)'; exit 0")):
+            (stubs / name).write_text(f"#!/bin/bash\n{body}\n", encoding="utf-8", newline="\n")
+            (stubs / name).chmod(0o755)
+        done = subprocess.run([bash, str(files / "run.sh"), str(files)], capture_output=True, text=True,
+                              env={**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ.get('PATH', '')}",
+                                   "WB_BUNDLE_LAB": str(self.root / "lab")}, timeout=120)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("RUN session failed: the display did not start (Xvfb :1): (EE) Fatal server error: stub "
+                      "cannot open the screen", done.stdout)
+        self.assertNotIn("RUN session tour", done.stdout)
+        self.assertTrue((files / "results.tar").is_file())
 
     def test_the_runner_takes_the_bundles_store_and_sources(self):
         # the runner calls lab.build with the bundle's own Store copy and trees, and nothing of this machine

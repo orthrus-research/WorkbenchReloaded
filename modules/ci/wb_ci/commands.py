@@ -516,23 +516,32 @@ def _tools(ctx: Context, config, work: Path, revision: str) -> dict[str, str]:
 
 def _identity_of(config, doc: dict, tools: dict[str, str] | None = None) -> dict[str, str]:
     """WB_SET_IDENTITY, a digest of the set's platform and of the lines, holds and third entries the project uses
-    (and, when its checks read another project's files, the commits those come from), and WB_JDK_IDENTITY, a digest
-    of the platform's JDK builds, for a project.toml config under the set ``doc``."""
+    (and, when its checks read another project's files, the commits those come from), WB_JDK_IDENTITY, a digest
+    of the platform's JDK builds, and WB_USES_IDENTITY, a digest of the SHA-256 of each third entry the project's
+    [uses] names and of each hold that applies to it ("" when there are none), for a project.toml config under the
+    set ``doc``. The last two are what a pure check's key takes from the set."""
     import hashlib
     uses = set((config.data.get("uses") or {}).keys())
+    me = config.settings.get("name")
     lines = {n: line for n, line in (doc.get("projects") or {}).items() if n in uses}
     thirds = {n: entry for n, entry in (doc.get("third") or {}).items() if n in uses}
     holds = {n: hold for n, hold in (doc.get("holds") or {}).items()
-             if n.split(":")[0].split("@")[0] in uses or n.split("@")[-1] == config.settings.get("name")}
+             if n.split(":")[0].split("@")[0] in uses or n.split("@")[-1] == me}
     platform = doc.get("platform") or {}
 
     def digest(value) -> str:
         return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
+    # The bytes alone: a third entry's file (sha256) or files ({kind: sha256}), a hold's artifacts. A hold for another
+    # consumer (<project>:<artifact>@<consumer>) is not this project's view, so it does not move its pure checks.
+    used = {f"third {n}": {"sha256": entry.get("sha256"), "files": entry.get("files")} for n, entry in thirds.items()}
+    used.update({f"hold {n}": {a: (art or {}).get("sha256") for a, art in ((hold or {}).get("artifacts") or {}).items()}
+                 for n, hold in holds.items() if n.partition("@")[2] in ("", me)})
     parts = {"platform": platform, "lines": lines, "holds": holds, "third": thirds}
     if tools:  # left out when there are none, so a project that reads no other tree keeps the identity it had
         parts["tools"] = dict(sorted(tools.items()))
-    return {"WB_SET_IDENTITY": digest(parts), "WB_JDK_IDENTITY": digest(platform.get("jdk") or {})}
+    return {"WB_SET_IDENTITY": digest(parts), "WB_JDK_IDENTITY": digest(platform.get("jdk") or {}),
+            "WB_USES_IDENTITY": digest(used) if used else ""}
 
 
 def _set_identity(ctx: Context, config, revision: str, tools: dict[str, str] | None = None) -> dict[str, str]:
@@ -667,6 +676,7 @@ def _environment(ctx: Context, entry: dict, config, root: Path, work: Path, set:
     tools = _tools(ctx, config, work, revision)
     identities = _set_identity(ctx, config, revision, tools)
     identity = {"set": identities.get("WB_SET_IDENTITY", ""), "jdk": identities.get("WB_JDK_IDENTITY", ""),
+                "uses": identities.get("WB_USES_IDENTITY", ""),
                 # a pure check's key covers the files it reads from another project, as laid out here
                 "tools": {p: str(work / _project(ctx, p)["source"].name) for p in tools}}
     env = {**_jdk_env(ctx, major), "GRADLE_USER_HOME": str(gradle_home), "WB_PIN_CACHE": str(pins),

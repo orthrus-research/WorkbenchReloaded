@@ -134,6 +134,14 @@ class Config:
         return self.env.get(JDK_IDENTITY, "")
 
     @property
+    def uses_identity(self) -> str:
+        """The SHA-256 of the third entries and holds the project uses (in a pure check's key): ``identity["uses"]``,
+        else ``WB_USES_IDENTITY``; "" when it uses none."""
+        if self.identity is not None:
+            return str(self.identity.get("uses") or "")
+        return self.env.get(USES_IDENTITY, "")
+
+    @property
     def tools_roots(self) -> dict[str, str]:
         """Where the caller laid out each project's files a check reads: ``identity["tools"]``, else the JSON in
         ``WB_TOOLS_ROOTS``."""
@@ -469,11 +477,13 @@ def pin_value(document: Any, key: str) -> Any:
     return value
 
 
-# A run that builds from a set is given two digests of it: the platform and the lines and third entries the project
-# uses (a tree of its own in the pass key), and the platform's JDK builds (in a pure check's key, which replaces
-# identity_files). A platform or line move then needs a new pass; a pure check reruns only on a JDK move.
+# A run that builds from a set is given three digests of it: the platform and the lines and third entries the project
+# uses (a tree of its own in the pass key), the platform's JDK builds and the SHA-256 of the third entries and holds
+# the project uses (both in a pure check's key; the JDK replaces identity_files). A platform or line move then needs
+# a new pass; a pure check reruns only on a JDK move or when the bytes of a third entry or hold it may read move.
 SET_IDENTITY = "WB_SET_IDENTITY"
 JDK_IDENTITY = "WB_JDK_IDENTITY"
+USES_IDENTITY = "WB_USES_IDENTITY"
 SET_TREE = "@set"  # not a project name ([a-z0-9._-]), so it never takes a repository's place (the Set is "set")
 # Where ci.run laid out each project's files a check reads (tools): {"<project>": "<folder>"} as JSON.
 TOOLS_ROOTS = "WB_TOOLS_ROOTS"
@@ -681,8 +691,9 @@ def glob_files(root: Path, pattern: str) -> list[Path]:
 
 
 def identity(config: Config, values: dict[str, Any]) -> list[str]:
-    """What else a pure check's verdict depends on: ``identity_files`` contents and
-    ``identity_env`` values from ``[settings]``."""
+    """What else a pure check's verdict depends on: ``identity_files`` contents and ``identity_env`` values from
+    ``[settings]``, and for a run from a set the platform's JDK digest and the digest of the third entries and holds
+    the project uses."""
     lines = []
     settings = config.settings
     for template in settings.get("identity_files", []):
@@ -696,6 +707,8 @@ def identity(config: Config, values: dict[str, Any]) -> list[str]:
         lines.append(f"${variable}={config.env.get(variable, '')}")
     if config.jdk_identity:
         lines.append(f"platform jdk {config.jdk_identity}")
+    if config.uses_identity:  # left out when there is none, so a project that uses no third entry keeps its keys
+        lines.append(f"uses {config.uses_identity}")
     return lines
 
 
@@ -1597,8 +1610,9 @@ def execute(
 
     ``environ`` is the whole environment the steps start from and git runs in (None: this process's); ``python`` is
     what ``{python}`` names (None: this interpreter); ``identity`` carries the set's identity (``set``), the
-    platform's JDK digest (``jdk``) and where another project's files were laid out (``tools``: {project: folder}),
-    which the CLI reads from WB_SET_IDENTITY, WB_JDK_IDENTITY and WB_TOOLS_ROOTS. When ``stop`` is set the running
+    platform's JDK digest (``jdk``), the digest of the third entries and holds the project uses (``uses``) and where
+    another project's files were laid out (``tools``: {project: folder}), which the CLI reads from WB_SET_IDENTITY,
+    WB_JDK_IDENTITY, WB_USES_IDENTITY and WB_TOOLS_ROOTS. When ``stop`` is set the running
     steps are killed and ``Stopped`` is raised after the run's summary is written; KeyboardInterrupt is not caught.
     Steps still run as processes of their own; only the engine runs in the caller."""
     out = Output("actions", True, io.StringIO(), io.StringIO())
