@@ -725,12 +725,11 @@ def _daemon():
 
 
 def schedule_line() -> str:
+    """The lines that run retention and the backup each night (``wb setup --yes`` installs them on Windows)."""
     from . import config as wbconfig
-    from . import releases
-    wb = releases.current(wbconfig.load()) / "bin" / ("wb.cmd" if os.name == "nt" else "wb")
-    if os.name == "nt":
-        return f'schtasks /Create /SC DAILY /ST 03:30 /TN "Workbench gc" /TR "\\"{wb}\\" gc --nightly"'
-    return f"30 3 * * * {wb} gc --nightly"
+    from . import nightly
+    config = wbconfig.load()
+    return "\n".join(nightly.line(config, task) for task in nightly.TASKS)
 
 
 def main(args) -> int:

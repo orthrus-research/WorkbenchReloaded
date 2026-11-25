@@ -683,5 +683,66 @@ class Setup(unittest.TestCase):
         self.assertTrue(setup.cli_command(self.config).endswith(("wb.cmd", "wb")))
 
 
+class Nightly(unittest.TestCase):
+    """Retention and the backup run each night from the release in service: setup installs them on Windows and
+    prints them elsewhere, and the backup keeps only its newest runs, touching nothing else."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.base = Path(self.folder.name)
+        self.config = Config({}, self.base / "config")
+        self.addCleanup(self.folder.cleanup)
+        from unittest import mock
+        environment = mock.patch.dict(os.environ, {"WB_RELEASES": str(self.base / "releases")})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_each_night_runs_retention_then_the_backup_from_the_release_in_service(self):
+        from wb import nightly
+        lines = [nightly.line(self.config, task) for task in nightly.TASKS]
+        self.assertEqual(len(lines), 2)
+        current = str(releases.current(self.config))
+        self.assertTrue(all(current in line for line in lines), lines)
+        ends = [line.rstrip('" ') for line in lines]  # the Windows line closes /TR's quote
+        self.assertTrue(ends[0].endswith("gc --nightly") and ends[1].endswith("backup"), lines)
+
+    @unittest.skipUnless(os.name == "nt", "the scheduled tasks are Windows'")
+    def test_setup_installs_each_task_the_scheduler_lacks_and_undo_removes_them(self):
+        import subprocess
+        from unittest import mock
+        from wb import nightly
+        calls = []
+
+        def scheduler(argv, **_):
+            calls.append(argv[1])
+            held = argv[1] == "/Query" and argv[3] == "Workbench gc"  # one is installed already
+            return subprocess.CompletedProcess(argv, 0 if held or argv[1] != "/Query" else 1, "", "")
+
+        with mock.patch.object(nightly.subprocess, "run", side_effect=scheduler):
+            actions = [step["action"] for step in nightly.steps(self.config)]
+            self.assertEqual(actions[0], "keep (installed)")
+            self.assertTrue(actions[1].startswith("install at 04:07"), actions)
+            said = []
+            self.assertEqual(nightly.install(self.config, say=said.append), 0)
+            self.assertEqual(calls.count("/Create"), 2)  # /F: an installed one is rewritten to the release's path
+            nightly.remove(say=said.append)
+            self.assertEqual(calls.count("/Delete"), 1)  # only what the scheduler holds
+
+    def test_a_backup_keeps_its_newest_runs_and_nothing_else_is_touched(self):
+        from wb import backup
+        root = self.base / "wb-backup"
+        for n in range(5):
+            made = root / f"2026112{n}-030000"
+            made.mkdir(parents=True)
+            (made / "manifest.json").write_text("{}", encoding="utf-8")
+        (root / "2026-11-23").mkdir()  # a folder someone named by hand
+        (root / "20261120-040000").mkdir()  # named like one, without its manifest: not one it made
+        gone = backup.prune(root, keep=3)
+        self.assertEqual([p.name for p in gone], ["20261120-030000", "20261121-030000"])
+        self.assertEqual(sorted(p.name for p in root.iterdir()),
+                         ["2026-11-23", "20261120-040000", "20261122-030000", "20261123-030000", "20261124-030000"])
+        self.assertEqual(backup.prune(root, keep=3), [])
+
+
 if __name__ == "__main__":
     unittest.main()

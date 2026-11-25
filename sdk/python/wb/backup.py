@@ -5,14 +5,17 @@
 It takes SQLite's online backup of the daemon's database (jobs, their records and the ledger) while the daemon
 runs, and copies beside it the machine's scrub rules file, a git bundle of the Set's home (every landing, even one
 its public remote has lost), and the seeded Store entries (bytes no container can build, with their sources), into
-<DIR>/<date-time>/ with a manifest of what each file holds. DIR is [paths] backup in machine config, else wb-backup in the user's home folder. Run it nightly with
-the operating system's scheduler (wb setup prints the line)."""
+<DIR>/<date-time>/ with a manifest of what each file holds. DIR is [paths] backup in machine config, else wb-backup in
+the user's home folder. ``wb setup --yes`` runs it nightly from the operating system's scheduler. Once a backup is
+made, the backups it made before beyond the newest ``--keep`` (14) are removed: only folders named as it names them
+that hold its manifest, never anything else in DIR."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -24,6 +27,8 @@ from pathlib import Path
 from . import config as wbconfig
 
 CONTAINER = "wb-wb-1"
+KEEP = 14  # backups kept: two weeks of nightly runs
+_MADE = re.compile(r"\d{8}-\d{6}\Z")  # how main() names a backup's folder
 STATE_DB = "/var/lib/wb/db/wb.sqlite"
 SNAPSHOT = "/var/lib/wb/db/backup.sqlite"
 
@@ -126,4 +131,18 @@ def main(args) -> int:
     jobs = manifest["files"]["wb.sqlite"]["jobs"]
     print(f"backed up to {folder}: {sum(jobs.values())} jobs ({', '.join(f'{n} {s}' for s, n in sorted(jobs.items()))}), "
           f"integrity {manifest['files']['wb.sqlite']['check']}")
+    if manifest["files"]["wb.sqlite"]["check"] == "ok":  # a good backup is made before an older one goes
+        gone = prune(folder.parent, getattr(args, "keep", None) or KEEP)
+        if gone:
+            print(f"removed {len(gone)} older backup(s), keeping the newest {getattr(args, 'keep', None) or KEEP}")
     return 0
+
+
+def prune(folder: Path, keep: int = KEEP) -> list[Path]:
+    """Removes the backups this command made in ``folder`` beyond the newest ``keep``: folders named <date-time>
+    that hold its manifest. Nothing else there is touched. Returns what it removed."""
+    made = sorted(p for p in folder.iterdir() if p.is_dir() and _MADE.match(p.name) and (p / "manifest.json").is_file())
+    gone = made[:-keep] if keep > 0 else []
+    for old in gone:
+        shutil.rmtree(old, ignore_errors=True)
+    return gone

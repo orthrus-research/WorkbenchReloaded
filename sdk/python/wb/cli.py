@@ -656,7 +656,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--only", action="append", metavar="CLASS", help="only this class (repeatable)")
     p.add_argument("--rules", action="store_true", help="every class, its rule and whether it runs unattended")
     p.add_argument("--nightly", action="store_true", help="remove the unattended classes (for the scheduler)")
-    p.add_argument("--schedule", action="store_true", help="print the line that runs --nightly each night")
+    p.add_argument("--schedule", action="store_true",
+                   help="print the lines that run --nightly and wb backup each night (wb setup --yes installs them)")
     p = sub.add_parser("prune", help=argparse.SUPPRESS)  # the old verb, for one release: names wb gc
     p.set_defaults(function=cmd_prune)
     p.add_argument("--yes", action="store_true")
@@ -719,6 +720,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="remove a doctor.exempt entry (repeatable)")
     p = add("backup", cmd_backup, "copy the job database, the ledger and the scrub rules off this drive")
     p.add_argument("--to", help="the folder to back up into (default [paths] backup, else ~/wb-backup)")
+    p.add_argument("--keep", type=int, help="how many of its backups to keep (default 14); older ones are removed")
     p = add("store", cmd_store, "what CI built: by project and commit, a kept file's path, or bytes to seed")
     p.add_argument("action", nargs="?", default=None)
     p.add_argument("names", nargs="*")

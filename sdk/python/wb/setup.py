@@ -3,9 +3,10 @@ report-only scrub.
 
     wb setup --report     scrub every repository's unpushed branches and remote ref names; change nothing
     wb setup              print the plan: the first release if the machine has none, the wb shim, wb.cli in the
-                          global git config, and the hook stubs per repository
+                          global git config, the hook stubs per repository, and the nightly runs (wb gc --nightly
+                          and wb backup, from the scheduler)
     wb setup --yes        do it; a hook Workbench did not write is kept beside its stub as <name>.before-workbench
-    wb setup --undo --yes restore those hooks and remove Workbench's
+    wb setup --undo --yes restore those hooks and remove Workbench's, and the nightly runs
 
 On a machine with no release, the first one is made from this clone's commit and marked bootstrap (wb deploy makes
 every later one). The shim goes in a user-writable bin folder (WB_BIN, else ~/.local/bin) and runs
@@ -19,7 +20,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import hooks
+from . import hooks, nightly
 from .workspace import REPO, Workspace, WorkspaceError, common_dir, git
 
 BACKUP = ".before-workbench"
@@ -208,7 +209,7 @@ def plan(workspace: Workspace, extra: list[str]) -> list[dict]:
             else:
                 action = f"install, keeping the existing hook as {name}{BACKUP}"
             steps.append({"what": f"{label}: {name}", "path": str(path), "action": action})
-    return steps
+    return steps + nightly.steps(workspace.config)
 
 
 def lab_questions(values: dict | None) -> list[str]:
@@ -249,7 +250,7 @@ def apply(workspace: Workspace, extra: list[str]) -> int:
             path.write_text(hooks.stub(name), encoding="utf-8", newline="\n")
             os.chmod(path, 0o755)
         print(f"{label}: hooks installed in {folder}")
-    return status
+    return status | nightly.install(workspace.config)
 
 
 def undo(workspace: Workspace, extra: list[str]) -> int:
@@ -263,6 +264,7 @@ def undo(workspace: Workspace, extra: list[str]) -> int:
                 backup.replace(path)
                 print(f"{label}: restored {name}")
         print(f"{label}: Workbench's hooks removed")
+    nightly.remove()
     return 0
 
 
