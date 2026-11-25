@@ -114,7 +114,11 @@ def _verdict(workspace, root: Path, name: str, findings: list, refused: list) ->
         _say(f"{len(findings)} scrub finding(s). Remove them, or mark a line that must keep its text with "
              "'scrub: allow'.")
     verdict = "refused" if (findings or refused) else "ok"
-    _log(workspace, root, name, f"{verdict} findings={len(findings)} refused={len(refused)}")
+    # Each refused ref with its commit and the gate's reason, so a refusal can be explained afterwards. A scrub
+    # finding is counted only: its text may quote what the scrub caught, which a log must not keep.
+    why = "".join(f" | {item['ref']} {str(item['commit'])[:12]}: {' '.join(str(item['reason']).split())[:240]}"
+                  for item in refused)
+    _log(workspace, root, name, f"{verdict} findings={len(findings)} refused={len(refused)}{why}")
     return 1 if (findings or refused) else 0
 
 
