@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import time
 from pathlib import Path
+
+from . import filelock
 
 PASSES = "passes"
 GATE = "gate"
@@ -50,12 +51,13 @@ def path(store: Path, project: str, tree: str, check: str, digest: str) -> Path:
 
 
 def _write_once(target: Path, value: dict) -> bool:
+    """Writes a record that is never replaced. A file in its place that holds no record (a crash left it empty or
+    cut short) is no record: it is set aside, and this one written, so one crash cannot keep a tree from passing."""
     if target.is_file():
-        return False
-    target.parent.mkdir(parents=True, exist_ok=True)
-    part = target.with_name(f"{target.name}.{os.getpid()}.part")
-    part.write_text(json.dumps(value, indent=1, sort_keys=True), encoding="utf-8")
-    part.replace(target)
+        if filelock.json_object(target) is not None:
+            return False
+        filelock.set_aside(target)
+    filelock.write_json(target, value, sort_keys=True)
     return True
 
 

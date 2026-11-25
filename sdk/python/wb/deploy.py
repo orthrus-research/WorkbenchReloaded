@@ -62,9 +62,8 @@ def _records(config) -> dict:
 
 
 def _save(config, records: dict):
-    path = _record_file(config)
-    path.with_suffix(".part").write_text(json.dumps(records, indent=1), encoding="utf-8")
-    path.with_suffix(".part").replace(path)
+    from wb_core import filelock
+    filelock.write_json(_record_file(config), records)
 
 
 def _git(root: Path, *args: str) -> str:

@@ -51,14 +51,19 @@ def _settled_sha256(path: Path, attempts: int = 40) -> str:
 
 
 def _write_once(source: Path, target: Path, digest: str):
+    """Keeps ``source`` at ``target``, a name its SHA-256 ``digest`` addresses. The Store never replaces a file; but
+    a file at that name with other bytes is not the file the name stands for (a crash cut it short, or the disk
+    damaged it), so it is set aside and the right bytes written, which is what every record naming it means."""
     if target.is_file():
-        if _settled_sha256(target) != digest:
-            raise StoreError(f"{target} holds other bytes than {digest}; the Store never replaces a file")
-        return
+        if _settled_sha256(target) == digest:
+            return
+        filelock.set_aside(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     part = filelock.part_of(target)
     try:
         shutil.copy2(source, part)
+        with open(part, "r+b") as stream:  # on the disk before the name says it is there
+            filelock.sync(stream)
         if sha256(part) != digest:
             raise StoreError(f"{source} changed while it was copied into the Store")
         try:
@@ -90,13 +95,14 @@ def record(store: Path, project: str, tree: str, commit: str, artifacts: dict) -
     """Adds ``artifacts`` ({name: {sha256, bytes, job, run}}) to the index of ``project`` at ``tree``."""
     path = store / "index" / project / f"{tree}.json"
     with _entry_lock(path):
-        try:
-            current = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
+        current = filelock.json_object(path) if path.exists() else None
+        if current is None:
+            # None yet, or one a crash left empty or cut short: set aside and begun again, since the runs that
+            # recorded it still hold their artifacts, and a damaged entry must not stop every later run of the tree.
+            aside = filelock.set_aside(path) if path.exists() else None
             current = {"project": project, "tree": tree, "commits": [], "artifacts": {}}
-        except (OSError, ValueError) as error:
-            raise StoreError(f"the Store's index entry {path} cannot be read ({error}); it was changed outside "
-                             "Workbench") from None
+            if aside is not None:
+                current["recovered"] = {"from": aside.name, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
         if commit not in current["commits"]:
             current["commits"].append(commit)
         for name, item in artifacts.items():
