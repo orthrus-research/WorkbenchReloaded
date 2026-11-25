@@ -736,6 +736,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--repo", action="append", default=[], help="another repository to cover")
     p = add("gpu", cmd_gpu, "the GPU lease: who holds it and who waits; a turn for any command (wb gpu run -- ...)")
     p.add_argument("action", nargs="?", choices=["status", "run", "leave", "stuck"])
+    p.add_argument("--all", action="store_true", help="status: every lane, the idle ones with no live process too")
     p.add_argument("--lane", help="run: the lane's name (default: one named after this folder and the command)")
     p.add_argument("--note", help="run: what the turn is for")
     p.add_argument("--limit", help="run: the longest turn (1h by default); past it the command is stopped")

@@ -39,7 +39,7 @@ def default_lane(command: list[str]) -> str:
     return f"run-{digest}"
 
 
-def show(report: dict) -> str:
+def show(report: dict, every: bool = False) -> str:
     lease = report["lease"]
     if lease["held"]:
         holder = lease["holder"] or {}
@@ -56,12 +56,18 @@ def show(report: dict) -> str:
             lane = report["lanes"][name]
             lines.append(f"  {index}. {name:<20} since {lane['waiting_since']}  {lane['note'] or ''}".rstrip())
     others = [n for n in report["lanes"] if n not in report["waiters"]]
+    quiet = [n for n in others if not every and not report["lanes"][n]["live"]
+             and str(report["lanes"][n]["state"] or "") == "idle"]
+    others = [n for n in others if n not in quiet]
     if others:
         lines.append("lanes:")
         for name in others:
             lane = report["lanes"][name]
             lines.append(f"  {name:<20} {str(lane['state']):<8} {'live' if lane['live'] else 'stale':<5} "
                          f"beat {lane['heartbeat_age']} s  {lane['note'] or ''}".rstrip())
+    if quiet:
+        lines.append(f"{len(quiet)} idle lane(s) with no live process not shown (wb gpu --all); each is removed once "
+                     "it has been silent a day")
     for issue in report["stuck"]:
         lines.append(f"stuck: {issue['lane']}: {issue['problem']} (fix: {issue['fix']})")
     return "\n".join(lines)
@@ -74,7 +80,7 @@ def main(args) -> int:
     action = args.action or "status"
     if action == "status":
         report = lease.status(lock, coordination)
-        print(json.dumps(report, indent=1, default=str) if args.json else show(report))
+        print(json.dumps(report, indent=1, default=str) if args.json else show(report, getattr(args, "all", False)))
         return 0
     if action == "stuck":
         issues = lease.stuck(lock, coordination)

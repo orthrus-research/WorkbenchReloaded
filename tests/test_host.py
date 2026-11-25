@@ -16,6 +16,7 @@ from harness import Daemon  # noqa: E402
 
 from wb_core.hostclient import HostClient  # noqa: E402
 from wb_host import lease  # noqa: E402
+from wb import gpu  # noqa: E402
 from wb_host.runner import HostServer, Runner  # noqa: E402
 
 
@@ -284,6 +285,23 @@ class Lanes(unittest.TestCase):
         lease.leave(self.lanes, "ghost")
         self.assertEqual(lease.stuck(self.lock, self.lanes), [])
         self.assertEqual(lease.read_entry(self.lanes / "ghost.json")["state"], "idle")
+
+    def test_a_lane_silent_a_day_is_removed_when_a_turn_ends_and_a_stuck_running_one_stays(self):
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        old = lease.stamp(time.time() - lease.FORGET_AFTER - 60)
+        for name, state in (("old-idle", "idle"), ("old-waiting", "waiting"), ("old-running", "running")):
+            lease.write_entry(self.lanes / f"{name}.json", {"state": state, "pid": gone.pid, "updatedUtc": old,
+                                                            "waiting_since": old if state == "waiting" else None})
+        lease.write_entry(self.lanes / "new-idle.json", {"state": "idle", "pid": gone.pid, "updatedUtc": lease.stamp()})
+        self.take_turn("mine").join(30)
+        names = sorted(p.stem for p in self.lanes.glob("*.json") if p.stem != "last-release")
+        self.assertEqual(names, ["mine", "new-idle", "old-running"])
+        self.assertEqual([i["lane"] for i in lease.stuck(self.lock, self.lanes)], ["old-running"])
+        shown = gpu.show(lease.status(self.lock, self.lanes))
+        self.assertNotIn("new-idle", shown)  # an idle lane with no live process is counted, not listed
+        self.assertIn("idle lane(s) with no live process not shown (wb gpu --all)", shown)
+        self.assertIn("new-idle", gpu.show(lease.status(self.lock, self.lanes), every=True))
 
     @unittest.skipUnless(os.name == "nt", "a terminal's Job Object is Windows'")
     def test_a_detached_turn_survives_its_shell(self):
