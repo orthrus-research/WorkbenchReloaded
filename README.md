@@ -273,7 +273,12 @@ it), builds or reuses the instance, and plays the session on this machine under 
 It prints the job id, launch file, instance and session folder at once, streams both consoles, and on a failure
 prints the decisive line, the crash report and the next command. `--from <launch.json>` replays a launch file's
 exact bytes; `--tour`, `--measure`, `--driver`, `--debug`, `--fresh-world`, `--param`, `--jvm`, `--view`,
-`--window` and `--edit` pass through to the build and the session.
+`--window` and `--edit` pass through to the build and the session. Played from a Work, its other members stand in
+for their lines at their HEADs, and `--with <project>=<ref|folder>` stands one in from anywhere: each stand-in's
+checks run first (a recorded pass stands) and one that does not pass is refused, as is a member with uncommitted
+changes; its members (and holds) then come from the Store by the tree CI built, and the launch file's `stand_ins` and
+session.json's `launch.stand_ins` give each one's commit, tree and the line it replaced. Outside a Work and without
+`--with`, every line is the set's.
 
 ## Money
 

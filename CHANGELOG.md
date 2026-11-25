@@ -2,6 +2,12 @@
 
 ## 0.1.0 (unreleased)
 
+- `wb play` takes stand-ins, as the vocabulary has said it does: played from a Work, its other members stand in for
+  their lines at their HEADs, and `--with <project>=<ref|folder>` stands one in. Each stand-in's checks pass first; a
+  member with uncommitted changes is refused. `lab.resolve` takes `stand_ins` ({project: commit}) and reads those
+  members, holds included, from the Store by the stand-in's tree; the launch file and session.json record each
+  stand-in's commit, tree and the line it replaced. Before, a play from a Work resolved every member from the set,
+  so a session meant for a branch's build ran the line's.
 - The core: config folder with deeper-wins merge and origins; static module manifests; activation by
   requirement; durable jobs with quotes and approval; scheduling by GPU lease, CPU budget and quiet machine;
   one worker process per job; caching of deterministic commands; `/v1` on localhost with a token; Minecraft-style

@@ -858,7 +858,58 @@ def object_at(repo: Path, commit: str, path: str) -> tuple[str, str] | None:
     return (kind.strip(), found.strip()) if kind else None
 
 
-def resolve_command(ctx, folder: str, launch: str = "default", out: str = ""):
+def stand_in(set_doc: dict, stand_ins: dict, *, product: str, store: Path, extras, objects) -> tuple[dict, dict]:
+    """(set document, record) for a launch some of whose projects stand in for their lines: each named project's line
+    is replaced by its commit, with every artifact its project.toml declares taken from the Store's index of that
+    commit's tree, and its holds left out, so that members, bases and member extras all read the stand-in. The record
+    gives each stand-in's commit, tree and the line's commit it replaced. A tree CI has not built is a MissingBuild."""
+    from wb_core import artifacts
+    doc = json.loads(json.dumps(set_doc))
+    lines, holds = doc.setdefault("projects", {}), doc.setdefault("holds", {})
+    record = {}
+    for name, commit in sorted(stand_ins.items()):
+        where = f"stand-in {name}"
+        if name == product:
+            raise LaunchError(f"{where}: it is the launch's own project, which is read at the worktree's HEAD")
+        if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise LaunchError(f"{where}: give a full commit id, not {commit!r}")
+        tree = _tree_of(objects, name, commit, where)
+        index = artifacts.find(store, name, tree)
+        if index is None:
+            raise MissingBuild(f"{where}: CI has not built {name} tree {tree[:12]} (commit {commit[:12]}): run wb check "
+                               f"in {name} at {commit[:12]}, then resolve again", name, commit)
+        found = {}
+        for part, declared in (((extras(name, commit) if extras is not None else None) or {}).get("artifacts")
+                               or {}).items():
+            glob = (declared or {}).get("file")
+            files = (index.get("artifacts") or {}).items()
+            # By the path the build wrote it at; by the file's name only where the index keeps no such path.
+            matches = [(file, item) for file, item in files
+                       if glob and fnmatch.fnmatch(str(item.get("from") or ""), glob)] or \
+                [(file, item) for file, item in files
+                 if glob and not item.get("from") and fnmatch.fnmatch(file, Path(glob).name)]
+            if len(matches) > 1:
+                raise LaunchError(f"{where}: the Store's index of {name} tree {tree[:12]} has {len(matches)} files "
+                                  f"matching {glob}")
+            if matches:
+                found[part] = {"sha256": matches[0][1]["sha256"], "file": matches[0][0]}
+        replaced = (lines.get(name) or {}).get("commit")
+        lines[name] = {**(lines.get(name) or {}), "commit": commit, "artifacts": found}
+        for key in [k for k in holds if k.startswith(f"{name}:") or k.startswith(f"{name}@")]:
+            del holds[key]
+        record[name] = {"commit": commit, "tree": tree, "replaces": replaced}
+    return doc, record
+
+
+def _mark_stand_ins(document: dict, record: dict):
+    """Members a stand-in's line gave are of kind stand-in, with the tree they were built from; the record goes in."""
+    for member in document.get("members") or []:
+        if member.get("kind") == "line" and member.get("name") in record:
+            member.update(kind="stand-in", tree=record[member["name"]]["tree"])
+    document["stand_ins"] = record
+
+
+def resolve_command(ctx, folder: str, launch: str = "default", out: str = "", stand_ins: dict | None = None):
     from wb.setwork import resolve as set_revision
     from wb.workspace import Workspace, WorkspaceError
     from wb_core import artifacts
@@ -929,10 +980,19 @@ def resolve_command(ctx, folder: str, launch: str = "default", out: str = ""):
             warnings.append(text)
             ctx.log.warning(text)
 
+        record = {}
+        if stand_ins:
+            set_doc, record = stand_in(set_doc, stand_ins, product=product, store=store, extras=extras,
+                                       objects=objects)
+            for name, item in record.items():
+                ctx.log.info(f"{name} stands in at {item['commit'][:12]} (tree {item['tree'][:12]}), over its line "
+                             + (item["replaces"][:12] if item["replaces"] else "(none)"))
         document = resolve(product=product, commit=commit, tree=tree, launch=launch, table=table, set_doc=set_doc,
                            revision=revision, store=store, product_artifacts=own.get("artifacts") or {},
                            product_index=artifacts.find(store, product, tree), extras=extras, objects=objects,
                            product_toml=own, warn=warn, follow=follow)
+        if record:
+            _mark_stand_ins(document, record)
     except MissingBuild as error:
         raise ParamError(str(error)) from error  # wb play reads what builds it from the cause
     except LaunchError as error:
@@ -948,11 +1008,14 @@ def resolve_command(ctx, folder: str, launch: str = "default", out: str = ""):
     chain = document.get("inherits") or []
     inherited = "".join(f", inherits {step['name']} at {step['commit'][:12]} ({step['chosen']}"
                         + (f" {step['ref']}" if step.get("ref") else "") + ")" for step in chain)
+    standing = "".join(f", {name} standing in at {item['commit'][:12]}"
+                       for name, item in (document.get("stand_ins") or {}).items())
     ctx.summary(f"launch {product}:{launch} at {commit[:12]} on set {revision[:7]}: {len(document['members'])} "
-                f"members{inherited}{based}, written to {target}")
+                f"members{inherited}{based}{standing}, written to {target}")
     return {"launch": str(target), "set": revision, "commit": commit,
             "members": {m["member"]: m["sha256"] for m in document["members"]},
             **({"base": {k: base[k] for k in ("name", "commit", "source")}} if base else {}),
             **({"inherits": [{k: step[k] for k in ("name", "commit", "chosen") if k in step} for step in chain]}
                if chain else {}),
+            **({"stand_ins": document["stand_ins"]} if document.get("stand_ins") else {}),
             **({"warnings": warnings} if warnings else {})}

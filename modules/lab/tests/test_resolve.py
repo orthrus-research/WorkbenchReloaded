@@ -645,6 +645,67 @@ class Inheritance(Base):
             self.derive(table=other)
 
 
+class StandIns(Base):
+    """A project standing in for its line: its members, holds included, come from the Store by the stand-in's tree,
+    are marked as stand-ins, and every other line stays the set's."""
+
+    STAND_COMMIT, STAND_TREE = "1" * 40, "2" * 40
+
+    def setUp(self):
+        super().setUp()
+        for name, data in {"lib-2.jar": jar_bytes("lib", extra=b"two"),
+                           "lib-adapter-2.jar": jar_bytes("lib_adapter", extra=b"two")}.items():
+            source = self.base / name
+            source.write_bytes(data)
+            self.digests[name] = artifacts.put(self.store, source).parent.name
+        artifacts.record(self.store, "lib", self.STAND_TREE, self.STAND_COMMIT, {
+            "lib-2.jar": {"sha256": self.digests["lib-2.jar"], "job": "build", "run": "r",
+                          "from": "build/libs/lib-2.jar"},
+            "lib-adapter-2.jar": {"sha256": self.digests["lib-adapter-2.jar"], "job": "build", "run": "r",
+                                  "from": "adapter/build/libs/lib-adapter-2.jar"}})
+        self.lib_toml = {"project": {"name": "lib"}, "artifacts": {
+            "mod": {"file": "build/libs/lib-*.jar"}, "adapter": {"file": "adapter/build/libs/lib-adapter-*.jar"},
+            "docs": {"file": "build/docs/lib-*.zip"}}}  # declared, not built by this check: left out
+
+    def stood(self, stand_ins):
+        return launch.stand_in(self.set_doc, stand_ins, product="game", store=self.store,
+                               extras=lambda project, commit: self.lib_toml if project == "lib" else None,
+                               objects=lambda project, commit, path: ("tree", self.STAND_TREE)
+                               if (project, commit, path) == ("lib", self.STAND_COMMIT, "") else None)
+
+    def test_a_stand_in_replaces_its_line_and_its_holds_and_nothing_else(self):
+        set_doc, record = self.stood({"lib": self.STAND_COMMIT})
+        self.assertEqual(record, {"lib": {"commit": self.STAND_COMMIT, "tree": self.STAND_TREE, "replaces": "d" * 40}})
+        self.assertNotIn("lib:adapter", set_doc["holds"])
+        self.assertIn("lib:adapter", self.set_doc["holds"])  # the set's own document is left as it was
+        doc = self.run_resolve(set_doc=set_doc)
+        launch._mark_stand_ins(doc, record)
+        by = {m["member"]: m for m in doc["members"]}
+        self.assertEqual((by["lib:mod@both"]["kind"], by["lib:mod@both"]["commit"], by["lib:mod@both"]["tree"],
+                          by["lib:mod@both"]["sha256"]),
+                         ("stand-in", self.STAND_COMMIT, self.STAND_TREE, self.digests["lib-2.jar"]))
+        self.assertEqual((by["lib:adapter@both"]["kind"], by["lib:adapter@both"]["sha256"]),
+                         ("stand-in", self.digests["lib-adapter-2.jar"]))
+        self.assertEqual((by["cube:mod@both"]["kind"], by["cube:mod@both"]["commit"]), ("line", "c" * 40))
+        self.assertEqual(doc["stand_ins"], record)
+
+    def test_a_tree_ci_has_not_built_names_the_check_that_builds_it(self):
+        self.lib_toml = dict(self.lib_toml)
+        objects = {("lib", "3" * 40, ""): ("tree", "4" * 40)}
+        with self.assertRaisesRegex(launch.MissingBuild, r"stand-in lib: CI has not built lib tree 444444444444 .*run "
+                                                         r"wb check in lib at 333333333333") as caught:
+            launch.stand_in(self.set_doc, {"lib": "3" * 40}, product="game", store=self.store,
+                            extras=lambda project, commit: self.lib_toml,
+                            objects=lambda project, commit, path: objects.get((project, commit, path)))
+        self.assertEqual(caught.exception.missing, ("lib", "3" * 40))
+
+    def test_the_launchs_own_project_and_a_short_commit_are_refused(self):
+        with self.assertRaisesRegex(launch.LaunchError, r"stand-in game: it is the launch's own project"):
+            self.stood({"game": self.STAND_COMMIT})
+        with self.assertRaisesRegex(launch.LaunchError, r"stand-in lib: give a full commit id, not '1111'"):
+            self.stood({"lib": "1111"})
+
+
 class InheritedCommand(unittest.TestCase):
     """lab.resolve in real repositories: the base product with no line follows origin's branch, else the local one,
     and its artifact must be in the Store for that commit's tree."""

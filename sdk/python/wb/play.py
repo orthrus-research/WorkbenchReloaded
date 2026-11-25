@@ -3,11 +3,14 @@
     wb play [project][@set|@head][:launch] [--from launch.json] [--name N] [--tour F] [--measure]
             [--driver D] [--debug client|server|both] [--fresh-world|--keep-world] [--param k=v]...
             [--jvm OPT]... [--view k=v]... [--window WxH] [--edit side/file:key=value]... [--no-rebuild]
-            [--desktop hidden]
+            [--desktop hidden] [--with project=ref|folder]...
 
 Without a project it plays the worktree you stand in; a project named while you stand in one of its worktrees is
 that worktree. The revision every line resolves at is the folder's .set, or the head where the folder has none
-('set <rev> (this folder, N behind)' or 'set <rev> (head)'). --from replays a launch file's exact bytes and resolves
+('set <rev> (this folder, N behind)' or 'set <rev> (head)'). Played from a Work, its other members stand in for their
+lines at their HEADs, and each --with stands one in at a ref or a worktree's HEAD: its checks run first (a recorded
+pass stands), one that does not pass is refused, and its members come from the Store by the tree CI built; the
+launch file and session.json name each stand-in's commit and tree. --from replays a launch file's exact bytes and resolves
 nothing. A driver (--driver) runs from the project's tree the launch was resolved from, its {root}: the worktree you
 stand in, or the registered checkout at the line; with --from, a worktree of the launch's project you stand in at
 its commit. A member the Store lacks is built first by submitting its producing check (ci.run) to the daemon; with
@@ -137,8 +140,74 @@ def tail(path: Path, label: str, stop: threading.Event):
 # --- resolving ------------------------------------------------------------------------------------------------------
 
 
-def resolve_launch(host: Host, target: dict, job: str, folder: Path, rebuild: bool) -> tuple[Path, Path]:
+def stand_ins(workspace, product: str, top: Path, given: list[str] | None) -> dict:
+    """{project: {commit, folder or ref}}: the projects that stand in for their lines in this play. Played from a
+    Work, every other member at its HEAD, as members stand in in every verb; then each --with <project>=<ref|folder>,
+    which wins over a member of that project. A folder with uncommitted changes is refused, since a launch describes
+    commits CI built. Played from outside a Work and without --with: none, and every line is the set's."""
+    from . import setwork
+    from .workspace import WorkspaceError, git
+    found = {}
+    home = setwork.home_of(workspace, top)
+    if home != top:
+        for member in sorted(p for p in home.iterdir() if p.is_dir() and (p / ".git").exists()):
+            try:
+                project, member_top = workspace.project_for(member)
+            except WorkspaceError:
+                continue
+            if project.name != product:
+                found[project.name] = member_top
+    for item in given or []:
+        name, sep, where = item.partition("=")
+        project = workspace.projects().get(name)
+        if not sep or project is None:
+            raise ValueError(f"--with {item!r}: name a registered project as <project>=<ref or folder>")
+        if name == product:
+            raise ValueError(f"--with {item!r}: {name} is the launch's own project; play from a worktree of it")
+        if Path(where).is_dir():
+            owner, member_top = workspace.project_for(Path(where))
+            if owner.name != name:
+                raise ValueError(f"--with {item!r}: {where} is a worktree of {owner.name}, not of {name}")
+            found[name] = member_top
+        else:
+            found[name] = where
+    out = {}
+    for name, where in found.items():
+        project = workspace.projects()[name]
+        if isinstance(where, Path):
+            if git(where, "status", "--porcelain", "--untracked-files=no", check=False):
+                raise ValueError(f"{name} stands in from {where}, which has uncommitted changes: commit them (a launch "
+                                 "describes commits), or play from outside the Work")
+            commit = git(where, "rev-parse", "HEAD")
+            out[name] = {"commit": commit, "folder": str(where)}
+        else:
+            commit = git(project.repo, "rev-parse", "--verify", f"{where}^{{commit}}", check=False)
+            if not commit:
+                raise ValueError(f"--with {name}={where}: no such commit in {project.repo}")
+            out[name] = {"commit": commit, "ref": where}
+    return out
+
+
+def check_stand_ins(found: dict):
+    """Each stand-in's checks, as wb check --with runs them (a recorded pass stands): one that does not pass cannot
+    stand in."""
+    from .cli import _client
+    client = _client()
+    for name, item in found.items():
+        commit = item["commit"]
+        job = client.submit("ci.run", {"project": name, "commit": commit})
+        say(f"{name} stands in at {commit[:12]} ({item.get('folder') or item.get('ref')}): its checks first "
+            f"(wb show {job.id})")
+        envelope = job.wait(None)
+        if envelope.get("outcome") != "ok":
+            raise ValueError(f"{name} at {commit[:12]} did not pass its checks, so it cannot stand in: "
+                             f"{envelope.get('summary')}")
+
+
+def resolve_launch(host: Host, target: dict, job: str, folder: Path, rebuild: bool,
+                   given: list[str] | None = None) -> tuple[Path, Path]:
     """lab.resolve at the folder's .set (or the head), building a member the Store lacks first, unless not asked.
+    A Work's other members and each --with stand in for their lines, once their checks pass.
     Returns the launch file and the project's tree it was resolved from (a driver's {root})."""
     from wb_core.module import ParamError
     from wb_lab import resolve as resolver
@@ -179,11 +248,16 @@ def resolve_launch(host: Host, target: dict, job: str, folder: Path, rebuild: bo
         if commit and at != commit:
             raise ValueError(f"{project.name}@set is {commit[:12]}, and {top} has {str(at)[:12]} checked out; play "
                              f"from a worktree at the line (wb work start <branch> {project.name}), or --from")
+    found = stand_ins(workspace, project.name, Path(top), given)
+    if found:
+        check_stand_ins(found)
+    standing = {name: item["commit"] for name, item in found.items()}
     out = host.lab_home / "launch" / f"{project.name}-{target['launch']}-{job}.json"
     for attempt in (1, 2):
-        ctx = host.context(job, "lab.resolve", {}, folder / f"resolve-{attempt}")
+        ctx = host.context(job, "lab.resolve", {"stand_ins": standing}, folder / f"resolve-{attempt}")
         try:
-            result = resolver.resolve_command(ctx, str(top), launch=target["launch"], out=str(out))
+            result = resolver.resolve_command(ctx, str(top), launch=target["launch"], out=str(out),
+                                              stand_ins=standing)
             return Path(result["launch"]), Path(top)
         except ParamError as error:
             missing = getattr(error.__cause__, "missing", None)
@@ -266,7 +340,8 @@ def main(args) -> int:
             doc = json.loads(launch.read_text(encoding="utf-8"))
             top = replay_root(doc) if args.driver else None
         else:
-            launch, top = resolve_launch(host, target, job, folder, rebuild=not args.no_rebuild)
+            launch, top = resolve_launch(host, target, job, folder, rebuild=not args.no_rebuild,
+                                         given=getattr(args, "stand_in", None))
             doc = json.loads(launch.read_text(encoding="utf-8"))
         if args.driver:
             from .workspace import git

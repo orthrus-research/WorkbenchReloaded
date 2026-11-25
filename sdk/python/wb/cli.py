@@ -767,6 +767,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-rebuild", action="store_true", help="build no missing member: refuse, naming the check")
     p.add_argument("--desktop", choices=["hidden"], help="hidden: the client on a hidden Windows desktop that never "
                    "takes the input")
+    p.add_argument("--with", dest="stand_in", action="append", metavar="PROJECT=REF|FOLDER",
+                   help="this project stands in for its line at that commit (a folder: its HEAD), once its checks "
+                        "pass; a Work's other members stand in without it")
     p = add("dev", cmd_dev, "run a verb with the CLI of the Workbench working tree you stand in (as WB_DEV=1)")
     p.add_argument("rest", nargs=argparse.REMAINDER, metavar="VERB ...")
     p = add("mcp", cmd_mcp, "serve Workbench to an MCP client on stdio: tools for commands and jobs, and the skills "

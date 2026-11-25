@@ -46,8 +46,10 @@ the project, `--from <launch.json>` (replay a launch file's exact bytes), `--nam
 
 ## Evidence
 
-- A measurement is evidence only as `--measure`. A session with `--debug`, with `--no-rebuild` after a refusal,
-  or with a stand-in is not, and says so.
+- A measurement is evidence only as `--measure`. A session with `--debug` or with `--no-rebuild` after a refusal
+  is not, and says so. A session with a stand-in (a Work's other member, or `--with`) is evidence of the stand-in's
+  commit, never of its line: `launch.stand_ins` in session.json names each one's commit and tree, and a stand-in
+  with uncommitted changes or without a passing check is refused.
 - What a session chose goes into its `session.json`; the template is never changed.
 - Retention removes old sessions. `run(command="lab.keep", params={"session": "<id>", "reason": "<why>"})` keeps
   one: its session, instance, template and launch file. Keep what a report cites.
