@@ -86,7 +86,7 @@ The former standalone tools' commands kept their earlier names as aliases (`tool
 
 ## CI
 
-`ci.run project=NAME` runs a project's jobs (its `actions.toml`) from a clean clone, with every repository the jobs
+`ci.run project=NAME` runs a project's checks (its `project.toml`; an older commit's `actions.toml`) from a clean clone, with every repository the jobs
 file names checked out at the commit the project pins. The checkouts are only read. Jobs get the image's JDKs
 (`JAVA_HOME`, `JAVA_HOME_<major>_X64`), a Gradle home that survives the container and serves the rescue repository
 (below), and the Python environments the project names, built once per set of requirements. The run records stay in Workbench, where `ci.gate` reads them:
@@ -141,7 +141,8 @@ lacks, is a finding.
 A project's CI fits Workbench, not the other way around. A jobs file that follows these rules runs the same in
 every clean clone:
 
-- **One file, `actions.toml`, at the project root**, in the shared actions format.
+- **One file, `project.toml`, at the project root** (a commit from before its conversion still has `actions.toml`, in
+  the shared actions format).
 - **Java comes from the environment:** `JAVA_HOME` (the standard JDK) and `JAVA_HOME_<major>_X64` for every other.
   Gradle already knows every JDK through the Gradle home. Never pass `org.gradle.java.installations.paths`, and never
   read JDK paths from a settings file of the checkout.

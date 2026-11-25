@@ -1,6 +1,6 @@
 """``wb play``: resolve a launch, build its instance (or reuse it), and play a session of it on this machine's GPU.
 
-    wb play [project][@ref|@set|@head][:launch] [--from launch.json] [--name N] [--tour F] [--measure]
+    wb play [project][@set|@head][:launch] [--from launch.json] [--name N] [--tour F] [--measure]
             [--driver D] [--debug client|server|both] [--fresh-world|--keep-world] [--param k=v]...
             [--jvm OPT]... [--view k=v]... [--window WxH] [--edit side/file:key=value]... [--no-rebuild]
             [--desktop hidden]

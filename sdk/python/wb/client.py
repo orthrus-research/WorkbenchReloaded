@@ -1,7 +1,7 @@
 """The Workbench client: submit a command, get a promise (a job), wait for its envelope.
 
     import wb
-    job = wb.run("frames.compare", ref="ref/", cand="cand/", profile="near")
+    job = wb.run("frames.compare", reference="ref/", candidate="cand/", profile="near")
     result = job.result()          # waits; raises wb.ApprovalRequired for a command that spends
 
 Standard library only. The endpoint and token come from WB_URL and WB_TOKEN (or WB_TOKEN_FILE), else

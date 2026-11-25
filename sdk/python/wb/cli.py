@@ -3,14 +3,14 @@
     wb up | down | restart | status | build
     wb ls [module]                       commands, active or inactive, with reasons
     wb help vast.rent                    parameters, requirements, result schema
-    wb run frames.compare ref=a/ cand=b/ profile=near [--out DIR] [--json] [--detach] [--fresh]
+    wb run frames.compare reference=a/ candidate=b/ profile=near [--out DIR] [--json] [--detach] [--fresh]
     wb wait JOB [--timeout 10m] | wb show JOB | wb jobs [--state S] | wb logs [MODULE|JOB] [-n N]
     wb approve JOB --quote Q [--via relayed] | wb cancel JOB
     wb config show [--origin] | wb schema
     wb gc [--only CLASS] | wb gc --yes DIGEST | wb gc --rules | wb gc --nightly
     wb host serve | install | status
     wb gpu [run [--note T] [--limit D] [--detach] [--quiet] -- CMD | leave LANE | stuck]
-    wb play [PROJECT][@REF|@set][:LAUNCH] [--from F] [--name N] [--tour F] [--measure] [--debug S] ...
+    wb play [PROJECT][@set|@head][:LAUNCH] [--from F] [--name N] [--tour F] [--measure] [--debug S] ...
     wb deploy [--commit SHA] [--wait 10m | --now] [--override REASON]
     wb dev VERB ...                      the CLI of the Workbench working tree you stand in, on purpose (WB_DEV=1)
     wb mcp [--list | --config]           serve Workbench to an MCP client on stdio: its tools and its skills
@@ -658,10 +658,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--nightly", action="store_true", help="remove the unattended classes (for the scheduler)")
     p.add_argument("--schedule", action="store_true",
                    help="print the lines that run --nightly and wb backup each night (wb setup --yes installs them)")
-    p = sub.add_parser("prune", help=argparse.SUPPRESS)  # the old verb, for one release: names wb gc
-    p.set_defaults(function=cmd_prune)
-    p.add_argument("--yes", action="store_true")
-    p.add_argument("--json", action="store_true")
     add("schema", cmd_schema, "print the API schema")
     add("up", cmd_up, "start the container")
     add("down", cmd_down, "stop the container")
@@ -687,7 +683,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--now", action="store_true", help="cancel what still runs after the wait, listing it first")
     p.add_argument("--override", metavar="REASON", help="skip the gate (the container pass and the host suite); "
                                                          "the reason is recorded in RELEASE.json")
-    p = add("work", cmd_work, "worktrees with a lifecycle: the view, start, add, adopt, finish")
+    p = add("work", cmd_work, "worktrees with a lifecycle: the view, start, add, adopt, sync, finish")
     p.add_argument("action", nargs="?", choices=["view", "start", "add", "adopt", "finish", "sync"])
     p.add_argument("names", nargs="*")
     p.add_argument("--all", action="store_true", help="every registered project's worktrees")
@@ -747,7 +743,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--quiet", action="store_true", help="run: a measurement; recorded in the lane and the lease")
     p.add_argument("rest", nargs=argparse.REMAINDER, metavar="-- COMMAND | LANE")
     p = add("play", cmd_play, "resolve a launch, build its instance, and play a session of it on this GPU")
-    p.add_argument("target", nargs="?", metavar="[PROJECT][@REF|@set|@head][:LAUNCH]")
+    p.add_argument("target", nargs="?", metavar="[PROJECT][@set|@head][:LAUNCH]")
     p.add_argument("--from", dest="from_file", metavar="LAUNCH.JSON", help="replay a launch file; resolve nothing")
     p.add_argument("--name", help="the instance's name (default <project>-<launch>)")
     p.add_argument("--tour", help="a tour file: play it and file its captures")
@@ -784,7 +780,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+RETIRED_VERBS = {"prune": cmd_prune}  # old verbs, for one release: they name what replaces them and are not listed
+
+
 def main(argv: list[str] | None = None) -> int:
+    given = sys.argv[1:] if argv is None else list(argv)
+    if given and given[0] in RETIRED_VERBS:
+        return RETIRED_VERBS[given[0]](None)
     args = build_parser().parse_args(argv)
     try:
         return args.function(args)
