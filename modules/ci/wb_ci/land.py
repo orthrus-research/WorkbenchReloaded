@@ -719,6 +719,10 @@ def land(ctx: Context, landing: str, base: str, projects: dict, deadline: float 
                         + (f"; reached {', '.join(sorted(reached))}" if reached else ""))
             return {"landing": landing, "state": state, "revision": record.get("revision"), "lines": lines,
                     "reached": reached}
+        if state == "abandoned" and record.get("dry"):  # validated and composed, as asked; publishing was never meant
+            ctx.summary(f"dry landing {landing}: {subject[5:]} would land; nothing was published"
+                        + (f"; it would reach {', '.join(sorted(reached))}" if reached else ""))
+            return {"landing": landing, "state": "dry"}
         if state == "abandoned":
             ctx.finding(f"landing {landing} was abandoned before the Set moved: {record.get('why') or 'no reason'}")
             return {"landing": landing, "state": state}

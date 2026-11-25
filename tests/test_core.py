@@ -464,8 +464,14 @@ class Paths(unittest.TestCase):
     def test_refusals(self):
         with self.assertRaises(PathError):
             self.map.resolve("F:\\elsewhere")  # scrub: allow
-        with self.assertRaises(PathError):
+        with self.assertRaises(PathError) as refused:
             self.map.resolve("D:\\mymod", need_write=True)  # scrub: allow
+        # A folder the job may not write: the refusal names where it may write, and its fix says so too.
+        self.assertIn("read-only; write under D:\\work\\out (out)", str(refused.exception))  # scrub: allow
+        self.assertEqual(refused.exception.fix, "give a folder under D:\\work\\out (out)")  # scrub: allow
+        with self.assertRaises(PathError) as nowhere:
+            PathMap([Root("projects", "D:\\", "/mnt/projects", "ro")]).resolve("D:\\x", need_write=True)  # scrub: allow
+        self.assertEqual(nowhere.exception.fix, "add a read-write root under [paths.roots]")
         with self.assertRaises(PathError):
             self.map.resolve("relative\\path")
 

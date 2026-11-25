@@ -348,8 +348,7 @@ class Workbench:
         try:
             self._translate(entry.command, checked, out)
         except PathError as error:
-            self._settle(job, "usage", str(error), reasons=[Reason("path", "path", str(error),
-                                                                   "add a root under [paths.roots]")])
+            self._settle(job, "usage", str(error), reasons=[Reason("path", "path", str(error), error.fix)])
             return self.envelope(job)
         self.db.execute("UPDATE job SET params_hash = ? WHERE id = ?",
                         ("sha256:" + hashlib.sha256(dumps(checked).encode()).hexdigest(), job))

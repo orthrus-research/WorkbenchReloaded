@@ -265,7 +265,8 @@ class Lander:
         record = self._prepared(job, landing)
         if dry:  # nothing was pushed, so nothing is deleted from any remote either
             from wb_core import landing as landings
-            landings.move(self.store, landing, "abandoned", why="a dry landing publishes nothing", refs_dropped=True)
+            landings.move(self.store, landing, "abandoned", why="a dry landing publishes nothing", refs_dropped=True,
+                          dry=True)
             return {"state": "dry", "landing": landing, "set_json": record["set_json"], "message": record["message"],
                     "reached": self._reached(record, reached)}
         result = self.publish(record, stop_after=stop_after)
