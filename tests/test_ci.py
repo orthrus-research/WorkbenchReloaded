@@ -396,6 +396,20 @@ class Ci(unittest.TestCase):
         self.assertTrue((hooks / "pre-push.before-workbench").exists())
         commands.hook(Ctx(), "demo", False)
         self.assertEqual((hooks / "pre-push").read_text(encoding="utf-8"), "#!/bin/sh\necho mine\n")
+        # A hook of the person's own, installed over again while the first one kept is still there: both are kept.
+        (hooks / "pre-push").write_text("#!/bin/sh\necho newer\n", encoding="utf-8")
+        (hooks / "pre-push.before-workbench").write_text("#!/bin/sh\necho older\n", encoding="utf-8")
+        commands.hook(Ctx(), "demo", True)
+        kept = sorted(p.read_text(encoding="utf-8") for p in hooks.glob("pre-push.before-workbench*"))
+        self.assertEqual(kept, ["#!/bin/sh\necho newer\n", "#!/bin/sh\necho older\n"])
+        commands.hook(Ctx(), "demo", False)
+        # wb setup's stub answers the gate and the scrub: ci.hook leaves it as it is, installing or removing.
+        from wb import hooks as setup_hooks
+        (hooks / "pre-push").write_text(setup_hooks.stub("pre-push"), encoding="utf-8")
+        for install in (True, False):
+            commands.hook(Ctx(), "demo", install)
+            self.assertEqual((hooks / "pre-push").read_text(encoding="utf-8"), setup_hooks.stub("pre-push"))
+        self.assertIn("has the hook wb setup installed", Ctx.notes[-1])
 
 
 SIZED = """

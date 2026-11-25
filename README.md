@@ -90,7 +90,9 @@ The former standalone tools' commands kept their earlier names as aliases (`tool
 file names checked out at the commit the project pins. The checkouts are only read. Jobs get the image's JDKs
 (`JAVA_HOME`, `JAVA_HOME_<major>_X64`), a Gradle home that survives the container and serves the rescue repository
 (below), and the Python environments the project names, built once per set of requirements. The run records stay in Workbench, where `ci.gate` reads them:
-`ci.hook project=NAME` installs a pre-push hook that refuses a commit whose tree has not passed. `commit=worktree`
+`wb setup --yes` installs in every registered project's repository the hooks that refuse a commit whose tree has
+not passed, and scrub every commit and push (`ci.hook project=NAME` installs a gate-only pre-push hook for a
+repository setup does not cover, and leaves setup's hook as it is). `commit=worktree`
 runs the checkout's working tree as it would be committed. Projects are declared in `[modules.ci.projects]`.
 A run's summary keeps each check's and step's time and peak memory (`peakRssBytes`: the most resident memory the
 step's process tree held at once, sampled every half second while it ran; a Gradle daemon counts, the step's own or

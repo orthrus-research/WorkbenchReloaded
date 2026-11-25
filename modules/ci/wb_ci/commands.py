@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import wb_tools.adapter  # noqa: F401  (puts the absorbed orthrus engine on sys.path)
@@ -1097,23 +1098,32 @@ def _wb_command(repo_root: Path) -> str:
     return '"' + (repo_root / "bin" / "wb").as_posix() + '"'
 
 
+SETUP_STUB = "Written by Workbench (wb setup)"  # the marker of the stubs wb setup installs (sdk/python/wb/hooks.py)
+
+
 def hook(ctx: Context, project: str, install: bool):
-    """Installs (or removes) the pre-push hook in the project's own checkout. Runs on the host, where git runs."""
+    """Installs (or removes) the pre-push hook in the project's own checkout. Runs on the host, where git runs.
+
+    The stub ``wb setup`` installs answers the push gate and the scrub on the host, so it is left as it is: this
+    hook would answer the gate only, through the daemon. A hook of a person's own is kept beside it, never deleted."""
     from wb_core.service import REPO_ROOT
     entry = _project(ctx, project)
     source = Path(entry["repo"])
     common = _common_dir(_git_dir(ctx, source))
     target = common / "hooks" / "pre-push"
     wb = _wb_command(REPO_ROOT)
+    existing = target.read_text(encoding="utf-8", errors="replace") if target.exists() else ""
+    if SETUP_STUB in existing:
+        ctx.summary(f"{common} has the hook wb setup installed, which answers the push gate and the scrub on the "
+                    "host; nothing changed (wb setup --yes rewrites it, wb setup --undo removes it)")
+        return {"project": project, "hook": str(target), "installed": True, "by": "wb setup"}
     if install:
-        if target.exists() and "Written by Workbench (ci.hook)" not in target.read_text(encoding="utf-8",
-                                                                                      errors="replace"):
+        if target.exists() and "Written by Workbench (ci.hook)" not in existing:
             backup = target.with_name("pre-push.before-workbench")
-            if not backup.exists():
-                target.replace(backup)
-                ctx.log.info(f"kept the previous hook as {backup.name}")
-            else:
-                target.unlink()
+            if backup.exists():  # the first one kept stays where restoring finds it; this one is kept too
+                backup = target.with_name(f"pre-push.before-workbench.{time.strftime('%Y%m%d%H%M%S')}")
+            target.replace(backup)
+            ctx.log.info(f"kept the previous hook as {backup.name}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(HOOK.replace("{wb}", wb).replace("{project}", project), encoding="utf-8", newline="\n")
         os.chmod(target, 0o755)
