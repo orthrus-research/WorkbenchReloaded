@@ -577,13 +577,14 @@ class Workbench:
     def recover(self):
         """D10: jobs left running by a stopped daemon are interrupted; their workers are killed. A queued job whose
         parent is no longer running is cancelled, since nothing waits for it."""
+        left = []  # (job, host run): asked to end once the daemon is up, so a runner that does not answer delays nothing
         for row in self.db.query("SELECT id, worker_pid, worker_mark, module FROM job WHERE state = 'running'"):
             # A PID names a process only while that process lives: after a restart (a new container is a new PID
             # space, and Windows hands PIDs out again within seconds) the number may be anyone's. The worker is
             # killed only when the process at that PID is still the one that started for this job.
             pid, mark = row["worker_pid"], row["worker_mark"]
             if mark and mark.startswith("host:"):
-                self._cancel_host_run(row["id"], mark[len("host:"):])
+                left.append((row["id"], mark[len("host:"):]))
             elif pid and mark and process_mark(pid) == mark:
                 _kill_pid(pid)
             self.db.execute("UPDATE job SET state = 'interrupted', settled = ?, summary = ? WHERE id = ?",
@@ -595,6 +596,10 @@ class Workbench:
                                  "AND p.state IN ('settled', 'cancelled', 'interrupted')"):
             self.db.execute("UPDATE quote SET status = 'void' WHERE job = ? AND status = 'open'", (row["id"],))
             self._set_state(row["id"], "cancelled", settled=time.time(), summary="cancelled: its parent had ended")
+        if left:
+            self.cancelling = threading.Thread(target=lambda: [self._cancel_host_run(*item) for item in left],
+                                               name="host runs left", daemon=True)
+            self.cancelling.start()
         for row in self.db.query("SELECT j.id, j.command FROM job j WHERE j.state = 'queued' AND j.id IN "
                                  "(SELECT job FROM quote WHERE status IN ('open', 'expired', 'replaced')) "
                                  "AND j.id NOT IN (SELECT job FROM approval)"):

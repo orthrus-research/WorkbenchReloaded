@@ -287,10 +287,11 @@ def release(lease: Lease, lane: Lane, coordination: Path | None):
 
 
 def forget(coordination: Path | None, at: float | None = None) -> list[str]:
-    """Removes the lane files with no live process that have said nothing for ``FORGET_AFTER``, idle or waiting:
-    one lane per game session or command otherwise stays for good, and a waiter whose process died a day ago will
-    not be restarted to claim its place. A lane marked running whose holder is gone stays for ``stuck`` to name and
-    a person to clear. Returns the lanes it removed."""
+    """Removes the lane files that have said nothing for ``FORGET_AFTER``, idle or waiting: such a lane is live for
+    nobody (a live lane beats every ``HEARTBEAT``), one lane per game session or command otherwise stays for good,
+    and a waiter silent a day will not come back for its place. A lane marked running whose holder is gone stays for
+    ``stuck`` to name and a person to clear. A lane written again since it was read is left. Returns the lanes it
+    removed."""
     if coordination is None or not Path(coordination).is_dir():
         return []
     at = time.time() if at is None else at
@@ -300,10 +301,13 @@ def forget(coordination: Path | None, at: float | None = None) -> list[str]:
         state = str(entry.get("state") or "")
         if state.startswith("running") or beat is None or at - beat < FORGET_AFTER or live(entry, at):
             continue
+        path = Path(coordination) / f"{name}.json"
         try:
-            (Path(coordination) / f"{name}.json").unlink()
+            if read_entry(path).get("updatedUtc") != entry.get("updatedUtc"):
+                continue  # a turn of the same name wrote it since: it is in use again
+            path.unlink()
             gone.append(name)
-        except OSError:
+        except (OSError, ValueError):
             continue  # another turn wrote it just now, or it is open: the next release looks again
     return gone
 

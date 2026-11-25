@@ -231,12 +231,15 @@ def export(folder: Path, revision: str, text: str) -> Path:
     """Writes the export of ``revision`` once; an existing export must hold the same text."""
     path = folder / revision / "set.json"
     if path.is_file():
-        if filelock.json_object(path) is None:
-            filelock.set_aside(path)  # left empty or cut short by a crash: no export, so it is written again
-        elif path.read_text(encoding="utf-8") != text:
-            raise SetError(f"{path} holds another set than revision {revision[:12]}")
-        else:
+        if filelock.record(path) != filelock.DAMAGED:
+            if path.read_text(encoding="utf-8") != text:
+                raise SetError(f"{path} holds another set than revision {revision[:12]}")
             return path
+        with filelock.healing(path):  # left empty or cut short by a crash: no export, so it is written again
+            if filelock.record(path) == filelock.DAMAGED:
+                filelock.set_aside(path)
+                filelock.write_whole(path, text.encode("utf-8"))
+        return export(folder, revision, text)
     filelock.write_whole(path, text.encode("utf-8"))
     return path
 

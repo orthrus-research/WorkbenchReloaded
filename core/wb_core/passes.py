@@ -53,10 +53,21 @@ def path(store: Path, project: str, tree: str, check: str, digest: str) -> Path:
 def _write_once(target: Path, value: dict) -> bool:
     """Writes a record that is never replaced. A file in its place that holds no record (a crash left it empty or
     cut short) is no record: it is set aside, and this one written, so one crash cannot keep a tree from passing."""
-    if target.is_file():
-        if filelock.json_object(target) is not None:
-            return False
-        filelock.set_aside(target)
+    if target.exists():
+        try:
+            if filelock.record(target) != filelock.DAMAGED:  # whole, or gone just now: it stands
+                return False
+        except OSError:
+            return False  # not readable just now: never taken for damage
+        with filelock.healing(target):
+            try:
+                if filelock.record(target) not in (filelock.DAMAGED, filelock.ABSENT):
+                    return False  # another writer healed it first
+            except OSError:
+                return False
+            filelock.set_aside(target)
+            filelock.write_json(target, value, sort_keys=True)
+        return True
     filelock.write_json(target, value, sort_keys=True)
     return True
 

@@ -113,7 +113,7 @@ def container_pass(config, root: Path, sha: str) -> dict:
                 return answer
             answer["required"] = list(jobs.required())
             refused = actions.gate_check(jobs, jobs.names[0], [f"refs/heads/deploy {sha} refs/heads/deploy {'0' * 40}"])
-            runs = jobs.runs
+            runs, names = jobs.runs, tuple(jobs.names)
     except (WorkspaceError, OSError, subprocess.SubprocessError) as error:
         answer["reason"] = f"CI's records could not be read: {error}"
         return answer
@@ -125,21 +125,27 @@ def container_pass(config, root: Path, sha: str) -> dict:
         return answer
     answer["passed"] = True
     tree = _git(root, "rev-parse", f"{sha}^{{tree}}")
-    answer["runs"] = [run for run, passed in _passing_runs(Path(runs), tree) if set(answer["required"]) <= passed]
+    answer["runs"] = [run for run, passed in _passing_runs(Path(runs), tree, names)
+                      if set(answer["required"]) <= passed]
     return answer
 
 
-def _passing_runs(runs: Path, tree: str) -> list[tuple[str, set[str]]]:
-    """Each recorded run of ``tree``, oldest first, with the checks it passed."""
+def _passing_runs(runs: Path, tree: str, names) -> list[tuple[str, set[str]]]:
+    """Each recorded run that vouches for ``tree``, oldest first, with the checks it passed. A run vouches as the
+    engine's passed_jobs says: it recorded every tree its jobs file names (``names``, the project's first), and none
+    of them changed while it ran."""
     found = []
     for summary in sorted(runs.glob("*/summary.json")):
         try:
             data = json.loads(summary.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if tree in (data.get("trees") or {}).values():
-            found.append((summary.parent.name, {n for n, r in (data.get("jobs") or {}).items()
-                                                if isinstance(r, dict) and r.get("status") == "passed"}))
+        tested = data.get("trees") or {}
+        if data.get("treesChanged", True) or not names or not all(tested.get(n) for n in names) \
+                or tested.get(names[0]) != tree:
+            continue
+        found.append((summary.parent.name, {n for n, r in (data.get("jobs") or {}).items()
+                                            if isinstance(r, dict) and r.get("status") == "passed"}))
     return found
 
 
@@ -160,9 +166,9 @@ def host_passes(config, root: Path, sha: str) -> dict:
             if jobs is None:
                 return answer
             answer["checks"] = [name for name, check in jobs.jobs.items() if actions.on_host(check)]
-            runs = Path(jobs.runs)
+            runs, names = Path(jobs.runs), tuple(jobs.names)
         tree = _git(root, "rev-parse", f"{sha}^{{tree}}")
-        for run, passed in _passing_runs(runs, tree):
+        for run, passed in _passing_runs(runs, tree, names):
             new = [name for name in answer["checks"] if name in passed and name not in answer["passed"]]
             if new:
                 answer["passed"] += new
@@ -179,7 +185,19 @@ def _remove(folder: Path):
     shutil.rmtree(folder, onerror=writable)
 
 
-SUITE_PARTS = ("generated", "core", "modules", "engine")  # tests/run_all.py's, one check of project.toml each
+def suite_parts(root: Path, sha: str) -> tuple[str, ...] | None:
+    """The parts the tree's own tests/run_all.py runs (its PARTS); None when they cannot be read, and the whole
+    suite runs."""
+    import ast
+    import re
+    done = subprocess.run(["git", "-C", str(root), "show", f"{sha}:tests/run_all.py"], capture_output=True,
+                          text=True, encoding="utf-8", errors="replace")
+    found = re.search(r"^PARTS\s*=\s*(\([^)]*\))", done.stdout, re.MULTILINE) if done.returncode == 0 else None
+    try:
+        parts = ast.literal_eval(found.group(1)) if found else None
+    except (ValueError, SyntaxError):
+        return None
+    return tuple(parts) if isinstance(parts, tuple) and all(isinstance(p, str) for p in parts) and parts else None
 
 
 def host_suite(root: Path, sha: str, head: bool, parts: list[str] | None = None) -> dict:
@@ -221,9 +239,10 @@ def gate(config, root: Path, deployed: dict, records: dict, override: str | None
         _say(f"tree {tree[:12]} passed the host suite at {tested['at']}")
         return True, {"ci": ci, "tests": tested}
     host = host_passes(config, root, deployed["sha"])
-    recorded = [part for part in SUITE_PARTS if part in host["passed"]]
+    every = suite_parts(root, deployed["sha"]) if host["passed"] else None
+    recorded = [part for part in every or () if part in host["passed"]]
     if recorded:
-        parts = [part for part in SUITE_PARTS if part not in recorded]
+        parts = [part for part in every if part not in recorded]
         _say(f"tree {tree[:12]} passed {', '.join(recorded)} on this host (run {', '.join(host['runs'])}), so the "
              f"host suite runs only {', '.join(parts) or 'nothing'}")
         tested = host_suite(root, deployed["sha"], deployed["head"], parts) if parts else \

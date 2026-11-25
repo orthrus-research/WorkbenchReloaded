@@ -887,7 +887,8 @@ class RestartHost(unittest.TestCase):
             job = d.client.submit("selftest.echo", {"text": "on the host"}).result(timeout=60)
             d.workbench.db.execute("UPDATE job SET state = 'running', worker_mark = ? WHERE id = ?",
                                    ("host:r_left", job.job))
-            d.workbench.recover()
+            d.workbench.recover()  # returns before the runner answers: the cancel goes on once the daemon serves
+            d.workbench.cancelling.join(10)
             self.assertEqual(host.cancelled, ["r_left"])
             self.assertEqual(d.client.job(job.job).refresh().state, "interrupted")
         finally:

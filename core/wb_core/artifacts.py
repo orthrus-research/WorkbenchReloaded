@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
+import stat
 import time
 from pathlib import Path
 
@@ -55,15 +57,35 @@ def _write_once(source: Path, target: Path, digest: str):
     a file at that name with other bytes is not the file the name stands for (a crash cut it short, or the disk
     damaged it), so it is set aside and the right bytes written, which is what every record naming it means."""
     if target.is_file():
-        if _settled_sha256(target) == digest:
+        if _held(target, digest):
             return
-        filelock.set_aside(target)
+        with filelock.healing(target):
+            if _held(target, digest):  # another writer healed it first
+                return
+            filelock.set_aside(target)
+            _place(source, target, digest)
+        return
+    _place(source, target, digest)
+
+
+def _held(target: Path, digest: str) -> bool:
+    """Whether ``target`` holds the bytes of ``digest``; a file moved away while it is read holds nothing."""
+    try:
+        return _settled_sha256(target) == digest
+    except FileNotFoundError:
+        return False
+
+
+def _place(source: Path, target: Path, digest: str):
     target.parent.mkdir(parents=True, exist_ok=True)
     part = filelock.part_of(target)
     try:
-        shutil.copy2(source, part)
-        with open(part, "r+b") as stream:  # on the disk before the name says it is there
+        # Copied through a file this process opened for writing, so a read-only source is kept like any other, and
+        # synced before the name says it is there; the source's times and mode follow.
+        with open(source, "rb") as given, open(part, "wb") as stream:
+            shutil.copyfileobj(given, stream, 1 << 20)
             filelock.sync(stream)
+        shutil.copystat(source, part)
         if sha256(part) != digest:
             raise StoreError(f"{source} changed while it was copied into the Store")
         try:
@@ -72,8 +94,20 @@ def _write_once(source: Path, target: Path, digest: str):
             # Another writer put the same file in place and a reader holds it open: the bytes are there already.
             if not (target.is_file() and _settled_sha256(target) == digest):
                 raise
+        filelock.sync_folder(target.parent)
     finally:
-        part.unlink(missing_ok=True)
+        _remove_part(part)
+
+
+def _remove_part(part: Path):
+    """Removes a part file left by a copy that did not finish, read-only or not."""
+    if not part.exists():
+        return
+    try:
+        os.chmod(part, stat.S_IWRITE | stat.S_IREAD)
+        part.unlink()
+    except OSError:
+        pass  # a part file is never read as a record; gc removes what is left
 
 
 def put(store: Path, source: Path, digest: str | None = None, pins: Path | None = None) -> Path:
@@ -95,11 +129,14 @@ def record(store: Path, project: str, tree: str, commit: str, artifacts: dict) -
     """Adds ``artifacts`` ({name: {sha256, bytes, job, run}}) to the index of ``project`` at ``tree``."""
     path = store / "index" / project / f"{tree}.json"
     with _entry_lock(path):
-        current = filelock.json_object(path) if path.exists() else None
-        if current is None:
+        try:
+            current = filelock.record(path)
+        except OSError as error:  # not readable just now: never taken for damage, so nothing is lost
+            raise StoreError(f"the Store's index entry {path} cannot be read ({error})") from None
+        if not isinstance(current, dict):
             # None yet, or one a crash left empty or cut short: set aside and begun again, since the runs that
             # recorded it still hold their artifacts, and a damaged entry must not stop every later run of the tree.
-            aside = filelock.set_aside(path) if path.exists() else None
+            aside = filelock.set_aside(path) if current == filelock.DAMAGED else None
             current = {"project": project, "tree": tree, "commits": [], "artifacts": {}}
             if aside is not None:
                 current["recovered"] = {"from": aside.name, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}

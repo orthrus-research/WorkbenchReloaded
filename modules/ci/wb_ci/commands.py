@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 import wb_tools.adapter  # noqa: F401  (puts the absorbed orthrus engine on sys.path)
+from wb_core import filelock  # noqa: E402
 from orthrus_tools import actions as engine
 from wb_build.files import write_atomic
 from wb_core.module import Context, EnvironmentProblem, ParamError
@@ -1033,14 +1034,20 @@ def _store_plugins(root: Path, packed: Path) -> int:
                 raise EnvironmentProblem(f"{packed.name}: {name} would be written outside the plugins folder")
             data = archive.read(info)
             if path.is_file():
-                if path.read_bytes() != data:
+                held = path.read_bytes()
+                if held == data:
+                    continue
+                if held:  # whole bytes of another build: a logic id's files are never replaced
                     raise EnvironmentProblem(f"the Store's plugins folder holds other bytes at {name}; a logic id's "
                                              "files are never replaced")
+                with filelock.healing(path):  # left empty by a crash: no file, so it is written again
+                    if path.is_file() and not path.read_bytes():
+                        filelock.set_aside(path)
+                    if not path.is_file():
+                        filelock.write_whole(path, data)
+                        placed += 1
                 continue
-            path.parent.mkdir(parents=True, exist_ok=True)
-            part = path.with_name(path.name + f".{os.getpid()}.part")
-            part.write_bytes(data)
-            part.replace(path)
+            filelock.write_whole(path, data)
             placed += 1
     return placed
 

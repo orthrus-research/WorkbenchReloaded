@@ -216,6 +216,53 @@ class Damaged(unittest.TestCase):
         self.assertEqual(artifacts.path_of(self.store, digest, "mod.jar"), kept)
         self.assertEqual([p.read_bytes() for p in kept.parent.glob("mod.jar.damaged-*")], [b"the who"])
 
+    def test_a_read_only_source_is_kept_and_leaves_no_part_behind(self):
+        import os
+        import stat
+        source = Path(self.folder.name) / "built.jar"
+        source.write_bytes(b"read only")
+        os.chmod(source, stat.S_IREAD)
+        self.addCleanup(os.chmod, source, stat.S_IWRITE | stat.S_IREAD)
+        digest = hashlib.sha256(b"read only").hexdigest()
+        kept = artifacts.put(self.store, source, digest)
+        self.assertEqual(kept.read_bytes(), b"read only")
+        self.assertEqual([p.name for p in kept.parent.iterdir()], ["built.jar"])
+        os.chmod(kept, stat.S_IWRITE | stat.S_IREAD)  # so the folder can be cleaned up
+
+    def test_a_record_that_cannot_be_read_just_now_is_never_taken_for_damage(self):
+        from unittest import mock
+        path = passes.path(self.store, "demo", "t1", "build", "k1")
+        passes.write(self.store, "demo", "t1", "build", "k1", {"run": "r1"})
+        before = path.read_bytes()
+        refused = PermissionError(13, "in use")
+        with mock.patch.object(Path, "read_text", side_effect=refused):
+            self.assertFalse(passes._write_once(path, {"run": "r2"}))
+        self.assertEqual(path.read_bytes(), before)
+        artifacts.record(self.store, "demo", "t1", "c1", {"mod.jar": {"sha256": "a"}})
+        with mock.patch.object(Path, "read_text", side_effect=refused):
+            with self.assertRaises(artifacts.StoreError):  # the entry is kept; this run's write waits for none
+                artifacts.record(self.store, "demo", "t1", "c2", {"mod.jar": {"sha256": "a"}})
+        self.assertEqual(artifacts.find(self.store, "demo", "t1")["commits"], ["c1"])
+
+    def test_of_two_writers_that_found_the_same_damage_the_second_leaves_the_first_ones_record(self):
+        from unittest import mock
+        path = passes.path(self.store, "demo", "t1", "build", "k1")
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"")
+        real, calls = filelock.record, []
+
+        def meanwhile(target):
+            calls.append(target)
+            if len(calls) == 1:  # this writer saw the damage; another healed it before this one took the lock
+                filelock.set_aside(target)
+                filelock.write_json(target, {"run": "first"})
+                return filelock.DAMAGED
+            return real(target)
+
+        with mock.patch.object(filelock, "record", side_effect=meanwhile):
+            self.assertFalse(passes._write_once(path, {"run": "second"}))
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["run"], "first")
+
     def test_a_set_export_left_empty_is_written_again_and_another_set_is_still_refused(self):
         folder = self.store / "sets"
         (folder / "r1").mkdir(parents=True)

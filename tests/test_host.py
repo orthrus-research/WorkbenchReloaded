@@ -106,24 +106,37 @@ class HostRunner(unittest.TestCase):
         finally:
             other.close()
 
-    def test_health_answers_while_nvidia_smi_hangs_and_keeps_the_card_it_knew(self):
+    def test_health_never_waits_for_nvidia_smi_and_keeps_the_card_it_knew(self):
         import subprocess
         from unittest import mock
-        runner = Runner(self.runner.settings, list(self.runner.modules.values()), log=lambda _: None)
         said = subprocess.CompletedProcess([], 0, "NVIDIA GeForce RTX 3060, 610.88, 12288 MiB\n", "")
-        hangs = subprocess.TimeoutExpired("nvidia-smi", 10)
-        with mock.patch("shutil.which", return_value="nvidia-smi"), mock.patch("subprocess.run", side_effect=hangs):
-            self.assertTrue(runner.health()["ok"])  # no card known yet, and no traceback
-            self.assertIsNone(runner.health()["gpu"])
-        runner._gpu = None
+        release = threading.Event()
+
+        def hangs(*_, **__):
+            release.wait(10)  # a game holds the card
+            raise subprocess.TimeoutExpired("nvidia-smi", 10)
+
+        def settled(runner):
+            for _ in range(200):
+                if runner._gpu_asking.acquire(blocking=False):
+                    runner._gpu_asking.release()
+                    return
+                time.sleep(0.05)
+
         with mock.patch("shutil.which", return_value="nvidia-smi"), mock.patch("subprocess.run", return_value=said):
+            runner = Runner(self.runner.settings, list(self.runner.modules.values()), log=lambda _: None)
+            settled(runner)
             self.assertEqual(runner.health()["gpu"]["name"], "NVIDIA GeForce RTX 3060")
         runner._gpu = (time.monotonic() - 1000, runner._gpu[1])  # stale: asked again, and it hangs
-        with (mock.patch("shutil.which", return_value="nvidia-smi"),
-              mock.patch("subprocess.run", side_effect=hangs) as asked):
-            self.assertEqual(runner.health()["gpu"]["driver"], "610.88")
-            runner.health()
-            self.assertEqual(asked.call_count, 1)  # not asked again on every health call while it hangs
+        with mock.patch("shutil.which", return_value="nvidia-smi"), \
+                mock.patch("subprocess.run", side_effect=hangs) as asked:
+            started = time.monotonic()
+            answers = [runner.health() for _ in range(5)]
+            self.assertLess(time.monotonic() - started, 1.0)  # health answered while nvidia-smi hung
+            self.assertEqual({a["gpu"]["driver"] for a in answers}, {"610.88"})  # the card it knew
+            release.set()
+            settled(runner)
+            self.assertEqual(asked.call_count, 1)  # one ask at a time, however many health calls came
 
     def test_auth_and_host_header(self):
         import urllib.error
@@ -287,6 +300,17 @@ class Lanes(unittest.TestCase):
         lease.leave(self.lanes, "ghost")
         self.assertEqual(lease.stuck(self.lock, self.lanes), [])
         self.assertEqual(lease.read_entry(self.lanes / "ghost.json")["state"], "idle")
+
+    def test_a_lane_written_again_since_it_was_read_is_not_removed(self):
+        from unittest import mock
+        old = lease.stamp(time.time() - lease.FORGET_AFTER - 60)
+        lease.write_entry(self.lanes / "reused.json", {"state": "idle", "pid": 0, "updatedUtc": old})
+        seen = lease.entries(self.lanes)
+        lease.write_entry(self.lanes / "reused.json", {"state": "waiting", "pid": os.getpid(),
+                                                       "updatedUtc": lease.stamp(), "waiting_since": lease.stamp()})
+        with mock.patch.object(lease, "entries", return_value=seen):  # read before the new turn wrote it
+            self.assertEqual(lease.forget(self.lanes), [])
+        self.assertEqual(lease.read_entry(self.lanes / "reused.json")["state"], "waiting")
 
     def test_a_lane_silent_a_day_is_removed_when_a_turn_ends_and_a_stuck_running_one_stays(self):
         gone = subprocess.Popen([sys.executable, "-c", "pass"])

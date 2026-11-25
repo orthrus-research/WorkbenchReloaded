@@ -293,14 +293,19 @@ def caller() -> str | None:
     submitted from inside a job has none of its own: its parent says whose it is."""
     named = os.environ.get("WB_CALLER")
     if named or os.environ.get("WB_JOB"):
-        return named or None
+        return _ascii(named) if named else None
     try:
         here = Path.cwd()
     except OSError:
         return None
     top = next((folder for folder in (here, *here.parents) if (folder / ".git").exists()), here)
     parts = [part for part in (top.parent.name, top.name) if part]
-    return "/".join(parts)[-80:] or None
+    return _ascii("/".join(parts)[-80:]) or None
+
+
+def _ascii(label: str) -> str:
+    """A label as a header carries it: any character outside ASCII written as its escape (Ł as \\u0141)."""
+    return label.encode("ascii", "backslashreplace").decode("ascii")
 
 
 _COMMIT: list = []

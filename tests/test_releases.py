@@ -429,19 +429,24 @@ class ContainerPass(unittest.TestCase):
             '[checks.core]\non = "host"\nsteps = [["{python}", "tests/run_all.py", "--part", "core"]]\n'
             '[checks.modules]\non = "host"\nsteps = [["{python}", "tests/run_all.py", "--part", "modules"]]\n')
         (self.repo / "project.toml").write_text(project, encoding="utf-8", newline="\n")
+        (self.repo / "tests" / "run_all.py").write_text(
+            'import sys\nPARTS = ("generated", "core", "modules", "engine")\nsys.exit(0)\n', encoding="utf-8")
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "-m", "checks")
         sha, tree = git(self.repo, "rev-parse", "HEAD"), git(self.repo, "rev-parse", "HEAD^{tree}")
 
-        def ran(name, jobs, of=tree):
+        def ran(name, jobs, of=tree, changed=False):
             folder = self.records / "workbench" / name
             folder.mkdir(parents=True)
-            (folder / "summary.json").write_text(json.dumps({"trees": {"project": of}, "treesChanged": False, "jobs": {
-                check: {"status": status} for check, status in jobs.items()}}), encoding="utf-8")
+            (folder / "summary.json").write_text(json.dumps({"trees": {"workbench": of}, "treesChanged": changed,
+                                                             "jobs": {check: {"status": status}
+                                                                      for check, status in jobs.items()}}),
+                                                 encoding="utf-8")
 
         ran("run-1", {"generated": "passed"})
         ran("run-2", {"core": "passed", "modules": "failed"})
         ran("run-3", {"modules": "passed"}, of="0" * 40)  # another tree's pass stands for nothing here
+        ran("run-3b", {"modules": "passed"}, changed=True)  # nor one whose files changed while it ran
         self.assertEqual(deploy.host_passes(self.config, self.repo, sha),
                          {"checks": ["core", "modules"], "passed": ["core"], "runs": ["run-2"]})
         suites = []
@@ -462,6 +467,8 @@ class ContainerPass(unittest.TestCase):
             self.assertTrue(deploy.gate(self.config, self.repo, deployed, records, None)[0])
             self.assertEqual(suites[-1], ["generated", "engine"])
             self.assertEqual(records["tested"][tree]["host_runs"], ["run-2", "run-4"])
+        self.assertEqual(deploy.suite_parts(self.repo, sha), ("generated", "core", "modules", "engine"))
+        self.assertIsNone(deploy.suite_parts(self.repo, git(self.repo, "rev-parse", "HEAD~1")))  # none: run it whole
 
     def test_an_unregistered_checkout_has_no_records(self):
         from wb import deploy

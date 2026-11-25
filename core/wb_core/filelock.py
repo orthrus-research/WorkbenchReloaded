@@ -142,19 +142,37 @@ def write_json(target: Path, value, **dumps) -> Path:
 
 def set_aside(path: Path) -> Path | None:
     """Moves a damaged file out of the way under a name no reader takes for a record (``<name>.damaged-<when>``),
-    so the record can be written again and the damage is kept to be seen. None when it was gone already."""
+    so the record can be written again and the damage is kept to be seen. None when it was gone already. Retried
+    while Windows refuses it because a reader has the file open."""
     aside = path.with_name(f"{path.name}.damaged-{time.strftime('%Y%m%dT%H%M%S')}-{secrets.token_hex(2)}")
     try:
-        path.replace(aside)
+        replace(path, aside)
     except FileNotFoundError:
         return None
     return aside
 
 
-def json_object(path: Path) -> dict | None:
-    """The JSON object a file holds; None when it holds none (empty, cut short, or not an object)."""
+ABSENT, DAMAGED = "absent", "damaged"
+
+
+def record(path: Path) -> dict | str:
+    """What a record file holds: its JSON object, ``ABSENT`` when there is no file, or ``DAMAGED`` when the file holds
+    no object (empty, cut short, or not an object). A read that fails for any other reason raises: a file that
+    could not be read is not known to be damaged, and must never be replaced as if it were."""
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return value if isinstance(value, dict) else None
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ABSENT
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return DAMAGED
+    return value if isinstance(value, dict) else DAMAGED
+
+
+@contextlib.contextmanager
+def healing(target: Path):
+    """Held while a damaged ``target`` is set aside and written again, so two writers that found the same damage do
+    not set aside each other's new file: whoever takes it second finds the record whole, and leaves it."""
+    with exclusive(target.with_name(target.name + ".heal"), stale=60.0):
+        yield

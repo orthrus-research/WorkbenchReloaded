@@ -75,6 +75,8 @@ class Runner:
         self.commit = source_commit(REPO_ROOT)  # the code this runner loaded at start; health reports it
         self.abandon_after = float(runner.get("abandon_after") or 600)
         self._gpu: tuple[float, dict | None] | None = None  # (when, what nvidia-smi said): the card does not change
+        self._gpu_asking = threading.Lock()
+        self._ask_gpu()  # at start, so health has the card before the daemon first asks
         self._watching = threading.Event()
 
     # -- runs ------------------------------------------------------------------------------------
@@ -235,24 +237,36 @@ class Runner:
                 "heartbeat": time.time()}
 
     def gpu(self) -> dict | None:
-        """The card's name, driver and memory, asked of nvidia-smi once in a while: it is slow, and it hangs while a
-        game holds the card, which must not make the runner look down. The last answer stands until then."""
-        if self._gpu and time.monotonic() - self._gpu[0] < 300:
-            return self._gpu[1]
+        """The card's name, driver and memory as nvidia-smi last said them. Asking is slow, and hangs while a game
+        holds the card, so health never waits for it: a stale answer is refreshed in the background, by one asker at
+        a time, and the last answer stands meanwhile."""
+        if not self._gpu or time.monotonic() - self._gpu[0] >= 300:
+            self._ask_gpu()
+        return self._gpu[1] if self._gpu else None
+
+    def _ask_gpu(self):
+        if not self._gpu_asking.acquire(blocking=False):
+            return  # an ask is under way
+        threading.Thread(target=self._asked_gpu, name="nvidia-smi", daemon=True).start()
+
+    def _asked_gpu(self):
         known = self._gpu[1] if self._gpu else None
-        if not shutil.which("nvidia-smi"):
-            return None
         try:
-            done = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
-                                   "--format=csv,noheader"], capture_output=True, text=True, timeout=10)
-        except (subprocess.TimeoutExpired, OSError):
-            self._gpu = (time.monotonic() - 240, known)  # ask again in a minute
-            return known
-        if done.returncode == 0 and done.stdout.strip():
-            name, driver, memory = ([p.strip() for p in done.stdout.strip().splitlines()[0].split(",")] + ["", ""])[:3]
-            known = {"name": name, "driver": driver, "memory": memory}
-        self._gpu = (time.monotonic(), known)
-        return known
+            if not shutil.which("nvidia-smi"):
+                self._gpu = (time.monotonic(), None)
+                return
+            try:
+                done = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
+                                       "--format=csv,noheader"], capture_output=True, text=True, timeout=10)
+            except (subprocess.TimeoutExpired, OSError):
+                self._gpu = (time.monotonic() - 240, known)  # ask again in a minute
+                return
+            if done.returncode == 0 and done.stdout.strip():
+                fields = [p.strip() for p in done.stdout.strip().splitlines()[0].split(",")] + ["", ""]
+                known = {"name": fields[0], "driver": fields[1], "memory": fields[2]}
+            self._gpu = (time.monotonic(), known)
+        finally:
+            self._gpu_asking.release()
 
     def health(self) -> dict:
         gpu = self.gpu()
