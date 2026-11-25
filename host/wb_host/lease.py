@@ -35,6 +35,7 @@ LIVE_FOR = 300.0
 POLL = 5.0
 HEARTBEAT = 30.0
 LIMIT = 3600.0  # the longest turn by default; past it the command is stopped and the lease released
+FORGET_AFTER = 86400.0  # an idle lane silent this long is removed: it holds no place, and nobody reads it again
 
 
 def stamp(ts: float | None = None) -> str:
@@ -282,6 +283,33 @@ def release(lease: Lease, lane: Lane, coordination: Path | None):
         except OSError:
             pass
     lane.close()
+    forget(coordination)
+
+
+def forget(coordination: Path | None, at: float | None = None) -> list[str]:
+    """Removes the lane files that have said nothing for ``FORGET_AFTER``, idle or waiting: such a lane is live for
+    nobody (a live lane beats every ``HEARTBEAT``), one lane per game session or command otherwise stays for good,
+    and a waiter silent a day will not come back for its place. A lane marked running whose holder is gone stays for
+    ``stuck`` to name and a person to clear. A lane written again since it was read is left. Returns the lanes it
+    removed."""
+    if coordination is None or not Path(coordination).is_dir():
+        return []
+    at = time.time() if at is None else at
+    gone = []
+    for name, entry in entries(coordination).items():
+        beat = parse(entry.get("updatedUtc"))
+        state = str(entry.get("state") or "")
+        if state.startswith("running") or beat is None or at - beat < FORGET_AFTER or live(entry, at):
+            continue
+        path = Path(coordination) / f"{name}.json"
+        try:
+            if read_entry(path).get("updatedUtc") != entry.get("updatedUtc"):
+                continue  # a turn of the same name wrote it since: it is in use again
+            path.unlink()
+            gone.append(name)
+        except (OSError, ValueError):
+            continue  # another turn wrote it just now, or it is open: the next release looks again
+    return gone
 
 
 
@@ -480,6 +508,7 @@ def turn(lock: Path, coordination: Path, lane: str, command: list[str], *, note:
             write_entry(Path(coordination) / "last-release.json", {"utc": stamp(), "lane": lane})
             log(f"{stamp()} released the lease")
         publish(state="idle", waiting_since=None, **({"releasedUtc": stamp()} if held is not None else {}))
+        forget(coordination)
 
 
 def detach(argv: list[str], coordination: Path, lane: str, cwd: Path | None = None) -> dict:

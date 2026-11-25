@@ -1,7 +1,7 @@
 """The Workbench client: submit a command, get a promise (a job), wait for its envelope.
 
     import wb
-    job = wb.run("frames.compare", ref="ref/", cand="cand/", profile="near")
+    job = wb.run("frames.compare", reference="ref/", candidate="cand/", profile="near")
     result = job.result()          # waits; raises wb.ApprovalRequired for a command that spends
 
 Standard library only. The endpoint and token come from WB_URL and WB_TOKEN (or WB_TOKEN_FILE), else
@@ -178,8 +178,9 @@ class Client:
         headers = {"Idempotency-Key": key}
         if os.environ.get("WB_JOB"):  # submitted from inside a job: the scheduler must not make it wait on us
             headers["X-Wb-Parent"] = os.environ["WB_JOB"]
-        if os.environ.get("WB_CALLER"):
-            headers["X-Wb-Caller"] = os.environ["WB_CALLER"]  # who submitted it, as the caller names itself
+        label = caller()
+        if label:
+            headers["X-Wb-Caller"] = label  # who submitted it, as the caller names itself
         if not os.environ.get("WB_JOB") and not os.environ.get("WB_DEV"):
             commit = _cli_commit()
             if commit:
@@ -284,6 +285,27 @@ class Job:
 
     def events(self):
         return self.client.events(self.id)
+
+
+def caller() -> str | None:
+    """Who submits, as jobs are labelled and ``--mine`` filters: WB_CALLER when it is set, else the worktree the
+    process stands in (``<its parent folder>/<its folder>``, as a Work names a member), else the folder itself. A job
+    submitted from inside a job has none of its own: its parent says whose it is."""
+    named = os.environ.get("WB_CALLER")
+    if named or os.environ.get("WB_JOB"):
+        return _ascii(named) if named else None
+    try:
+        here = Path.cwd()
+    except OSError:
+        return None
+    top = next((folder for folder in (here, *here.parents) if (folder / ".git").exists()), here)
+    parts = [part for part in (top.parent.name, top.name) if part]
+    return _ascii("/".join(parts)[-80:]) or None
+
+
+def _ascii(label: str) -> str:
+    """A label as a header carries it: any character outside ASCII written as its escape (Ł as \\u0141)."""
+    return label.encode("ascii", "backslashreplace").decode("ascii")
 
 
 _COMMIT: list = []

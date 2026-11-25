@@ -15,9 +15,10 @@ set-pushed is finished by the next wb land without running a check; one left bef
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
+
+from . import filelock
 
 STATES = ("prepared", "refs-pushed", "set-pushed", "landed", "abandoned")
 OPEN = ("prepared", "refs-pushed", "set-pushed")
@@ -38,12 +39,8 @@ def path(store: Path, landing: str) -> Path:
 def write(store: Path, record: dict) -> dict:
     if record.get("state") not in STATES:
         raise LandingError(f"unknown landing state {record.get('state')!r}")
-    target = path(store, record["id"])
-    target.parent.mkdir(parents=True, exist_ok=True)
     record = {**record, "updated": time.time()}
-    part = target.with_name(f"{target.name}.{os.getpid()}.part")
-    part.write_text(json.dumps(record, indent=1), encoding="utf-8")
-    part.replace(target)
+    filelock.write_json(path(store, record["id"]), record)  # on the disk before the next step of the publish
     return record
 
 

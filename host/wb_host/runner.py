@@ -40,6 +40,10 @@ class Run:
     cancelled: threading.Event = field(default_factory=threading.Event)
     process: subprocess.Popen | None = None
     started: float = field(default_factory=time.time)
+    followed: float = field(default_factory=time.monotonic)  # when the daemon last asked for its events
+
+
+ABANDON_CHECK_S = 30  # how often the runner looks for runs nobody follows
 
 
 class Runner:
@@ -69,6 +73,11 @@ class Runner:
         self.java_home = str(runner.get("java_home") or "")
         from wb_core.identity import source_commit
         self.commit = source_commit(REPO_ROOT)  # the code this runner loaded at start; health reports it
+        self.abandon_after = float(runner.get("abandon_after") or 600)
+        self._gpu: tuple[float, dict | None] | None = None  # (when, what nvidia-smi said): the card does not change
+        self._gpu_asking = threading.Lock()
+        self._ask_gpu()  # at start, so health has the card before the daemon first asks
+        self._watching = threading.Event()
 
     # -- runs ------------------------------------------------------------------------------------
     def start(self, name: str, body: dict) -> str:
@@ -80,7 +89,32 @@ class Runner:
         with self.cond:
             self.runs[run.id] = run
         threading.Thread(target=self._run, args=(run,), name=f"run-{run.id}", daemon=True).start()
+        if not self._watching.is_set():
+            self._watching.set()
+            threading.Thread(target=self._watch, name="abandoned runs", daemon=True).start()
         return run.id
+
+    def abandoned(self, now: float | None = None) -> list[str]:
+        """Cancels every run still going that the daemon has not asked about for ``abandon_after``: the daemon that
+        started it stopped or restarted (and marked its job interrupted), so the run would hold the GPU lease and
+        the machine for a result nobody receives. Returns the runs it cancelled."""
+        now = time.monotonic() if now is None else now
+        with self.cond:
+            gone = [run for run in self.runs.values() if not run.finished and not run.cancelled.is_set()
+                    and now - run.followed > self.abandon_after]
+        for run in gone:
+            self.log(f"{run.id} {run.command.full} (job {run.body.get('job')}): nobody asked about it for "
+                     f"{now - run.followed:.0f} s, so its daemon is gone; cancelling it")
+            self.cancel(run.id)
+        return [run.id for run in gone]
+
+    def _watch(self):
+        while True:
+            time.sleep(ABANDON_CHECK_S)
+            try:
+                self.abandoned()
+            except Exception as error:  # noqa: BLE001 - the watch must outlive one bad pass
+                self.log(f"abandoned runs: {type(error).__name__}: {error}")
 
     def _emit(self, run: Run, event: dict):
         with self.cond:
@@ -190,6 +224,7 @@ class Runner:
 
     def events(self, run_id: str, after: int, wait: float) -> dict:
         run = self.runs[run_id]
+        run.followed = time.monotonic()
         deadline = time.monotonic() + wait
         with self.cond:
             while len(run.events) <= after and not run.finished:
@@ -201,14 +236,40 @@ class Runner:
         return {"events": batch, "finished": run.finished and len(run.events) <= after + len(batch),
                 "heartbeat": time.time()}
 
-    def health(self) -> dict:
-        gpu = None
-        if shutil.which("nvidia-smi"):
-            done = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
-                                  capture_output=True, text=True, timeout=10)
+    def gpu(self) -> dict | None:
+        """The card's name, driver and memory as nvidia-smi last said them. Asking is slow, and hangs while a game
+        holds the card, so health never waits for it: a stale answer is refreshed in the background, by one asker at
+        a time, and the last answer stands meanwhile."""
+        if not self._gpu or time.monotonic() - self._gpu[0] >= 300:
+            self._ask_gpu()
+        return self._gpu[1] if self._gpu else None
+
+    def _ask_gpu(self):
+        if not self._gpu_asking.acquire(blocking=False):
+            return  # an ask is under way
+        threading.Thread(target=self._asked_gpu, name="nvidia-smi", daemon=True).start()
+
+    def _asked_gpu(self):
+        known = self._gpu[1] if self._gpu else None
+        try:
+            if not shutil.which("nvidia-smi"):
+                self._gpu = (time.monotonic(), None)
+                return
+            try:
+                done = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
+                                       "--format=csv,noheader"], capture_output=True, text=True, timeout=10)
+            except (subprocess.TimeoutExpired, OSError):
+                self._gpu = (time.monotonic() - 240, known)  # ask again in a minute
+                return
             if done.returncode == 0 and done.stdout.strip():
-                name, driver, memory = [p.strip() for p in done.stdout.strip().splitlines()[0].split(",")]
-                gpu = {"name": name, "driver": driver, "memory": memory}
+                fields = [p.strip() for p in done.stdout.strip().splitlines()[0].split(",")] + ["", ""]
+                known = {"name": fields[0], "driver": fields[1], "memory": fields[2]}
+            self._gpu = (time.monotonic(), known)
+        finally:
+            self._gpu_asking.release()
+
+    def health(self) -> dict:
+        gpu = self.gpu()
         holder = leases.owner(self.lease_file) if leases.occupied(self.lease_file) else None
         return {"ok": True, "commit": self.commit, "gpu": gpu, "lab_home": str(self.lab_home),
                 "lease_file": str(self.lease_file),

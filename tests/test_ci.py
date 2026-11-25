@@ -368,6 +368,30 @@ class Ci(unittest.TestCase):
         self.assertNotIn("job", served)
         self.assertEqual(result.children, [])
 
+    def test_a_failed_steps_reason_names_why_it_failed_not_the_logs_last_lines(self):
+        sys.path.insert(0, str(REPO / "modules" / "tools"))
+        sys.path.insert(0, str(REPO / "modules" / "ci"))
+        from wb_ci.commands import decisive
+        footer = ["", "* Try:", "> Run with --stacktrace option to get the stack trace.", "",
+                  "BUILD FAILED in 11s", "4 actionable tasks: 4 executed"]
+        gradle = ["> Task :compileJava", "src/main/java/a/B.java:12: error: cannot find symbol", "  B.c();",
+                  "", "FAILURE: Build failed with an exception.", "", "* What went wrong:",
+                  "Execution failed for task ':compileJava'.", "> Compilation failed; see the compiler output."]
+        self.assertEqual(decisive(gradle + footer), [
+            "src/main/java/a/B.java:12: error: cannot find symbol",
+            "Execution failed for task ':compileJava'.", "> Compilation failed; see the compiler output."])
+        tests = ["> Task :test", "", "BTest > adds() FAILED", "    org.opentest4j.AssertionFailedError at BTest.java:9",
+                 "", "* What went wrong:", "Execution failed for task ':test'.", "> There were failing tests."]
+        self.assertEqual(decisive(tests + footer)[0], "BTest > adds() FAILED")
+        python = ["working", "Traceback (most recent call last):", '  File "x.py", line 3, in <module>',
+                  "    raise ValueError('no')", "ValueError: no", "after the traceback"]
+        self.assertEqual(decisive(python), python[1:5])
+        unit = ["....F", "======", "FAIL: test_x (t.T.test_x)", "------", "AssertionError: 1 != 2", "------",
+                "Ran 5 tests in 0.1s", "FAILED (failures=1)"]
+        self.assertEqual(decisive(unit), ["FAIL: test_x (t.T.test_x)", "AssertionError: 1 != 2"])
+        plain = [f"line {n}" for n in range(30)]
+        self.assertEqual(decisive(plain), plain[-12:])  # nothing to pick: the log's last lines, as before
+
     def test_hook_installs_and_restores(self):
         sys.path.insert(0, str(REPO / "modules" / "tools"))
         sys.path.insert(0, str(REPO / "modules" / "ci"))
@@ -396,6 +420,20 @@ class Ci(unittest.TestCase):
         self.assertTrue((hooks / "pre-push.before-workbench").exists())
         commands.hook(Ctx(), "demo", False)
         self.assertEqual((hooks / "pre-push").read_text(encoding="utf-8"), "#!/bin/sh\necho mine\n")
+        # A hook of the person's own, installed over again while the first one kept is still there: both are kept.
+        (hooks / "pre-push").write_text("#!/bin/sh\necho newer\n", encoding="utf-8")
+        (hooks / "pre-push.before-workbench").write_text("#!/bin/sh\necho older\n", encoding="utf-8")
+        commands.hook(Ctx(), "demo", True)
+        kept = sorted(p.read_text(encoding="utf-8") for p in hooks.glob("pre-push.before-workbench*"))
+        self.assertEqual(kept, ["#!/bin/sh\necho newer\n", "#!/bin/sh\necho older\n"])
+        commands.hook(Ctx(), "demo", False)
+        # wb setup's stub answers the gate and the scrub: ci.hook leaves it as it is, installing or removing.
+        from wb import hooks as setup_hooks
+        (hooks / "pre-push").write_text(setup_hooks.stub("pre-push"), encoding="utf-8")
+        for install in (True, False):
+            commands.hook(Ctx(), "demo", install)
+            self.assertEqual((hooks / "pre-push").read_text(encoding="utf-8"), setup_hooks.stub("pre-push"))
+        self.assertIn("has the hook wb setup installed", Ctx.notes[-1])
 
 
 SIZED = """

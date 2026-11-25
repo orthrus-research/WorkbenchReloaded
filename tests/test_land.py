@@ -722,6 +722,10 @@ class Reach(unittest.TestCase):
         self.assertEqual(dry["state"], "dry", self.said)
         self.assertEqual(dry["reached"]["app"]["why"], ["uses lib"])
         self.assertTrue(any(s.startswith("reached app") and "checking it" in s for s in self.said), self.said)
+        landed = self.c.jobs(command="ci.land", limit=1)[0]  # a dry landing did what it was asked: it is no finding
+        landed = self.c.job(landed["job"]).wait(timeout=60)
+        self.assertEqual((landed["outcome"], landed["data"]["state"]), ("ok", "dry"), landed.get("summary"))
+        self.assertIn("would land; nothing was published", landed["summary"])
         result = self.lander().land({"lib": "HEAD"})
         self.assertEqual(result["state"], "landed", self.said)
         self.assertEqual((result["reached"]["app"]["commit"], result["reached"]["app"]["stands"]), (app, True))

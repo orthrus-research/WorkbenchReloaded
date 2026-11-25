@@ -36,7 +36,7 @@ Run a project's checks, gate pushes on them, and keep commits clean. (modules/ci
 | `ci.host-run` | host | Run a project's host checks (on = "host", gpu = true) natively from a clean clone of its commit, only for a project in [lab] trusted: the gpu checks under one turn of the GPU lease, which their steps join; the records go where ci.run keeps them. |
 | `ci.gate` | container | The push gate: refuse pushed commits whose trees have not passed every check their gate needs in Workbench's records. |
 | `ci.status` | container | What a project's commit has passed, and what it still needs before the gate lets it through. |
-| `ci.hook` | host | Install (or remove) the pre-push hook that asks ci.gate, in the project's own checkout on the host. |
+| `ci.hook` | host | Install (or remove) the pre-push hook that asks ci.gate, in the project's own checkout on the host, for a repository wb setup does not cover; it leaves the hook wb setup installs as it is. |
 | `ci.actions` | container | Run a project's checks in its own checkout, like a small CI (ci.run builds from clean trees instead). Also as `tools.actions`. |
 | `ci.scrub` | container | Refuse commits carrying attribution trailers, tooling files, local paths or personal data. Also as `tools.scrub`. |
 | `ci.matrix` | host | Run a project's command once per Python on the host (a portability lane that needs no GPU): a clean clone of its commit, each interpreter by version (py launcher on Windows, pythonX.Y elsewhere) or path, an environment per version from requirements when given, and each version's result kept. |

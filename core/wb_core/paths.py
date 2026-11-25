@@ -17,7 +17,11 @@ _WSL = re.compile(r"^/mnt/([A-Za-z])(/|$)")
 
 
 class PathError(Exception):
-    pass
+    """A path no root takes as asked. ``fix`` says what to do instead."""
+
+    def __init__(self, message: str, fix: str = "add a root under [paths.roots]"):
+        super().__init__(message)
+        self.fix = fix
 
 
 def _win_norm(path: str) -> str:
@@ -95,7 +99,12 @@ class PathMap:
                     if ".." in relative.split("/"):
                         raise PathError(f"{value!r} leaves root {root.name}")
                     if need_write and root.mode != "rw":
-                        raise PathError(f"{value!r} is under root {root.name}, which is read-only")
+                        writable = [r for r in self.roots if r.mode == "rw"]
+                        named = ", ".join(f"{r.host} ({r.name})" for r in writable)
+                        raise PathError(f"{value!r} is under root {root.name}, which is read-only"
+                                        + (f"; write under {named}" if writable else ""),
+                                        fix=f"give a folder under {named}" if writable else
+                                        "add a read-write root under [paths.roots]")
                     container = root.container if not relative else posixpath.join(root.container, relative) \
                         if not _WINDOWS.match(root.container) else root.container.rstrip("\\") + "\\" + \
                         relative.replace("/", "\\")

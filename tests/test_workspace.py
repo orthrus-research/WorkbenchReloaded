@@ -138,6 +138,19 @@ class Gate(unittest.TestCase):
         self.assertEqual(len(answer["refused"]), 1, answer)
         self.assertIn("has not passed check", answer["refused"][0]["reason"])
 
+    def test_a_refusal_is_logged_with_its_ref_commit_and_reason_and_no_scrub_text(self):
+        import contextlib
+        import io
+        from wb import hooks
+        workspace = Workspace(Config(self.values, self.root / "config"))
+        refused = [{"ref": "refs/heads/main", "commit": self.sha, "reason": "has not passed check\n(run wb check)"}]
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(hooks._verdict(workspace, self.repo, "pre-push", ["line 3: someone@example.org"], refused), 1)
+        line = (self.root / "config" / "run" / "hooks.log").read_text(encoding="utf-8").splitlines()[-1]
+        self.assertIn(f"pre-push refused findings=1 refused=1 | refs/heads/main {self.sha[:12]}: has not passed check "
+                      "(run wb check)", line)
+        self.assertNotIn("example.org", line)  # what the scrub caught never goes into a log
+
     def test_a_project_whose_gate_is_off_is_not_gated(self):
         self.values["modules"]["ci"]["projects"]["demo"]["gate"] = False
         workspace = Workspace(Config(self.values, self.root / "config"))

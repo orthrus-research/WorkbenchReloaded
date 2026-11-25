@@ -104,7 +104,7 @@ params.commit = { type = "string", default = "HEAD" }
 
 [[command]]
 name = "hook"
-summary = "Install (or remove) the pre-push hook that asks ci.gate, in the project's own checkout on the host."
+summary = "Install (or remove) the pre-push hook that asks ci.gate, in the project's own checkout on the host, for a repository wb setup does not cover; it leaves the hook wb setup installs as it is."
 handler = "wb_ci.commands:hook"
 runs_on = ["host"]
 params.project = { type = "string" }

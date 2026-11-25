@@ -13,9 +13,10 @@ pruned, so a job reads exactly the revision its caller resolved."""
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
+
+from . import filelock
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -230,22 +231,22 @@ def export(folder: Path, revision: str, text: str) -> Path:
     """Writes the export of ``revision`` once; an existing export must hold the same text."""
     path = folder / revision / "set.json"
     if path.is_file():
-        if path.read_text(encoding="utf-8") != text:
-            raise SetError(f"{path} holds another set than revision {revision[:12]}")
-        return path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    part = path.with_name(f"set.json.{os.getpid()}.part")
-    part.write_text(text, encoding="utf-8")
-    part.replace(path)
+        if filelock.record(path) != filelock.DAMAGED:
+            if path.read_text(encoding="utf-8") != text:
+                raise SetError(f"{path} holds another set than revision {revision[:12]}")
+            return path
+        with filelock.healing(path):  # left empty or cut short by a crash: no export, so it is written again
+            if filelock.record(path) == filelock.DAMAGED:
+                filelock.set_aside(path)
+                filelock.write_whole(path, text.encode("utf-8"))
+        return export(folder, revision, text)
+    filelock.write_whole(path, text.encode("utf-8"))
     return path
 
 
 def write_head(folder: Path, revision: str):
     """Records which exported revision is the Set's head, so a landing that waited on the lock composes from it."""
-    folder.mkdir(parents=True, exist_ok=True)
-    part = folder / f"HEAD.{os.getpid()}.part"
-    part.write_text(revision + "\n", encoding="ascii")
-    part.replace(folder / "HEAD")
+    filelock.write_whole(folder / "HEAD", (revision + "\n").encode("ascii"))
 
 
 def read_head(folder: Path) -> str | None:

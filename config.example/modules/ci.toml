@@ -1,4 +1,4 @@
-# [modules.ci]: the projects ci.run builds and ci.gate guards. Each project's jobs live in its own actions.toml.
+# [modules.ci]: the projects ci.run builds and ci.gate guards. Each project's checks live in its own project.toml.
 # jdk = "26"          # JAVA_HOME for jobs, unless a project names another ("" for none)
 # excludes = []       # ignore patterns a working-tree run applies, standing in for the host's own excludes file
 

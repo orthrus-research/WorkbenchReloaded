@@ -115,6 +115,34 @@ class Verbs(unittest.TestCase):
         finally:
             os.environ.pop("WB_CALLER", None)
 
+    def test_without_wb_caller_a_job_is_labelled_with_the_worktree_it_came_from(self):
+        saved, here = os.environ.pop("WB_CALLER", None), os.getcwd()
+        os.chdir(REPO / "sdk")  # a folder inside the worktree: the label is the worktree's
+        try:
+            code, out, _ = self.wb("run", "selftest.echo", "text=labelled", "--json", "--quiet")
+            label = json.loads(out)["caller"]
+            self.assertEqual(label, f"{REPO.parent.name}/{REPO.name}")
+            code, out, _ = self.wb("jobs", "--mine", "--json")
+            self.assertTrue(json.loads(out) and all(j["caller"] == label for j in json.loads(out)))
+        finally:
+            os.chdir(here)
+            if saved is not None:
+                os.environ["WB_CALLER"] = saved
+
+    def test_a_folder_named_outside_latin_1_still_labels_its_jobs(self):
+        import tempfile
+        saved, here = os.environ.pop("WB_CALLER", None), os.getcwd()
+        folder = Path(tempfile.mkdtemp(prefix="wb-label-")) / "\u0141ukasz" / "proj"
+        folder.mkdir(parents=True)
+        os.chdir(folder)
+        try:
+            code, out, _ = self.wb("run", "selftest.echo", "text=labelled", "--json", "--quiet")
+            self.assertEqual((code, json.loads(out)["caller"]), (0, "\\u0141ukasz/proj"))
+        finally:
+            os.chdir(here)
+            if saved is not None:
+                os.environ["WB_CALLER"] = saved
+
     def test_wb_dev_runs_the_working_tree_on_purpose_past_the_version_handshake(self):
         from unittest import mock
         from wb import WbError, client

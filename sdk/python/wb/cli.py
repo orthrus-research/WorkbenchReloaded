@@ -3,14 +3,14 @@
     wb up | down | restart | status | build
     wb ls [module]                       commands, active or inactive, with reasons
     wb help vast.rent                    parameters, requirements, result schema
-    wb run frames.compare ref=a/ cand=b/ profile=near [--out DIR] [--json] [--detach] [--fresh]
+    wb run frames.compare reference=a/ candidate=b/ profile=near [--out DIR] [--json] [--detach] [--fresh]
     wb wait JOB [--timeout 10m] | wb show JOB | wb jobs [--state S] | wb logs [MODULE|JOB] [-n N]
     wb approve JOB --quote Q [--via relayed] | wb cancel JOB
     wb config show [--origin] | wb schema
     wb gc [--only CLASS] | wb gc --yes DIGEST | wb gc --rules | wb gc --nightly
     wb host serve | install | status
     wb gpu [run [--note T] [--limit D] [--detach] [--quiet] -- CMD | leave LANE | stuck]
-    wb play [PROJECT][@REF|@set][:LAUNCH] [--from F] [--name N] [--tour F] [--measure] [--debug S] ...
+    wb play [PROJECT][@set|@head][:LAUNCH] [--from F] [--name N] [--tour F] [--measure] [--debug S] ...
     wb deploy [--commit SHA] [--wait 10m | --now] [--override REASON]
     wb dev VERB ...                      the CLI of the Workbench working tree you stand in, on purpose (WB_DEV=1)
     wb mcp [--list | --config]           serve Workbench to an MCP client on stdio: its tools and its skills
@@ -29,7 +29,7 @@ from pathlib import Path
 
 from . import compose
 from . import config as wbconfig
-from .client import EXIT_AWAITING_APPROVAL, Client, Envelope, WbError
+from .client import EXIT_AWAITING_APPROVAL, Client, Envelope, WbError, caller
 
 MARK = {"ok": "ok", "finding": "FINDING", "usage": "USAGE", "environment": "ENVIRONMENT"}
 
@@ -209,7 +209,7 @@ def cmd_show(args) -> int:
 
 def cmd_jobs(args) -> int:
     listed = _client().jobs(state=args.state, command=args.command, limit=args.limit,
-                            caller=os.environ.get("WB_CALLER") if args.mine else None)
+                            caller=caller() if args.mine else None)
     if args.json:
         print(json.dumps(listed, indent=1, default=str))
         return 0
@@ -469,7 +469,7 @@ def cmd_job(args) -> int:
     if args.job:
         env = client.job(args.job).refresh()
     else:
-        listed = client.jobs(limit=1, caller=os.environ.get("WB_CALLER"))  # this caller's newest, when it names itself
+        listed = client.jobs(limit=1, caller=caller())  # the newest of this caller's (this worktree's, by default)
         if not listed:
             print("wb: no jobs yet", file=sys.stderr)
             return 2
@@ -631,7 +631,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--state")
     p.add_argument("--command")
     p.add_argument("--limit", type=int, default=30)
-    p.add_argument("--mine", action="store_true", help="only jobs submitted with this WB_CALLER")
+    p.add_argument("--mine", action="store_true",
+                   help="only the jobs submitted from this worktree (or with this WB_CALLER, when it is set)")
     p = add("ls", cmd_ls, "list commands")
     p.add_argument("module", nargs="?")
     p = add("help", cmd_help, "describe a command")
@@ -655,11 +656,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--only", action="append", metavar="CLASS", help="only this class (repeatable)")
     p.add_argument("--rules", action="store_true", help="every class, its rule and whether it runs unattended")
     p.add_argument("--nightly", action="store_true", help="remove the unattended classes (for the scheduler)")
-    p.add_argument("--schedule", action="store_true", help="print the line that runs --nightly each night")
-    p = sub.add_parser("prune", help=argparse.SUPPRESS)  # the old verb, for one release: names wb gc
-    p.set_defaults(function=cmd_prune)
-    p.add_argument("--yes", action="store_true")
-    p.add_argument("--json", action="store_true")
+    p.add_argument("--schedule", action="store_true",
+                   help="print the lines that run --nightly and wb backup each night (wb setup --yes installs them)")
     add("schema", cmd_schema, "print the API schema")
     add("up", cmd_up, "start the container")
     add("down", cmd_down, "stop the container")
@@ -685,7 +683,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--now", action="store_true", help="cancel what still runs after the wait, listing it first")
     p.add_argument("--override", metavar="REASON", help="skip the gate (the container pass and the host suite); "
                                                          "the reason is recorded in RELEASE.json")
-    p = add("work", cmd_work, "worktrees with a lifecycle: the view, start, add, adopt, finish")
+    p = add("work", cmd_work, "worktrees with a lifecycle: the view, start, add, adopt, sync, finish")
     p.add_argument("action", nargs="?", choices=["view", "start", "add", "adopt", "finish", "sync"])
     p.add_argument("names", nargs="*")
     p.add_argument("--all", action="store_true", help="every registered project's worktrees")
@@ -718,6 +716,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="remove a doctor.exempt entry (repeatable)")
     p = add("backup", cmd_backup, "copy the job database, the ledger and the scrub rules off this drive")
     p.add_argument("--to", help="the folder to back up into (default [paths] backup, else ~/wb-backup)")
+    p.add_argument("--keep", type=int, help="how many of its backups to keep (default 14); older ones are removed")
     p = add("store", cmd_store, "what CI built: by project and commit, a kept file's path, or bytes to seed")
     p.add_argument("action", nargs="?", default=None)
     p.add_argument("names", nargs="*")
@@ -736,6 +735,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--repo", action="append", default=[], help="another repository to cover")
     p = add("gpu", cmd_gpu, "the GPU lease: who holds it and who waits; a turn for any command (wb gpu run -- ...)")
     p.add_argument("action", nargs="?", choices=["status", "run", "leave", "stuck"])
+    p.add_argument("--all", action="store_true", help="status: every lane, the idle ones with no live process too")
     p.add_argument("--lane", help="run: the lane's name (default: one named after this folder and the command)")
     p.add_argument("--note", help="run: what the turn is for")
     p.add_argument("--limit", help="run: the longest turn (1h by default); past it the command is stopped")
@@ -743,7 +743,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--quiet", action="store_true", help="run: a measurement; recorded in the lane and the lease")
     p.add_argument("rest", nargs=argparse.REMAINDER, metavar="-- COMMAND | LANE")
     p = add("play", cmd_play, "resolve a launch, build its instance, and play a session of it on this GPU")
-    p.add_argument("target", nargs="?", metavar="[PROJECT][@REF|@set|@head][:LAUNCH]")
+    p.add_argument("target", nargs="?", metavar="[PROJECT][@set|@head][:LAUNCH]")
     p.add_argument("--from", dest="from_file", metavar="LAUNCH.JSON", help="replay a launch file; resolve nothing")
     p.add_argument("--name", help="the instance's name (default <project>-<launch>)")
     p.add_argument("--tour", help="a tour file: play it and file its captures")
@@ -780,7 +780,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+RETIRED_VERBS = {"prune": cmd_prune}  # old verbs, for one release: they name what replaces them and are not listed
+
+
 def main(argv: list[str] | None = None) -> int:
+    given = sys.argv[1:] if argv is None else list(argv)
+    if given and given[0] in RETIRED_VERBS:
+        return RETIRED_VERBS[given[0]](None)
     args = build_parser().parse_args(argv)
     try:
         return args.function(args)

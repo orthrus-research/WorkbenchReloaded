@@ -16,6 +16,7 @@ from harness import Daemon  # noqa: E402
 
 from wb_core.hostclient import HostClient  # noqa: E402
 from wb_host import lease  # noqa: E402
+from wb import gpu  # noqa: E402
 from wb_host.runner import HostServer, Runner  # noqa: E402
 
 
@@ -83,6 +84,59 @@ class HostRunner(unittest.TestCase):
         other.close()
         result = job.result(timeout=120)  # after the 15 s cooldown it takes its turn
         self.assertEqual(result.outcome, "ok", result.summary)
+
+    def test_a_run_nobody_follows_is_cancelled_and_its_lease_wait_ends(self):
+        """The daemon that started a run stopped asking about it (it crashed or restarted, and marked its job
+        interrupted): the runner cancels the run instead of letting it take the GPU for nobody."""
+        other = lease.Lease(self.lock, {"pid": os.getpid(), "name": "someone", "lane": "quadrature"})
+        try:
+            run = self.runner.start("selftest.host-echo", {"job": "j_gone", "params": {"text": "nobody"}})
+            time.sleep(1)
+            self.runner.events(run, 0, 0)  # followed just now: it stands
+            self.assertEqual(self.runner.abandoned(), [])
+            later = time.monotonic() + self.runner.abandon_after + 1
+            self.assertEqual(self.runner.abandoned(now=later), [run])
+            for _ in range(100):
+                if self.runner.runs[run].finished:
+                    break
+                time.sleep(0.1)
+            done = [e for e in self.runner.runs[run].events if e["kind"] == "done"]
+            self.assertEqual(done[-1]["outcome"], "cancelled")
+            self.assertEqual(self.runner.abandoned(now=later), [])  # an ended run is never cancelled again
+        finally:
+            other.close()
+
+    def test_health_never_waits_for_nvidia_smi_and_keeps_the_card_it_knew(self):
+        import subprocess
+        from unittest import mock
+        said = subprocess.CompletedProcess([], 0, "NVIDIA GeForce RTX 3060, 610.88, 12288 MiB\n", "")
+        release = threading.Event()
+
+        def hangs(*_, **__):
+            release.wait(10)  # a game holds the card
+            raise subprocess.TimeoutExpired("nvidia-smi", 10)
+
+        def settled(runner):
+            for _ in range(200):
+                if runner._gpu_asking.acquire(blocking=False):
+                    runner._gpu_asking.release()
+                    return
+                time.sleep(0.05)
+
+        with mock.patch("shutil.which", return_value="nvidia-smi"), mock.patch("subprocess.run", return_value=said):
+            runner = Runner(self.runner.settings, list(self.runner.modules.values()), log=lambda _: None)
+            settled(runner)
+            self.assertEqual(runner.health()["gpu"]["name"], "NVIDIA GeForce RTX 3060")
+        runner._gpu = (time.monotonic() - 1000, runner._gpu[1])  # stale: asked again, and it hangs
+        with mock.patch("shutil.which", return_value="nvidia-smi"), \
+                mock.patch("subprocess.run", side_effect=hangs) as asked:
+            started = time.monotonic()
+            answers = [runner.health() for _ in range(5)]
+            self.assertLess(time.monotonic() - started, 1.0)  # health answered while nvidia-smi hung
+            self.assertEqual({a["gpu"]["driver"] for a in answers}, {"610.88"})  # the card it knew
+            release.set()
+            settled(runner)
+            self.assertEqual(asked.call_count, 1)  # one ask at a time, however many health calls came
 
     def test_auth_and_host_header(self):
         import urllib.error
@@ -246,6 +300,34 @@ class Lanes(unittest.TestCase):
         lease.leave(self.lanes, "ghost")
         self.assertEqual(lease.stuck(self.lock, self.lanes), [])
         self.assertEqual(lease.read_entry(self.lanes / "ghost.json")["state"], "idle")
+
+    def test_a_lane_written_again_since_it_was_read_is_not_removed(self):
+        from unittest import mock
+        old = lease.stamp(time.time() - lease.FORGET_AFTER - 60)
+        lease.write_entry(self.lanes / "reused.json", {"state": "idle", "pid": 0, "updatedUtc": old})
+        seen = lease.entries(self.lanes)
+        lease.write_entry(self.lanes / "reused.json", {"state": "waiting", "pid": os.getpid(),
+                                                       "updatedUtc": lease.stamp(), "waiting_since": lease.stamp()})
+        with mock.patch.object(lease, "entries", return_value=seen):  # read before the new turn wrote it
+            self.assertEqual(lease.forget(self.lanes), [])
+        self.assertEqual(lease.read_entry(self.lanes / "reused.json")["state"], "waiting")
+
+    def test_a_lane_silent_a_day_is_removed_when_a_turn_ends_and_a_stuck_running_one_stays(self):
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        old = lease.stamp(time.time() - lease.FORGET_AFTER - 60)
+        for name, state in (("old-idle", "idle"), ("old-waiting", "waiting"), ("old-running", "running")):
+            lease.write_entry(self.lanes / f"{name}.json", {"state": state, "pid": gone.pid, "updatedUtc": old,
+                                                            "waiting_since": old if state == "waiting" else None})
+        lease.write_entry(self.lanes / "new-idle.json", {"state": "idle", "pid": gone.pid, "updatedUtc": lease.stamp()})
+        self.take_turn("mine").join(30)
+        names = sorted(p.stem for p in self.lanes.glob("*.json") if p.stem != "last-release")
+        self.assertEqual(names, ["mine", "new-idle", "old-running"])
+        self.assertEqual([i["lane"] for i in lease.stuck(self.lock, self.lanes)], ["old-running"])
+        shown = gpu.show(lease.status(self.lock, self.lanes))
+        self.assertNotIn("new-idle", shown)  # an idle lane with no live process is counted, not listed
+        self.assertIn("idle lane(s) with no live process not shown (wb gpu --all)", shown)
+        self.assertIn("new-idle", gpu.show(lease.status(self.lock, self.lanes), every=True))
 
     @unittest.skipUnless(os.name == "nt", "a terminal's Job Object is Windows'")
     def test_a_detached_turn_survives_its_shell(self):

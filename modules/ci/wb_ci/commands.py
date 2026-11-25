@@ -24,9 +24,11 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import wb_tools.adapter  # noqa: F401  (puts the absorbed orthrus engine on sys.path)
+from wb_core import filelock  # noqa: E402
 from orthrus_tools import actions as engine
 from wb_build.files import write_atomic
 from wb_core.module import Context, EnvironmentProblem, ParamError
@@ -399,13 +401,45 @@ def _failing_tails(ctx: Context, jobs: dict):
         for step in job.get("steps") or []:
             if step.get("exitCode") not in (0, None) and step.get("log"):
                 try:
-                    lines = Path(step["log"]).read_text(encoding="utf-8", errors="replace").splitlines()[-25:]
+                    lines = Path(step["log"]).read_text(encoding="utf-8", errors="replace").splitlines()[-4000:]
                 except OSError:
                     continue
-                ctx.log.warning(f"{name} / {step.get('name')} exited {step.get('exitCode')}:\n" + "\n".join(lines))
+                ctx.log.warning(f"{name} / {step.get('name')} exited {step.get('exitCode')}:\n"
+                                + "\n".join(lines[-25:]))
                 ctx.reason("step", f"{name} / {step.get('name')}",
-                           f"exited {step.get('exitCode')}: " + "\n".join(lines[-12:]),
+                           f"exited {step.get('exitCode')}: " + "\n".join(decisive(lines)),
                            f"read the step log: {ctx.host_path(step['log'])}")
+
+
+_GRADLE_ERROR = re.compile(r"\.(java|kt|groovy|scala):\d+:\s*(error|e):|^e: |^\s*\S+ > .+ FAILED$")
+
+
+def decisive(lines: list[str], limit: int = 20) -> list[str]:
+    """The lines of a failed step's log that say why it failed, at most ``limit``: Gradle's "What went wrong"
+    block with the compiler errors and failed tests before it, else the last Python traceback, else unittest's
+    failure blocks, else the log's last lines. Gradle's closing advice (--stacktrace, --scan, BUILD FAILED) is what
+    a log's last lines usually are, and says nothing about the failure."""
+    wrong = [i for i, line in enumerate(lines) if line.strip() == "* What went wrong:"]
+    if wrong:
+        start = wrong[-1]
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith(("* Try:", "* Get more help",
+                                                                                     "BUILD FAILED"))), len(lines))
+        block = [line for line in lines[start + 1:end] if line.strip()]
+        found = [line.strip() for line in lines[:start] if _GRADLE_ERROR.search(line)]
+        return (found[:limit // 2] + block)[:limit]
+    traceback = [i for i, line in enumerate(lines) if line.startswith("Traceback (most recent call last):")]
+    if traceback:
+        start = traceback[-1]
+        end = next((i + 1 for i in range(start + 1, len(lines)) if lines[i] and not lines[i][0].isspace()),
+                   len(lines))
+        block = lines[start:end]
+        return block if len(block) <= limit else block[:2] + ["  ..."] + block[-(limit - 3):]
+    failures = [i for i, line in enumerate(lines) if line.startswith(("FAIL:", "ERROR:"))]
+    if failures:
+        start = failures[0]
+        end = next((i for i in range(start, len(lines)) if lines[i].startswith("Ran ")), len(lines))
+        return [line for line in lines[start:end] if line.strip() and set(line.strip()) - set("=-")][:limit]
+    return lines[-12:]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1000,14 +1034,20 @@ def _store_plugins(root: Path, packed: Path) -> int:
                 raise EnvironmentProblem(f"{packed.name}: {name} would be written outside the plugins folder")
             data = archive.read(info)
             if path.is_file():
-                if path.read_bytes() != data:
+                held = path.read_bytes()
+                if held == data:
+                    continue
+                if held:  # whole bytes of another build: a logic id's files are never replaced
                     raise EnvironmentProblem(f"the Store's plugins folder holds other bytes at {name}; a logic id's "
                                              "files are never replaced")
+                with filelock.healing(path):  # left empty by a crash: no file, so it is written again
+                    if path.is_file() and not path.read_bytes():
+                        filelock.set_aside(path)
+                    if not path.is_file():
+                        filelock.write_whole(path, data)
+                        placed += 1
                 continue
-            path.parent.mkdir(parents=True, exist_ok=True)
-            part = path.with_name(path.name + f".{os.getpid()}.part")
-            part.write_bytes(data)
-            part.replace(path)
+            filelock.write_whole(path, data)
             placed += 1
     return placed
 
@@ -1097,23 +1137,32 @@ def _wb_command(repo_root: Path) -> str:
     return '"' + (repo_root / "bin" / "wb").as_posix() + '"'
 
 
+SETUP_STUB = "Written by Workbench (wb setup)"  # the marker of the stubs wb setup installs (sdk/python/wb/hooks.py)
+
+
 def hook(ctx: Context, project: str, install: bool):
-    """Installs (or removes) the pre-push hook in the project's own checkout. Runs on the host, where git runs."""
+    """Installs (or removes) the pre-push hook in the project's own checkout. Runs on the host, where git runs.
+
+    The stub ``wb setup`` installs answers the push gate and the scrub on the host, so it is left as it is: this
+    hook would answer the gate only, through the daemon. A hook of a person's own is kept beside it, never deleted."""
     from wb_core.service import REPO_ROOT
     entry = _project(ctx, project)
     source = Path(entry["repo"])
     common = _common_dir(_git_dir(ctx, source))
     target = common / "hooks" / "pre-push"
     wb = _wb_command(REPO_ROOT)
+    existing = target.read_text(encoding="utf-8", errors="replace") if target.exists() else ""
+    if SETUP_STUB in existing:
+        ctx.summary(f"{common} has the hook wb setup installed, which answers the push gate and the scrub on the "
+                    "host; nothing changed (wb setup --yes rewrites it, wb setup --undo removes it)")
+        return {"project": project, "hook": str(target), "installed": True, "by": "wb setup"}
     if install:
-        if target.exists() and "Written by Workbench (ci.hook)" not in target.read_text(encoding="utf-8",
-                                                                                      errors="replace"):
+        if target.exists() and "Written by Workbench (ci.hook)" not in existing:
             backup = target.with_name("pre-push.before-workbench")
-            if not backup.exists():
-                target.replace(backup)
-                ctx.log.info(f"kept the previous hook as {backup.name}")
-            else:
-                target.unlink()
+            if backup.exists():  # the first one kept stays where restoring finds it; this one is kept too
+                backup = target.with_name(f"pre-push.before-workbench.{time.strftime('%Y%m%d%H%M%S')}")
+            target.replace(backup)
+            ctx.log.info(f"kept the previous hook as {backup.name}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(HOOK.replace("{wb}", wb).replace("{project}", project), encoding="utf-8", newline="\n")
         os.chmod(target, 0o755)

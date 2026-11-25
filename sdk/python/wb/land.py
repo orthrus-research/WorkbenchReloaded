@@ -40,6 +40,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from .client import caller
 from .workspace import GIT_ENV, Workspace, WorkspaceError, git
 
 
@@ -257,7 +258,7 @@ class Lander:
         self._check_reached(reached, reach["candidate"])
         landing = time.strftime("l%Y%m%d%H%M%S") + secrets.token_hex(2)
         job = self.client.submit("set.land", {"landing": landing, "base": revision, "projects": wanted,
-                                             "deadline": deadline, "caller": os.environ.get("WB_CALLER", ""),
+                                             "deadline": deadline, "caller": caller() or "",
                                              "holds": holds, "drop_holds": drop_holds, "third": third,
                                              "platform": platform, "tag": tag or "",
                                              "doctor_exempt": doctor_exempt, "doctor_unexempt": doctor_unexempt})
@@ -265,7 +266,8 @@ class Lander:
         record = self._prepared(job, landing)
         if dry:  # nothing was pushed, so nothing is deleted from any remote either
             from wb_core import landing as landings
-            landings.move(self.store, landing, "abandoned", why="a dry landing publishes nothing", refs_dropped=True)
+            landings.move(self.store, landing, "abandoned", why="a dry landing publishes nothing", refs_dropped=True,
+                          dry=True)
             return {"state": "dry", "landing": landing, "set_json": record["set_json"], "message": record["message"],
                     "reached": self._reached(record, reached)}
         result = self.publish(record, stop_after=stop_after)

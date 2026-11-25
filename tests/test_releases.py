@@ -418,6 +418,58 @@ class ContainerPass(unittest.TestCase):
         self.assertEqual((answer["passed"], answer["project"], answer["required"], answer["runs"]),
                          (True, "workbench", ["check"], ["run-1"]))
 
+    def test_the_host_suite_runs_only_the_parts_no_host_run_passed_on_the_tree(self):
+        """A host check (on = "host") that ci.host-run passed on this very tree, from a clean clone on this host, is
+        not run again by a deploy; a failed one, or one of another tree, still is."""
+        from unittest import mock
+        from wb import deploy
+        project = (
+            'schema = 1\ngate = ["generated"]\n[project]\nname = "workbench"\n'
+            '[checks.generated]\nsteps = [["{python}", "tests/run_all.py", "--part", "generated"]]\n'
+            '[checks.core]\non = "host"\nsteps = [["{python}", "tests/run_all.py", "--part", "core"]]\n'
+            '[checks.modules]\non = "host"\nsteps = [["{python}", "tests/run_all.py", "--part", "modules"]]\n')
+        (self.repo / "project.toml").write_text(project, encoding="utf-8", newline="\n")
+        (self.repo / "tests" / "run_all.py").write_text(
+            'import sys\nPARTS = ("generated", "core", "modules", "engine")\nsys.exit(0)\n', encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "checks")
+        sha, tree = git(self.repo, "rev-parse", "HEAD"), git(self.repo, "rev-parse", "HEAD^{tree}")
+
+        def ran(name, jobs, of=tree, changed=False):
+            folder = self.records / "workbench" / name
+            folder.mkdir(parents=True)
+            (folder / "summary.json").write_text(json.dumps({"trees": {"workbench": of}, "treesChanged": changed,
+                                                             "jobs": {check: {"status": status}
+                                                                      for check, status in jobs.items()}}),
+                                                 encoding="utf-8")
+
+        ran("run-1", {"generated": "passed"})
+        ran("run-2", {"core": "passed", "modules": "failed"})
+        ran("run-3", {"modules": "passed"}, of="0" * 40)  # another tree's pass stands for nothing here
+        ran("run-3b", {"modules": "passed"}, changed=True)  # nor one whose files changed while it ran
+        self.assertEqual(deploy.host_passes(self.config, self.repo, sha),
+                         {"checks": ["core", "modules"], "passed": ["core"], "runs": ["run-2"]})
+        suites = []
+
+        def suite(root, at, head, parts=None):
+            suites.append(parts)
+            return {"passed": True, "at": "now", "seconds": 1, **({"parts": parts} if parts else {})}
+
+        deployed = {"tree": tree, "sha": sha, "head": False}
+        passed = {"passed": True, "project": "workbench", "required": ["generated"], "runs": ["run-1"], "reason": None}
+        with (mock.patch.object(deploy, "host_suite", side_effect=suite),
+              mock.patch.object(deploy, "container_pass", return_value=passed)):
+            records = {"tested": {}, "releases": []}
+            self.assertTrue(deploy.gate(self.config, self.repo, deployed, records, None)[0])
+            self.assertEqual(suites, [["generated", "modules", "engine"]])  # core passed on the host already
+            ran("run-4", {"modules": "passed"})
+            records = {"tested": {}, "releases": []}
+            self.assertTrue(deploy.gate(self.config, self.repo, deployed, records, None)[0])
+            self.assertEqual(suites[-1], ["generated", "engine"])
+            self.assertEqual(records["tested"][tree]["host_runs"], ["run-2", "run-4"])
+        self.assertEqual(deploy.suite_parts(self.repo, sha), ("generated", "core", "modules", "engine"))
+        self.assertIsNone(deploy.suite_parts(self.repo, git(self.repo, "rev-parse", "HEAD~1")))  # none: run it whole
+
     def test_an_unregistered_checkout_has_no_records(self):
         from wb import deploy
         answer = deploy.container_pass(Config({}, self.base / "config"), self.repo, self.sha)
@@ -636,6 +688,67 @@ class Setup(unittest.TestCase):
             self.assertIsNone(setup.bootstrap(self.config))  # one release is enough; wb deploy makes the rest
             self.assertIn("in service", setup.release_step(self.config)["action"])
         self.assertTrue(setup.cli_command(self.config).endswith(("wb.cmd", "wb")))
+
+
+class Nightly(unittest.TestCase):
+    """Retention and the backup run each night from the release in service: setup installs them on Windows and
+    prints them elsewhere, and the backup keeps only its newest runs, touching nothing else."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.base = Path(self.folder.name)
+        self.config = Config({}, self.base / "config")
+        self.addCleanup(self.folder.cleanup)
+        from unittest import mock
+        environment = mock.patch.dict(os.environ, {"WB_RELEASES": str(self.base / "releases")})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_each_night_runs_retention_then_the_backup_from_the_release_in_service(self):
+        from wb import nightly
+        lines = [nightly.line(self.config, task) for task in nightly.TASKS]
+        self.assertEqual(len(lines), 2)
+        current = str(releases.current(self.config))
+        self.assertTrue(all(current in line for line in lines), lines)
+        ends = [line.rstrip('" ') for line in lines]  # the Windows line closes /TR's quote
+        self.assertTrue(ends[0].endswith("gc --nightly") and ends[1].endswith("backup"), lines)
+
+    @unittest.skipUnless(os.name == "nt", "the scheduled tasks are Windows'")
+    def test_setup_installs_each_task_the_scheduler_lacks_and_undo_removes_them(self):
+        import subprocess
+        from unittest import mock
+        from wb import nightly
+        calls = []
+
+        def scheduler(argv, **_):
+            calls.append(argv[1])
+            held = argv[1] == "/Query" and argv[3] == "Workbench gc"  # one is installed already
+            return subprocess.CompletedProcess(argv, 0 if held or argv[1] != "/Query" else 1, "", "")
+
+        with mock.patch.object(nightly.subprocess, "run", side_effect=scheduler):
+            actions = [step["action"] for step in nightly.steps(self.config)]
+            self.assertEqual(actions[0], "keep (installed)")
+            self.assertTrue(actions[1].startswith("install at 04:07"), actions)
+            said = []
+            self.assertEqual(nightly.install(self.config, say=said.append), 0)
+            self.assertEqual(calls.count("/Create"), 2)  # /F: an installed one is rewritten to the release's path
+            nightly.remove(say=said.append)
+            self.assertEqual(calls.count("/Delete"), 1)  # only what the scheduler holds
+
+    def test_a_backup_keeps_its_newest_runs_and_nothing_else_is_touched(self):
+        from wb import backup
+        root = self.base / "wb-backup"
+        for n in range(5):
+            made = root / f"2026112{n}-030000"
+            made.mkdir(parents=True)
+            (made / "manifest.json").write_text("{}", encoding="utf-8")
+        (root / "2026-11-23").mkdir()  # a folder someone named by hand
+        (root / "20261120-040000").mkdir()  # named like one, without its manifest: not one it made
+        gone = backup.prune(root, keep=3)
+        self.assertEqual([p.name for p in gone], ["20261120-030000", "20261121-030000"])
+        self.assertEqual(sorted(p.name for p in root.iterdir()),
+                         ["2026-11-23", "20261120-040000", "20261122-030000", "20261123-030000", "20261124-030000"])
+        self.assertEqual(backup.prune(root, keep=3), [])
 
 
 if __name__ == "__main__":

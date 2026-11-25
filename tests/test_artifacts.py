@@ -1,8 +1,10 @@
 """The Store: a file is kept by its SHA-256 and never replaced, an index names what a tree built, two builds of one
 tree that differ are recorded instead of replaced, a file changed outside Workbench is refused, and seeded bytes
-carry where they came from."""
+carry where they came from. What a crash leaves behind (a record that exists and is empty, a file cut short) is set
+aside and written again, never left to refuse every later write."""
 
 import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -11,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import harness  # noqa: E402,F401
 
-from wb_core import artifacts  # noqa: E402
+from wb_core import artifacts, filelock, landing, passes, setfile  # noqa: E402
 
 
 class Store(unittest.TestCase):
@@ -151,14 +153,132 @@ class Concurrent(unittest.TestCase):
         self.assertEqual(artifacts.find(self.store, "demo", "t1")["commits"], ["c1"])
         self.assertFalse(lock.exists())
 
-    def test_an_entry_that_cannot_be_read_is_never_overwritten(self):
+    def test_an_entry_that_cannot_be_read_is_kept_aside_and_begun_again(self):
         entry = self.store / "index" / "demo" / "t1.json"
         entry.parent.mkdir(parents=True)
-        entry.write_text("{not json", encoding="utf-8")
-        with self.assertRaises(artifacts.StoreError) as raised:
-            artifacts.record(self.store, "demo", "t1", "c1", {"mod.jar": {"sha256": "a"}})
-        self.assertIn("changed outside Workbench", str(raised.exception))
-        self.assertEqual(entry.read_text(encoding="utf-8"), "{not json")
+        for damaged in ("{not json", "", "[1, 2]"):  # cut short, left empty by a crash, not an entry at all
+            with self.subTest(damaged=damaged):
+                entry.write_text(damaged, encoding="utf-8")
+                artifacts.record(self.store, "demo", "t1", "c1", {"mod.jar": {"sha256": "a"}})
+                now = artifacts.find(self.store, "demo", "t1")
+                self.assertEqual((now["commits"], now["artifacts"]), (["c1"], {"mod.jar": {"sha256": "a"}}))
+                aside = entry.parent / now["recovered"]["from"]
+                self.assertEqual(aside.read_text(encoding="utf-8"), damaged)  # the damage is kept, never overwritten
+                entry.unlink()
+        self.assertEqual(sorted(p.name for p in entry.parent.glob("*.json")), [])  # nothing aside reads as an entry
+
+
+class Damaged(unittest.TestCase):
+    """What a crash between a write and the disk leaves: the name exists and its bytes are not the record."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.store = Path(self.folder.name) / "store"
+        self.addCleanup(self.folder.cleanup)
+
+    def test_a_write_is_whole_and_on_the_disk_and_leaves_no_part(self):
+        target = self.store / "a" / "b.json"
+        filelock.write_json(target, {"x": 1})
+        filelock.write_whole(target, b'{"x": 2}')
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {"x": 2})
+        self.assertEqual([p.name for p in target.parent.iterdir()], ["b.json"])
+        with open(target, "rb") as stream:
+            filelock.sync(stream.fileno())  # a descriptor opened for reading may be synced on any system that can
+
+    def test_a_pass_or_gate_record_left_empty_is_written_again_and_a_whole_one_stands(self):
+        for write, path in ((lambda: passes.write(self.store, "demo", "t1", "build", "k1", {"run": "r2"}),
+                             passes.path(self.store, "demo", "t1", "build", "k1")),
+                            (lambda: passes.write_gate(self.store, "demo", "t1", {"run": "r2"}),
+                             passes.gate_path(self.store, "demo", "t1"))):
+            with self.subTest(record=path.parent.name):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"")  # the name a crash left, with none of its bytes
+                write()
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["run"], "r2")
+                self.assertEqual(len(list(path.parent.glob(path.name + ".damaged-*"))), 1)
+                before = path.read_bytes()
+                write()  # a whole record is never replaced
+                self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(passes.passed(self.store, "demo", "t1", {"build": "k1"}), {"build"})
+        self.assertEqual(len(passes.records(self.store, "demo")), 1)  # what was set aside is no record
+
+    def test_a_store_file_cut_short_is_set_aside_when_its_bytes_come_again(self):
+        source = Path(self.folder.name) / "mod.jar"
+        source.write_bytes(b"the whole jar")
+        digest = hashlib.sha256(b"the whole jar").hexdigest()
+        kept = self.store / "files" / digest / "mod.jar"
+        kept.parent.mkdir(parents=True)
+        kept.write_bytes(b"the who")
+        with self.assertRaises(artifacts.StoreError):  # a read still refuses bytes that are not their name
+            artifacts.path_of(self.store, digest, "mod.jar")
+        self.assertEqual(artifacts.put(self.store, source, digest), kept)
+        self.assertEqual(kept.read_bytes(), b"the whole jar")
+        self.assertEqual(artifacts.path_of(self.store, digest, "mod.jar"), kept)
+        self.assertEqual([p.read_bytes() for p in kept.parent.glob("mod.jar.damaged-*")], [b"the who"])
+
+    def test_a_read_only_source_is_kept_and_leaves_no_part_behind(self):
+        import os
+        import stat
+        source = Path(self.folder.name) / "built.jar"
+        source.write_bytes(b"read only")
+        os.chmod(source, stat.S_IREAD)
+        self.addCleanup(os.chmod, source, stat.S_IWRITE | stat.S_IREAD)
+        digest = hashlib.sha256(b"read only").hexdigest()
+        kept = artifacts.put(self.store, source, digest)
+        self.assertEqual(kept.read_bytes(), b"read only")
+        self.assertEqual([p.name for p in kept.parent.iterdir()], ["built.jar"])
+        os.chmod(kept, stat.S_IWRITE | stat.S_IREAD)  # so the folder can be cleaned up
+
+    def test_a_record_that_cannot_be_read_just_now_is_never_taken_for_damage(self):
+        from unittest import mock
+        path = passes.path(self.store, "demo", "t1", "build", "k1")
+        passes.write(self.store, "demo", "t1", "build", "k1", {"run": "r1"})
+        before = path.read_bytes()
+        refused = PermissionError(13, "in use")
+        with mock.patch.object(Path, "read_text", side_effect=refused):
+            self.assertFalse(passes._write_once(path, {"run": "r2"}))
+        self.assertEqual(path.read_bytes(), before)
+        artifacts.record(self.store, "demo", "t1", "c1", {"mod.jar": {"sha256": "a"}})
+        with mock.patch.object(Path, "read_text", side_effect=refused):
+            with self.assertRaises(artifacts.StoreError):  # the entry is kept; this run's write waits for none
+                artifacts.record(self.store, "demo", "t1", "c2", {"mod.jar": {"sha256": "a"}})
+        self.assertEqual(artifacts.find(self.store, "demo", "t1")["commits"], ["c1"])
+
+    def test_of_two_writers_that_found_the_same_damage_the_second_leaves_the_first_ones_record(self):
+        from unittest import mock
+        path = passes.path(self.store, "demo", "t1", "build", "k1")
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"")
+        real, calls = filelock.record, []
+
+        def meanwhile(target):
+            calls.append(target)
+            if len(calls) == 1:  # this writer saw the damage; another healed it before this one took the lock
+                filelock.set_aside(target)
+                filelock.write_json(target, {"run": "first"})
+                return filelock.DAMAGED
+            return real(target)
+
+        with mock.patch.object(filelock, "record", side_effect=meanwhile):
+            self.assertFalse(passes._write_once(path, {"run": "second"}))
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["run"], "first")
+
+    def test_a_set_export_left_empty_is_written_again_and_another_set_is_still_refused(self):
+        folder = self.store / "sets"
+        (folder / "r1").mkdir(parents=True)
+        (folder / "r1" / "set.json").write_text("", encoding="utf-8")
+        text = '{"schema": 1, "projects": {}}\n'
+        setfile.export(folder, "r1", text)
+        self.assertEqual((folder / "r1" / "set.json").read_text(encoding="utf-8"), text)
+        with self.assertRaises(setfile.SetError):
+            setfile.export(folder, "r1", '{"schema": 1, "projects": {"x": {}}}\n')
+        setfile.write_head(folder, "a" * 40)
+        self.assertEqual(setfile.read_head(folder), "a" * 40)
+
+    def test_a_landing_record_is_written_whole(self):
+        record = landing.write(self.store, {"id": "l1", "state": "prepared"})
+        self.assertEqual(landing.read(self.store, "l1")["updated"], record["updated"])
+        self.assertEqual([p.name for p in landing.folder(self.store).iterdir()], ["l1.json"])
 
 
 if __name__ == "__main__":

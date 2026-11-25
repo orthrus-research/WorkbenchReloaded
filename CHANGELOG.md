@@ -206,3 +206,20 @@
   before it. `approve` asks the person through the client and never approves by itself; `cli` refuses `approve` and
   the verbs that change the service. `wb mcp --config` prints the entry a client's config takes, `--list` the tools
   and skills.
+- Records survive a crash: pass and gate records, landing records, Set exports, the Store's files and index entries
+  and the deploy record are synced to the disk before they count, and a write-once record or Store file a crash left
+  empty or cut short is set aside (`<name>.damaged-<when>`) and written again instead of refusing every later write.
+- A restart kills only a job's own worker (its PID with the process's start mark), never a process that now has the
+  same PID, and cancels the host run of a job it interrupts; the host runner cancels a run its daemon has not asked
+  about for `[runner] abandon_after` (10 minutes). The runner's health no longer fails while `nvidia-smi` hangs.
+- GPU lanes silent for a day are removed when a turn ends (one marked running stays for `wb gpu stuck`); `wb gpu`
+  counts idle lanes with no live process, and `--all` lists them.
+- A deploy runs only the host suite's parts the tree has not passed on this host: after `wb check core modules`,
+  `generated` and `engine`.
+- `wb setup --yes` installs the nightly `wb gc --nightly` and `wb backup` (scheduled tasks on Windows; the crontab
+  lines elsewhere), and `wb backup` keeps its newest 14 backups (`--keep`).
+- A dry landing settles ok; a refusal of an output path names the read-write roots to write under; a failed check's
+  reason is the lines that say why (Gradle's "What went wrong", a traceback, unittest's failures), not the log's
+  last lines; a refused push is logged with its ref, commit and reason; a job is labelled with the worktree it came
+  from when `WB_CALLER` is unset; `ci.hook` leaves the hook `wb setup` installs as it is and never deletes a hook
+  kept aside.
