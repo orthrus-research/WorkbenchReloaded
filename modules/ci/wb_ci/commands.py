@@ -400,13 +400,45 @@ def _failing_tails(ctx: Context, jobs: dict):
         for step in job.get("steps") or []:
             if step.get("exitCode") not in (0, None) and step.get("log"):
                 try:
-                    lines = Path(step["log"]).read_text(encoding="utf-8", errors="replace").splitlines()[-25:]
+                    lines = Path(step["log"]).read_text(encoding="utf-8", errors="replace").splitlines()[-4000:]
                 except OSError:
                     continue
-                ctx.log.warning(f"{name} / {step.get('name')} exited {step.get('exitCode')}:\n" + "\n".join(lines))
+                ctx.log.warning(f"{name} / {step.get('name')} exited {step.get('exitCode')}:\n"
+                                + "\n".join(lines[-25:]))
                 ctx.reason("step", f"{name} / {step.get('name')}",
-                           f"exited {step.get('exitCode')}: " + "\n".join(lines[-12:]),
+                           f"exited {step.get('exitCode')}: " + "\n".join(decisive(lines)),
                            f"read the step log: {ctx.host_path(step['log'])}")
+
+
+_GRADLE_ERROR = re.compile(r"\.(java|kt|groovy|scala):\d+:\s*(error|e):|^e: |^\s*\S+ > .+ FAILED$")
+
+
+def decisive(lines: list[str], limit: int = 20) -> list[str]:
+    """The lines of a failed step's log that say why it failed, at most ``limit``: Gradle's "What went wrong"
+    block with the compiler errors and failed tests before it, else the last Python traceback, else unittest's
+    failure blocks, else the log's last lines. Gradle's closing advice (--stacktrace, --scan, BUILD FAILED) is what
+    a log's last lines usually are, and says nothing about the failure."""
+    wrong = [i for i, line in enumerate(lines) if line.strip() == "* What went wrong:"]
+    if wrong:
+        start = wrong[-1]
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith(("* Try:", "* Get more help",
+                                                                                     "BUILD FAILED"))), len(lines))
+        block = [line for line in lines[start + 1:end] if line.strip()]
+        found = [line.strip() for line in lines[:start] if _GRADLE_ERROR.search(line)]
+        return (found[:limit // 2] + block)[:limit]
+    traceback = [i for i, line in enumerate(lines) if line.startswith("Traceback (most recent call last):")]
+    if traceback:
+        start = traceback[-1]
+        end = next((i + 1 for i in range(start + 1, len(lines)) if lines[i] and not lines[i][0].isspace()),
+                   len(lines))
+        block = lines[start:end]
+        return block if len(block) <= limit else block[:2] + ["  ..."] + block[-(limit - 3):]
+    failures = [i for i, line in enumerate(lines) if line.startswith(("FAIL:", "ERROR:"))]
+    if failures:
+        start = failures[0]
+        end = next((i for i in range(start, len(lines)) if lines[i].startswith("Ran ")), len(lines))
+        return [line for line in lines[start:end] if line.strip() and set(line.strip()) - set("=-")][:limit]
+    return lines[-12:]
 
 
 # ---------------------------------------------------------------------------------------------

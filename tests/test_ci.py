@@ -368,6 +368,30 @@ class Ci(unittest.TestCase):
         self.assertNotIn("job", served)
         self.assertEqual(result.children, [])
 
+    def test_a_failed_steps_reason_names_why_it_failed_not_the_logs_last_lines(self):
+        sys.path.insert(0, str(REPO / "modules" / "tools"))
+        sys.path.insert(0, str(REPO / "modules" / "ci"))
+        from wb_ci.commands import decisive
+        footer = ["", "* Try:", "> Run with --stacktrace option to get the stack trace.", "",
+                  "BUILD FAILED in 11s", "4 actionable tasks: 4 executed"]
+        gradle = ["> Task :compileJava", "src/main/java/a/B.java:12: error: cannot find symbol", "  B.c();",
+                  "", "FAILURE: Build failed with an exception.", "", "* What went wrong:",
+                  "Execution failed for task ':compileJava'.", "> Compilation failed; see the compiler output."]
+        self.assertEqual(decisive(gradle + footer), [
+            "src/main/java/a/B.java:12: error: cannot find symbol",
+            "Execution failed for task ':compileJava'.", "> Compilation failed; see the compiler output."])
+        tests = ["> Task :test", "", "BTest > adds() FAILED", "    org.opentest4j.AssertionFailedError at BTest.java:9",
+                 "", "* What went wrong:", "Execution failed for task ':test'.", "> There were failing tests."]
+        self.assertEqual(decisive(tests + footer)[0], "BTest > adds() FAILED")
+        python = ["working", "Traceback (most recent call last):", '  File "x.py", line 3, in <module>',
+                  "    raise ValueError('no')", "ValueError: no", "after the traceback"]
+        self.assertEqual(decisive(python), python[1:5])
+        unit = ["....F", "======", "FAIL: test_x (t.T.test_x)", "------", "AssertionError: 1 != 2", "------",
+                "Ran 5 tests in 0.1s", "FAILED (failures=1)"]
+        self.assertEqual(decisive(unit), ["FAIL: test_x (t.T.test_x)", "AssertionError: 1 != 2"])
+        plain = [f"line {n}" for n in range(30)]
+        self.assertEqual(decisive(plain), plain[-12:])  # nothing to pick: the log's last lines, as before
+
     def test_hook_installs_and_restores(self):
         sys.path.insert(0, str(REPO / "modules" / "tools"))
         sys.path.insert(0, str(REPO / "modules" / "ci"))
