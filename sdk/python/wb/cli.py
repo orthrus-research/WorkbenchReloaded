@@ -13,6 +13,7 @@
     wb play [PROJECT][@REF|@set][:LAUNCH] [--from F] [--name N] [--tour F] [--measure] [--debug S] ...
     wb deploy [--commit SHA] [--wait 10m | --now] [--override REASON]
     wb dev VERB ...                      the CLI of the Workbench working tree you stand in, on purpose (WB_DEV=1)
+    wb mcp [--list | --config]           serve Workbench to an MCP client on stdio: its tools and its skills
 
 Exit codes: 0 ok, 1 finding, 2 usage, 3 environment, 4 cancelled or interrupted, 5 still pending,
 6 awaiting approval (the quote and a ready-made prompt are printed; with --json, as JSON).
@@ -100,42 +101,51 @@ def print_envelope(env: Envelope, as_json: bool):
     if as_json:
         print(json.dumps(env, indent=1, default=str))
         return
+    print("\n".join(envelope_lines(env)))
+
+
+def envelope_lines(env: Envelope, more: str = "--json") -> list[str]:
+    """An envelope as the lines ``wb show`` prints. ``more`` names what gives all of its data, for a caller that
+    is not this CLI."""
+    lines: list[str] = []
+    add = lines.append
     state = env.get("state")
     if state == "awaiting_approval":
         approval = env.get("approval") or {}
         quote, prompt = approval.get("quote") or {}, approval.get("prompt") or {}
-        print(f"awaiting approval  {env['command']}  {env['job']}")
-        print(f"  {prompt.get('question', '')}")
+        add(f"awaiting approval  {env['command']}  {env['job']}")
+        add(f"  {prompt.get('question', '')}")
         for key in ("card", "driver", "host", "dph", "cap_minutes", "max_cost", "currency", "expires_at"):
             if key in quote:
-                print(f"  {key}: {quote[key]}")
-        print(f"  approve: wb approve {env['job']} --quote {quote.get('id')}")
-        return
+                add(f"  {key}: {quote[key]}")
+        add(f"  approve: wb approve {env['job']} --quote {quote.get('id')}")
+        return lines
     if state != "settled":
-        print(f"{state}  {env['command']}  {env['job']}  {env.get('summary') or ''}".rstrip())
+        add(f"{state}  {env['command']}  {env['job']}  {env.get('summary') or ''}".rstrip())
         if (env.get("waiting") or {}).get("reason"):
-            print(f"  waiting: {env['waiting']['reason']}")
-        return
+            add(f"  waiting: {env['waiting']['reason']}")
+        return lines
     timings = env.get("timings") or {}
-    print(f"{MARK.get(env.get('outcome'), env.get('outcome'))}  {env['command']}  {env['job']}"
-          f"{'  (cached)' if (env.get('cache') or {}).get('hit') else ''}  {env.get('summary') or ''}".rstrip())
+    add(f"{MARK.get(env.get('outcome'), env.get('outcome'))}  {env['command']}  {env['job']}"
+        f"{'  (cached)' if (env.get('cache') or {}).get('hit') else ''}  {env.get('summary') or ''}".rstrip())
     for reason in env.get("reasons") or []:
-        print(f"  - {reason.get('detail')}" + (f"  (fix: {reason['fix']})" if reason.get("fix") else ""))
+        add(f"  - {reason.get('detail')}" + (f"  (fix: {reason['fix']})" if reason.get("fix") else ""))
     data = env.get("data") or {}
     if data:
         text = json.dumps(data, default=str)
-        print("  data: " + (text if len(text) < 400 else text[:400] + " ...  (all of it: --json)"))
+        add("  data: " + (text if len(text) < 400 else text[:400] + f" ...  (all of it: {more})"))
     for line in check_lines(data):
-        print(line)
+        add(line)
     for item in env.get("measurements") or []:
-        print(f"  {item['name']} = {item['value']}{' ' + item['unit'] if item.get('unit') else ''}")
+        add(f"  {item['name']} = {item['value']}{' ' + item['unit'] if item.get('unit') else ''}")
     for item in env.get("outputs") or []:
-        print(f"  -> {item['name']}: {item['host_path']}")
+        add(f"  -> {item['name']}: {item['host_path']}")
     if env.get("cost"):
         cost = env["cost"]
-        print(f"  cost: {cost.get('amount')} {cost.get('currency', 'USD')}")
+        add(f"  cost: {cost.get('amount')} {cost.get('currency', 'USD')}")
     if timings.get("phases"):
-        print("  phases: " + ", ".join(f"{k} {v:.1f}s" for k, v in timings["phases"].items()))
+        add("  phases: " + ", ".join(f"{k} {v:.1f}s" for k, v in timings["phases"].items()))
+    return lines
 
 
 def _client() -> Client:
@@ -355,6 +365,11 @@ def cmd_land(args) -> int:
 def cmd_gpu(args) -> int:
     from . import gpu
     return gpu.main(args)
+
+
+def cmd_mcp(args) -> int:
+    from . import mcp
+    return mcp.main(args)
 
 
 def cmd_play(args) -> int:
@@ -754,6 +769,11 @@ def build_parser() -> argparse.ArgumentParser:
                    "takes the input")
     p = add("dev", cmd_dev, "run a verb with the CLI of the Workbench working tree you stand in (as WB_DEV=1)")
     p.add_argument("rest", nargs=argparse.REMAINDER, metavar="VERB ...")
+    p = add("mcp", cmd_mcp, "serve Workbench to an MCP client on stdio: tools for commands and jobs, and the skills "
+                            "that say how to use them")
+    p.add_argument("--list", action="store_true", help="print the tools and skills it serves, then exit")
+    p.add_argument("--config", action="store_true",
+                   help="print the entry an MCP client's config takes to start this machine's release, as JSON")
     p = add("host", cmd_host, "the Windows host runner")
     p.add_argument("action", choices=["serve", "install", "uninstall", "status"])
     p.add_argument("rest", nargs=argparse.REMAINDER)

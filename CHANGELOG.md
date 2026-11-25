@@ -193,3 +193,10 @@
   (`WB_OWNED_DIRS` from `wb up`), as it does the state volume.
 - The drive agent: a client mod for 1.12.2 on Cleanroom that captures views once they settle and answers
   `drive.send`.
+- `wb mcp` serves Workbench to an MCP client on stdio: ten tools (`commands`, `describe`, `run`, `job`, `jobs`,
+  `logs`, `cancel`, `approve`, `status`, `cli`) and six skills (`start`, `checks`, `land`, `play`, `spend`,
+  `diagnose`) served through MCP's Skills extension, each file with its SHA-256 and size, read only when a client
+  loads the skill. It speaks protocol revision 2026-07-28 and answers the `initialize` handshake of the revisions
+  before it. `approve` asks the person through the client and never approves by itself; `cli` refuses `approve` and
+  the verbs that change the service. `wb mcp --config` prints the entry a client's config takes, `--list` the tools
+  and skills.

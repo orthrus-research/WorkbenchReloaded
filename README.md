@@ -46,6 +46,8 @@ In development: version 0.1.0 is unreleased, and there are no releases yet;
   withdraws one.
 - **SDKs** (`sdk/`) for Python (with the `wb` CLI), Node/TypeScript, Java and PowerShell,
   their envelope types generated from `schema/envelope.schema.json`.
+- **`wb mcp`** serves the commands and jobs as tools to an MCP client, with skills that say how to use them
+  (see [MCP](#mcp)).
 
 Modules follow a taxonomy of what a command does in Minecraft modding, one module per kind of operation, so a
 utility lands beside its kin: what a JAR contains is `jar.*`, a world on disk is `world.*`, a build's provenance is
@@ -277,6 +279,41 @@ driver, host, price, cap, the most it can cost) and a ready-made prompt. It runs
 `wb approve JOB --quote Q`, given by you, or relayed by another program after your yes. A quote expires after five
 minutes and is replaced if the price rises; no setting, budget or schedule can approve. A rental is destroyed in
 `finally`, at its cap, when billed above its quote, by its own dead man's switch, and by the next start's clean-up.
+
+## MCP
+
+`wb mcp` serves Workbench to an MCP client on stdio, so a program that speaks the Model Context Protocol operates
+Workbench with tools of its own and need not compose command lines. It is ten tools and six skills:
+
+- **Tools**, each a thin form of a verb: `commands` and `describe` find a command, `run` starts one and waits for
+  its envelope, `job`, `jobs`, `logs` and `status` read, `cancel` ends a job, and `cli` runs the verbs that act on the
+  folder you stand in (`check`, `work`, `land`, `play`, `store`, `gpu`, `gc`). An answer is the few lines `wb show`
+  prints; `detail="full"` gives the whole envelope.
+- **Skills** (`sdk/python/wb/skills/`), which say how to use them: `start`, `checks`, `land`, `play`, `spend` and
+  `diagnose`. They are served through MCP's
+  [Skills extension](https://modelcontextprotocol.io/extensions/skills/overview): a client lists them by name and
+  description, and reads a skill's files only when it loads that skill, each file checked against the SHA-256 and
+  size its entry names. Until then a client holds the tools' descriptions and one line per skill.
+
+It speaks protocol revision 2026-07-28, in which every request names its version and nothing is remembered between
+requests, and it answers the `initialize` handshake of the revisions before it. A client without the Skills extension
+still reads the skills as resources (`skill://start/SKILL.md`).
+
+Approval stays yours. `approve` puts a quote to you through the client, which shows the question and returns your
+answer; a client that cannot ask is told the command you run. `cli` refuses `approve`, the verbs that change the
+service itself (`up`, `down`, `deploy`, `host`) and `gpu run`, which runs any command. This keeps a client from
+approving or redeploying by mistake; it is no boundary against a program that can already run commands as you.
+
+`wb mcp --config` prints the entry a client's config takes. The entry starts the release in service through its
+link, so it stays right through every deploy:
+
+```json
+{"mcpServers": {"wb": {"command": "cmd.exe", "args": ["/c", "<releases>\\current\\bin\\wb.cmd", "mcp"]}}}
+```
+
+`wb mcp --list` prints the tools and the skills. A skill is a folder holding `SKILL.md`, whose frontmatter names it
+(`name`, the folder's own name) and says when to load it (`description`), each a plain or double-quoted string;
+`tests/test_mcp.py` holds every shipped skill to that, and to the files and tools it refers to.
 
 ## Exit codes
 
