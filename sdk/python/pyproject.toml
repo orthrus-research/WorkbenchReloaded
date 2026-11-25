@@ -14,3 +14,6 @@ wb = "wb.cli:main"
 
 [tool.setuptools]
 packages = ["wb"]
+
+[tool.setuptools.package-data]
+wb = ["skills/**/*"]
