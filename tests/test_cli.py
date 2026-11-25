@@ -115,6 +115,20 @@ class Verbs(unittest.TestCase):
         finally:
             os.environ.pop("WB_CALLER", None)
 
+    def test_without_wb_caller_a_job_is_labelled_with_the_worktree_it_came_from(self):
+        saved, here = os.environ.pop("WB_CALLER", None), os.getcwd()
+        os.chdir(REPO / "sdk")  # a folder inside the worktree: the label is the worktree's
+        try:
+            code, out, _ = self.wb("run", "selftest.echo", "text=labelled", "--json", "--quiet")
+            label = json.loads(out)["caller"]
+            self.assertEqual(label, f"{REPO.parent.name}/{REPO.name}")
+            code, out, _ = self.wb("jobs", "--mine", "--json")
+            self.assertTrue(json.loads(out) and all(j["caller"] == label for j in json.loads(out)))
+        finally:
+            os.chdir(here)
+            if saved is not None:
+                os.environ["WB_CALLER"] = saved
+
     def test_wb_dev_runs_the_working_tree_on_purpose_past_the_version_handshake(self):
         from unittest import mock
         from wb import WbError, client

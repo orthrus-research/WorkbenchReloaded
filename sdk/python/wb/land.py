@@ -40,6 +40,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from .client import caller
 from .workspace import GIT_ENV, Workspace, WorkspaceError, git
 
 
@@ -257,7 +258,7 @@ class Lander:
         self._check_reached(reached, reach["candidate"])
         landing = time.strftime("l%Y%m%d%H%M%S") + secrets.token_hex(2)
         job = self.client.submit("set.land", {"landing": landing, "base": revision, "projects": wanted,
-                                             "deadline": deadline, "caller": os.environ.get("WB_CALLER", ""),
+                                             "deadline": deadline, "caller": caller() or "",
                                              "holds": holds, "drop_holds": drop_holds, "third": third,
                                              "platform": platform, "tag": tag or "",
                                              "doctor_exempt": doctor_exempt, "doctor_unexempt": doctor_unexempt})

@@ -29,7 +29,7 @@ from pathlib import Path
 
 from . import compose
 from . import config as wbconfig
-from .client import EXIT_AWAITING_APPROVAL, Client, Envelope, WbError
+from .client import EXIT_AWAITING_APPROVAL, Client, Envelope, WbError, caller
 
 MARK = {"ok": "ok", "finding": "FINDING", "usage": "USAGE", "environment": "ENVIRONMENT"}
 
@@ -209,7 +209,7 @@ def cmd_show(args) -> int:
 
 def cmd_jobs(args) -> int:
     listed = _client().jobs(state=args.state, command=args.command, limit=args.limit,
-                            caller=os.environ.get("WB_CALLER") if args.mine else None)
+                            caller=caller() if args.mine else None)
     if args.json:
         print(json.dumps(listed, indent=1, default=str))
         return 0
@@ -469,7 +469,7 @@ def cmd_job(args) -> int:
     if args.job:
         env = client.job(args.job).refresh()
     else:
-        listed = client.jobs(limit=1, caller=os.environ.get("WB_CALLER"))  # this caller's newest, when it names itself
+        listed = client.jobs(limit=1, caller=caller())  # the newest of this caller's (this worktree's, by default)
         if not listed:
             print("wb: no jobs yet", file=sys.stderr)
             return 2
@@ -631,7 +631,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--state")
     p.add_argument("--command")
     p.add_argument("--limit", type=int, default=30)
-    p.add_argument("--mine", action="store_true", help="only jobs submitted with this WB_CALLER")
+    p.add_argument("--mine", action="store_true",
+                   help="only the jobs submitted from this worktree (or with this WB_CALLER, when it is set)")
     p = add("ls", cmd_ls, "list commands")
     p.add_argument("module", nargs="?")
     p = add("help", cmd_help, "describe a command")
