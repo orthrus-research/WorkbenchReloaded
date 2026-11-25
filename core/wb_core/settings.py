@@ -106,6 +106,9 @@ HOST_RUNNER = {
     "coordination_dir": {"type": "string", "optional": True,
                          "summary": "the folder where every GPU user publishes its lane; defaults to <lab_home>/coordination"},
     "lane": {"type": "string", "default": "workbench", "summary": "Workbench's lane name in the coordination folder"},
+    "abandon_after": {"type": "duration", "default": "10m",
+                      "summary": "a run the daemon has not asked about for this long is cancelled: the daemon that "
+                                 "started it is gone, and nobody would see its result"},
     "token_env": {"type": "list", "items": "string", "default": [],
                   "summary": "more variables a host routine gets the turn token in (WB_TURN_TOKEN always), for "
                              "launchers that join a held lease by their own variable"},

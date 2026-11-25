@@ -56,5 +56,5 @@ class HostClient:
     def events(self, run: str, after: int, wait: float = 20) -> dict:
         return self._call("GET", f"/v1/runs/{run}/events?after={after}&wait={int(wait)}", timeout=wait + 15)
 
-    def cancel(self, run: str) -> dict:
-        return self._call("POST", f"/v1/runs/{run}/cancel", {})
+    def cancel(self, run: str, timeout: float = 30) -> dict:
+        return self._call("POST", f"/v1/runs/{run}/cancel", {}, timeout=timeout)

@@ -819,17 +819,79 @@ class Restart(unittest.TestCase):
         first.server.shutdown()
         first.server.server_close()
         first.hub.close()
-        from wb_core.service import _kill_pid
-        _kill_pid(pid)
+        from wb_core.service import process_mark
+        self.assertIsNotNone(process_mark(pid))  # the worker outlived its daemon: the restart is what ends it
         second = Daemon(root=first.root).start()
         try:
             env = second.client.job(job.id).refresh()
             self.assertEqual(env.state, "interrupted")
             self.assertEqual(env.exit_code, 4)
+            for _ in range(100):
+                if process_mark(pid) is None:
+                    break
+                time.sleep(0.1)
+            self.assertIsNone(process_mark(pid), "the job's own worker is killed")
             done = second.client.submit("selftest.echo", {"text": "after"}).result(timeout=60)
             self.assertEqual(done.outcome, "ok")
         finally:
             second.stop()
+
+    def test_a_restart_never_kills_a_process_that_now_has_the_workers_pid(self):
+        """After a restart the old worker's PID may be another process's (a new container's PID space; Windows reuses
+        PIDs within seconds): recovery leaves that process alone, and kills only what is still the job's worker."""
+        import subprocess
+        first = Daemon().start()
+        job = first.client.submit("selftest.sleep", {"seconds": "60s"})
+        for _ in range(100):
+            if job.refresh().state == "running":
+                break
+            time.sleep(0.1)
+        worker = first.workbench.db.one("SELECT worker_pid, worker_mark FROM job WHERE id = ?", (job.id,))
+        self.assertTrue(worker["worker_mark"])
+        first.stop(keep=True)
+        bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            # The dead daemon's record, now naming a PID that a process of someone else's holds.
+            first.workbench.db.execute("UPDATE job SET state = 'running', worker_pid = ? WHERE id = ?",
+                                       (bystander.pid, job.id))
+            first.workbench.db.close()
+            second = Daemon(root=first.root)
+            try:
+                second.workbench.recover()
+                self.assertEqual(second.workbench.db.one("SELECT state FROM job WHERE id = ?", (job.id,))["state"],
+                                 "interrupted")
+                time.sleep(0.5)
+                self.assertIsNone(bystander.poll(), "a process that only shares the PID was killed")
+            finally:
+                second.stop()
+        finally:
+            bystander.kill()
+            bystander.wait()
+
+
+class RestartHost(unittest.TestCase):
+    def test_a_restart_cancels_the_host_run_of_a_job_it_interrupts(self):
+        class Host:
+            cancelled: list = []
+
+            def cancel(self, run, timeout=30):
+                self.cancelled.append(run)
+                return {}
+
+            def health(self):
+                return {"ok": True}
+
+        host = Host()
+        d = Daemon(host_client=host).start()
+        try:
+            job = d.client.submit("selftest.echo", {"text": "on the host"}).result(timeout=60)
+            d.workbench.db.execute("UPDATE job SET state = 'running', worker_mark = ? WHERE id = ?",
+                                   ("host:r_left", job.job))
+            d.workbench.recover()
+            self.assertEqual(host.cancelled, ["r_left"])
+            self.assertEqual(d.client.job(job.job).refresh().state, "interrupted")
+        finally:
+            d.stop()
 
 
 class Backup(unittest.TestCase):

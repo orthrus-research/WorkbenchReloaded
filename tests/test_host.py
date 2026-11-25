@@ -84,6 +84,44 @@ class HostRunner(unittest.TestCase):
         result = job.result(timeout=120)  # after the 15 s cooldown it takes its turn
         self.assertEqual(result.outcome, "ok", result.summary)
 
+    def test_a_run_nobody_follows_is_cancelled_and_its_lease_wait_ends(self):
+        """The daemon that started a run stopped asking about it (it crashed or restarted, and marked its job
+        interrupted): the runner cancels the run instead of letting it take the GPU for nobody."""
+        other = lease.Lease(self.lock, {"pid": os.getpid(), "name": "someone", "lane": "quadrature"})
+        try:
+            run = self.runner.start("selftest.host-echo", {"job": "j_gone", "params": {"text": "nobody"}})
+            time.sleep(1)
+            self.runner.events(run, 0, 0)  # followed just now: it stands
+            self.assertEqual(self.runner.abandoned(), [])
+            later = time.monotonic() + self.runner.abandon_after + 1
+            self.assertEqual(self.runner.abandoned(now=later), [run])
+            for _ in range(100):
+                if self.runner.runs[run].finished:
+                    break
+                time.sleep(0.1)
+            done = [e for e in self.runner.runs[run].events if e["kind"] == "done"]
+            self.assertEqual(done[-1]["outcome"], "cancelled")
+            self.assertEqual(self.runner.abandoned(now=later), [])  # an ended run is never cancelled again
+        finally:
+            other.close()
+
+    def test_health_answers_while_nvidia_smi_hangs_and_keeps_the_card_it_knew(self):
+        import subprocess
+        from unittest import mock
+        runner = Runner(self.runner.settings, list(self.runner.modules.values()), log=lambda _: None)
+        said = subprocess.CompletedProcess([], 0, "NVIDIA GeForce RTX 3060, 610.88, 12288 MiB\n", "")
+        with mock.patch("shutil.which", return_value="nvidia-smi"),                 mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("nvidia-smi", 10)):
+            self.assertTrue(runner.health()["ok"])  # no card known yet, and no traceback
+            self.assertIsNone(runner.health()["gpu"])
+        runner._gpu = None
+        with mock.patch("shutil.which", return_value="nvidia-smi"), mock.patch("subprocess.run", return_value=said):
+            self.assertEqual(runner.health()["gpu"]["name"], "NVIDIA GeForce RTX 3060")
+        runner._gpu = (time.monotonic() - 1000, runner._gpu[1])  # stale: asked again, and it hangs
+        with mock.patch("shutil.which", return_value="nvidia-smi"),                 mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("nvidia-smi", 10)) as asked:
+            self.assertEqual(runner.health()["gpu"]["driver"], "610.88")
+            runner.health()
+            self.assertEqual(asked.call_count, 1)  # not asked again on every health call while it hangs
+
     def test_auth_and_host_header(self):
         import urllib.error
         import urllib.request

@@ -91,6 +91,8 @@ CORE_SCHEMA = [
     "ALTER TABLE job ADD COLUMN caller TEXT;",
     # 5: the named locks a submit asked for, taken with its command's own, all or none (a JSON list)
     "ALTER TABLE job ADD COLUMN locks TEXT;",
+    # 6: when and on which boot the worker started (process.mark), so a restart kills only that process
+    "ALTER TABLE job ADD COLUMN worker_mark TEXT;",
 ]
 
 

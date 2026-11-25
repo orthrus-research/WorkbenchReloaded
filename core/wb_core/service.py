@@ -577,9 +577,15 @@ class Workbench:
     def recover(self):
         """D10: jobs left running by a stopped daemon are interrupted; their workers are killed. A queued job whose
         parent is no longer running is cancelled, since nothing waits for it."""
-        for row in self.db.query("SELECT id, worker_pid, module FROM job WHERE state = 'running'"):
-            if row["worker_pid"]:
-                _kill_pid(row["worker_pid"])
+        for row in self.db.query("SELECT id, worker_pid, worker_mark, module FROM job WHERE state = 'running'"):
+            # A PID names a process only while that process lives: after a restart (a new container is a new PID
+            # space, and Windows hands PIDs out again within seconds) the number may be anyone's. The worker is
+            # killed only when the process at that PID is still the one that started for this job.
+            pid, mark = row["worker_pid"], row["worker_mark"]
+            if mark and mark.startswith("host:"):
+                self._cancel_host_run(row["id"], mark[len("host:"):])
+            elif pid and mark and process_mark(pid) == mark:
+                _kill_pid(pid)
             self.db.execute("UPDATE job SET state = 'interrupted', settled = ?, summary = ? WHERE id = ?",
                             (time.time(), "interrupted by a Workbench restart", row["id"]))
             self.add_event(row["id"], "state", {"state": "interrupted"})
@@ -595,6 +601,17 @@ class Workbench:
             entry = self.registry.get(row["command"])
             if entry and entry.command.spends:
                 self._start_quote(row["id"], entry)
+
+    def _cancel_host_run(self, job: str, run: str):
+        """Asks the host runner to end a run whose job a restart interrupted. A runner that restarted too has ended
+        it already; one that cannot be reached ends it itself once nobody follows it ([runner] abandon_after)."""
+        if self.host is None:
+            return
+        try:
+            self.host.cancel(run, timeout=5)
+            self.hub.warning(f"its host run {run} was cancelled", job=job)
+        except Exception as error:  # noqa: BLE001 - recovery goes on; the runner's own watch is the backstop
+            self.hub.info(f"its host run {run} was not cancelled here ({error}); the runner ends it itself", job=job)
 
     def run_startup_hooks(self):
         """Module startup hooks run before any new work, e.g. destroying rentals no running job holds."""
@@ -1016,7 +1033,8 @@ class Workbench:
         spec = self._spec(job, entry, params, out, "run", entry.command.handler, quote, path_style)
         process = self._spawn(spec)
         running.process = process
-        self.db.execute("UPDATE job SET worker_pid = ? WHERE id = ?", (process.pid, job))
+        self.db.execute("UPDATE job SET worker_pid = ?, worker_mark = ? WHERE id = ?",
+                        (process.pid, process_mark(process.pid), job))
         stderr = threading.Thread(target=self._pump_stderr, args=(process, job, entry.module.name), daemon=True)
         stderr.start()
         watchdog = threading.Thread(target=self._watchdog, args=(job, entry.command, running), daemon=True)
@@ -1057,6 +1075,7 @@ class Workbench:
                                                        "module_config": self.settings.modules.get(entry.module.name, {}),
                                                        "quote": quote})
         running.host_run = run_id
+        self.db.execute("UPDATE job SET worker_mark = ? WHERE id = ?", (f"host:{run_id}", job))  # for a restart
         result: dict = {}
         after = 0
         last_contact = time.time()
@@ -1492,6 +1511,41 @@ def _git_head(path: Path) -> str | None:
         return None
     head = done.stdout.strip()
     return head if done.returncode == 0 and head else None
+
+
+def process_mark(pid: int) -> str | None:
+    """What tells this process apart from any later one at the same PID: the boot and the start time on Linux, the
+    creation time on Windows. None when the process is gone or the system does not say."""
+    try:
+        if sys.platform.startswith("linux"):
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+            boot = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+            return f"{boot}:{stat[stat.rindex(')') + 2:].split()[19]}"  # field 22, starttime, after pid and comm
+        if os.name == "nt":
+            return _windows_created(pid)
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _windows_created(pid: int) -> str | None:
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not kernel32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+            return None
+        return f"win:{(times[0].dwHighDateTime << 32) | times[0].dwLowDateTime}"
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _kill_pid(pid: int):
