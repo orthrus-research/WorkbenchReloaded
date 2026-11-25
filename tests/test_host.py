@@ -111,14 +111,16 @@ class HostRunner(unittest.TestCase):
         from unittest import mock
         runner = Runner(self.runner.settings, list(self.runner.modules.values()), log=lambda _: None)
         said = subprocess.CompletedProcess([], 0, "NVIDIA GeForce RTX 3060, 610.88, 12288 MiB\n", "")
-        with mock.patch("shutil.which", return_value="nvidia-smi"),                 mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("nvidia-smi", 10)):
+        hangs = subprocess.TimeoutExpired("nvidia-smi", 10)
+        with mock.patch("shutil.which", return_value="nvidia-smi"), mock.patch("subprocess.run", side_effect=hangs):
             self.assertTrue(runner.health()["ok"])  # no card known yet, and no traceback
             self.assertIsNone(runner.health()["gpu"])
         runner._gpu = None
         with mock.patch("shutil.which", return_value="nvidia-smi"), mock.patch("subprocess.run", return_value=said):
             self.assertEqual(runner.health()["gpu"]["name"], "NVIDIA GeForce RTX 3060")
         runner._gpu = (time.monotonic() - 1000, runner._gpu[1])  # stale: asked again, and it hangs
-        with mock.patch("shutil.which", return_value="nvidia-smi"),                 mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("nvidia-smi", 10)) as asked:
+        with (mock.patch("shutil.which", return_value="nvidia-smi"),
+              mock.patch("subprocess.run", side_effect=hangs) as asked):
             self.assertEqual(runner.health()["gpu"]["driver"], "610.88")
             runner.health()
             self.assertEqual(asked.call_count, 1)  # not asked again on every health call while it hangs
