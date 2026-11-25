@@ -375,6 +375,34 @@ class TreeDigests(unittest.TestCase):
             self.assertNotEqual(changed, first)
             self.assertEqual(changed, module.sha256_tree(root))  # the same digest as without the record
 
+    def test_a_watched_digest_lists_a_folder_whole_before_it_reads_and_stops_when_its_watch_raises(self):
+        from unittest import mock
+        from wb_core import module
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "deep").mkdir()
+            for index in range(5):
+                (root / "deep" / f"{index}.bin").write_bytes(b"x" * (index + 1))
+            seen = []
+            watched = module.sha256_tree(root, None, lambda *call: seen.append(call))
+            self.assertEqual(watched, module.sha256_tree(root))  # a watch changes nothing of the digest
+            stages = [call[0] for call in seen]
+            self.assertEqual(stages.index("listed"), stages.index("reading") - 1)  # the whole list, then the reads
+            self.assertEqual(seen[stages.index("listed")][1:], (5, 15, 0))
+            self.assertEqual(seen[-1], ("reading", 5, 15, 15))
+
+            def refuse(stage, files, size, read):
+                if stage == "listed":
+                    raise module.ParamError("too large")
+            with mock.patch.object(module, "sha256_file", side_effect=module.sha256_file) as read:
+                with self.assertRaises(module.ParamError):
+                    module.sha256_tree(root, None, refuse)
+                self.assertEqual(read.call_count, 0)  # refused by its size: not a byte was read
+            with mock.patch.object(module, "LISTED_EVERY", 2):
+                listing = []
+                module.sha256_tree(root, None, lambda *call: listing.append(call))
+            self.assertEqual([call[1] for call in listing if call[0] == "listing"], [2, 4])  # said while it lists
+
 
 class CacheKey(unittest.TestCase):
     def test_a_modules_config_is_part_of_a_cached_results_key(self):
@@ -689,6 +717,84 @@ class Lifecycle(unittest.TestCase):
         self.assertTrue((logs / "modules" / "selftest" / "latest.log").exists())
         lines = self.c.logs(module="selftest", limit=50)
         self.assertTrue(any("echo" in line["msg"] for line in lines))
+
+
+class InputDigests(unittest.TestCase):
+    """A job's input digest never holds it unseen: too large an input is refused before it is read, a long digest
+    says how far it is, and a cancel stops it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = Daemon('[core.inputs]\nmax_files = 4\nmax_gb = 0.001\nnotice = "0s"\n').start()
+        cls.c = cls.d.client
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.d.stop()
+
+    def folder(self, name: str, files: int, size: int = 3) -> Path:
+        folder = self.d.data / name
+        folder.mkdir()
+        for index in range(files):
+            (folder / f"{index}.bin").write_bytes(b"x" * size)
+        return folder
+
+    def test_an_input_past_the_limits_is_refused_before_a_byte_is_read(self):
+        from unittest import mock
+        from wb_core import module
+        with mock.patch.object(module, "sha256_file", side_effect=module.sha256_file) as read:
+            many = self.c.submit("selftest.copy", {"source": str(self.folder("many", 5))}).result(timeout=30)
+            large = self.c.submit("selftest.copy", {"source": str(self.folder("large", 1, 2 << 20))}).result(timeout=30)
+            self.assertEqual(read.call_count, 0)
+        for refused in (many, large):
+            self.assertEqual((refused.outcome, refused.code), ("usage", 2), refused.summary)
+            self.assertIn("too large to digest", refused.summary)
+            self.assertIn("[core.inputs] max_files and max_gb", refused.summary)
+            self.assertIn('digest = "git"', refused.summary)  # what a checkout's parameter is missing
+        self.assertIn("5 files", many.summary)
+        within = self.c.submit("selftest.copy", {"source": str(self.folder("within", 4))}).result(timeout=30)
+        self.assertNotEqual(within.outcome, "usage", within.summary)  # at the limit, not past it
+
+    def test_a_long_digest_says_how_far_it_is_and_a_cancel_stops_it(self):
+        from unittest import mock
+        from wb_core import module
+        stop = time.time() + 60
+
+        def slow(path, tick=None):  # a read that never ends on its own
+            while time.time() < stop:
+                time.sleep(0.05)
+                if tick:
+                    tick(1)
+            return "0" * 64
+        with mock.patch.object(module, "sha256_file", side_effect=slow):
+            job = self.c.submit("selftest.copy", {"source": str(self.folder("slow", 2))})
+            waiting = None
+            for _ in range(200):
+                envelope = job.refresh()
+                waiting = (envelope["waiting"] or {}).get("reason")
+                if waiting and "read " in waiting:
+                    break
+                time.sleep(0.05)
+            self.assertEqual((envelope.state, envelope["phase"]), ("queued", "preparing"))
+            self.assertIn("digesting input source", waiting)
+            self.assertIn("in 2 files", waiting)
+            self.assertIn(f"wb cancel {job.id} stops it", waiting)
+            began = time.time()
+            job.cancel()
+            result = job.wait(timeout=30)
+        self.assertEqual((result.state, result.exit_code), ("cancelled", 4))
+        self.assertEqual(result.summary, "cancelled while its inputs were digested")
+        self.assertLess(time.time() - began, 10)
+        self.assertIsNone(result["waiting"])
+        self.assertTrue(self.c.health()["ok"])
+        after = self.c.submit("selftest.echo", {"text": "next"}).result(timeout=30)  # its reservation was given back
+        self.assertEqual(after.outcome, "ok")
+
+    def test_a_checkout_is_read_through_git_and_never_by_its_content(self):
+        params = {f"{m.name}.{c.name}.{name}": spec for m in self.d.modules for c in m.commands
+                  for name, spec in c.params.items()}
+        for name in ("lab.resolve.folder", "lab.run.driver_root", "selftest.checkout.repo"):
+            self.assertEqual(params[name].get("digest"), "git", name)
 
 
 class Restart(unittest.TestCase):

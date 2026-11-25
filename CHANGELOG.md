@@ -11,6 +11,12 @@
   declare named locks and `quiet_if` params, and `inline` commands a running job calls in its own reservation. A
   submit may ask for more locks (`wb run --lock <name>`, `locks` in `POST /v1/jobs`), taken with the command's all
   or none; a lock wait names every lock the job takes and those its submit asked for (`locks` in the envelope).
+- An input's content digest never holds a job unseen: a folder is listed whole before a byte of it is read and is
+  refused, with outcome usage, past `[core.inputs] max_files` (200,000) or `max_gb` (64); a digest longer than
+  `notice` (5 s) is the job's wait reason, with the files and bytes listed and read so far; `wb cancel` stops a job
+  while its inputs are digested. `lab.resolve`'s worktree and `lab.run`'s driver root are read through git
+  (`digest = "git"`), as every other checkout is: before, `wb run lab.resolve folder=<checkout>` hashed the whole
+  checkout, ignored files and linked folders included, and could not be cancelled.
 - A tool runs until its process exits, not its pipe; deadlines fire without output; nothing a job started
   outlives it (a Job Object on Windows, a child subreaper on Linux); a run stopped at its limit is a finding with
   reason kind timeout, never cached.

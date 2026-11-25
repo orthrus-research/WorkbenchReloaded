@@ -57,6 +57,16 @@ CORE = {
     "quotes": {
         "ttl": {"type": "duration", "default": "5m", "min": "30s", "max": "30m"},
     },
+    "inputs": {
+        "max_files": {"type": "int", "default": 200000, "min": 1,
+                      "summary": "the most files one input folder may hold when its content is digested; a larger "
+                                 "one is refused once it is listed, before any file is read"},
+        "max_gb": {"type": "float", "default": 64.0, "min": 0.001,
+                   "summary": "the most GiB one input may hold when its content is digested"},
+        "notice": {"type": "duration", "default": "5s",
+                   "summary": "a digest that takes longer than this is shown as the job's wait reason, with its "
+                              "progress"},
+    },
     "jdks": {
         "root": {"type": "string", "default": "/opt/jdk"},
     },
