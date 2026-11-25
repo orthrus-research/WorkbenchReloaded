@@ -10,7 +10,9 @@
 The gate has two parts, both recorded in the release's RELEASE.json. The container pass: CI's records must show the
 commit's tree passed the checks its project.toml requires (``wb check`` at that commit runs them). The host suite:
 tests/run_all.py on this machine, once per tree; a pass is kept in the machine's deploy record, so a tree that
-already passed runs nothing.
+already passed runs nothing. A part of the suite that is one of the project's host checks (``on = "host"``) and that
+CI's records show passed on this tree with ``ci.host-run`` (``wb check core modules``, from a clean clone on this
+machine) is not run again: only the parts without such a pass run here.
 
 The container imports Workbench from a copy of the release in its state volume (image/code.sh), so the image is
 built only when its own inputs changed (``compose.image_inputs``, compared with the digest the image is labelled
@@ -123,14 +125,50 @@ def container_pass(config, root: Path, sha: str) -> dict:
         return answer
     answer["passed"] = True
     tree = _git(root, "rev-parse", f"{sha}^{{tree}}")
-    for summary in sorted(Path(runs).glob("*/summary.json")):
+    answer["runs"] = [run for run, passed in _passing_runs(Path(runs), tree) if set(answer["required"]) <= passed]
+    return answer
+
+
+def _passing_runs(runs: Path, tree: str) -> list[tuple[str, set[str]]]:
+    """Each recorded run of ``tree``, oldest first, with the checks it passed."""
+    found = []
+    for summary in sorted(runs.glob("*/summary.json")):
         try:
             data = json.loads(summary.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        jobs_passed = {n for n, r in (data.get("jobs") or {}).items() if r.get("status") == "passed"}
-        if tree in (data.get("trees") or {}).values() and set(answer["required"]) <= jobs_passed:
-            answer["runs"].append(summary.parent.name)
+        if tree in (data.get("trees") or {}).values():
+            found.append((summary.parent.name, {n for n, r in (data.get("jobs") or {}).items()
+                                                if isinstance(r, dict) and r.get("status") == "passed"}))
+    return found
+
+
+def host_passes(config, root: Path, sha: str) -> dict:
+    """The project's host checks (``on = "host"``) at ``sha`` that CI's records show passed on its tree: {checks:
+    [the host checks], passed: [those with a pass], runs: [the runs that passed them]}. Empty when the records or the
+    jobs file cannot be read: the suite then runs whole."""
+    from .workspace import Workspace
+    answer = {"checks": [], "passed": [], "runs": []}
+    try:
+        workspace = Workspace(config)
+        project = workspace.find(root)
+        if project is None:
+            return answer
+        actions = workspace.engine()
+        with tempfile.TemporaryDirectory(prefix="wb-deploy-") as scratch:
+            jobs = workspace.config_at(project, sha, Path(scratch))
+            if jobs is None:
+                return answer
+            answer["checks"] = [name for name, check in jobs.jobs.items() if actions.on_host(check)]
+            runs = Path(jobs.runs)
+        tree = _git(root, "rev-parse", f"{sha}^{{tree}}")
+        for run, passed in _passing_runs(runs, tree):
+            new = [name for name in answer["checks"] if name in passed and name not in answer["passed"]]
+            if new:
+                answer["passed"] += new
+                answer["runs"].append(run)
+    except Exception:  # noqa: BLE001 - what cannot be read is no pass: the whole suite runs
+        return {"checks": [], "passed": [], "runs": []}
     return answer
 
 
@@ -141,12 +179,16 @@ def _remove(folder: Path):
     shutil.rmtree(folder, onerror=writable)
 
 
-def host_suite(root: Path, sha: str, head: bool) -> dict:
-    """Runs tests/run_all.py on this machine: in the checkout for its own HEAD, else in a shared clone at ``sha``
-    (its own folder, removed after), so the checkout's branch and files never change."""
+SUITE_PARTS = ("generated", "core", "modules", "engine")  # tests/run_all.py's, one check of project.toml each
+
+
+def host_suite(root: Path, sha: str, head: bool, parts: list[str] | None = None) -> dict:
+    """Runs tests/run_all.py on this machine (only ``parts``, when given): in the checkout for its own HEAD, else in
+    a shared clone at ``sha`` (its own folder, removed after), so the checkout's branch and files never change."""
     started = time.time()
+    chosen = [arg for part in (parts or []) for arg in ("--part", part)]
     if head:
-        done = subprocess.run([sys.executable, "-u", str(root / "tests" / "run_all.py")], cwd=root)
+        done = subprocess.run([sys.executable, "-u", str(root / "tests" / "run_all.py"), *chosen], cwd=root)
     else:
         scratch = Path(tempfile.mkdtemp(prefix="wb-deploy-suite-"))
         try:
@@ -154,11 +196,11 @@ def host_suite(root: Path, sha: str, head: bool) -> dict:
             subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", str(root), str(clone)], check=True)
             subprocess.run(["git", "-C", str(clone), "-c", "core.autocrlf=false", "checkout", "-q", "--detach", sha],
                            check=True)
-            done = subprocess.run([sys.executable, "-u", str(clone / "tests" / "run_all.py")], cwd=clone)
+            done = subprocess.run([sys.executable, "-u", str(clone / "tests" / "run_all.py"), *chosen], cwd=clone)
         finally:
             _remove(scratch)
     return {"passed": done.returncode == 0, "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "seconds": round(time.time() - started)}
+            "seconds": round(time.time() - started), **({"parts": list(parts)} if parts else {})}
 
 
 def gate(config, root: Path, deployed: dict, records: dict, override: str | None) -> tuple[bool, dict]:
@@ -178,8 +220,21 @@ def gate(config, root: Path, deployed: dict, records: dict, override: str | None
     if tested and tested.get("passed"):
         _say(f"tree {tree[:12]} passed the host suite at {tested['at']}")
         return True, {"ci": ci, "tests": tested}
-    _say(f"running the host suite on tree {tree[:12]} (about 15 minutes; --override skips it)")
-    tested = host_suite(root, deployed["sha"], deployed["head"])
+    host = host_passes(config, root, deployed["sha"])
+    recorded = [part for part in SUITE_PARTS if part in host["passed"]]
+    if recorded:
+        parts = [part for part in SUITE_PARTS if part not in recorded]
+        _say(f"tree {tree[:12]} passed {', '.join(recorded)} on this host (run {', '.join(host['runs'])}), so the "
+             f"host suite runs only {', '.join(parts) or 'nothing'}")
+        tested = host_suite(root, deployed["sha"], deployed["head"], parts) if parts else \
+            {"passed": True, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "seconds": 0, "parts": []}
+        tested["host_runs"] = host["runs"]
+    else:
+        _say(f"running the host suite on tree {tree[:12]} (about 15 minutes; `wb check {' '.join(host['checks'])}` "
+             "records the host checks' passes first, so a deploy runs only the rest; --override skips it)"
+             if host["checks"] else f"running the host suite on tree {tree[:12]} (about 15 minutes; --override "
+                                    "skips it)")
+        tested = host_suite(root, deployed["sha"], deployed["head"])
     records["tested"][tree] = tested
     _save(config, records)
     if not tested["passed"]:

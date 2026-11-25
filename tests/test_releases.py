@@ -418,6 +418,51 @@ class ContainerPass(unittest.TestCase):
         self.assertEqual((answer["passed"], answer["project"], answer["required"], answer["runs"]),
                          (True, "workbench", ["check"], ["run-1"]))
 
+    def test_the_host_suite_runs_only_the_parts_no_host_run_passed_on_the_tree(self):
+        """A host check (on = "host") that ci.host-run passed on this very tree, from a clean clone on this host, is
+        not run again by a deploy; a failed one, or one of another tree, still is."""
+        from unittest import mock
+        from wb import deploy
+        project = (
+            'schema = 1\ngate = ["generated"]\n[project]\nname = "workbench"\n'
+            '[checks.generated]\nsteps = [["{python}", "tests/run_all.py", "--part", "generated"]]\n'
+            '[checks.core]\non = "host"\nsteps = [["{python}", "tests/run_all.py", "--part", "core"]]\n'
+            '[checks.modules]\non = "host"\nsteps = [["{python}", "tests/run_all.py", "--part", "modules"]]\n')
+        (self.repo / "project.toml").write_text(project, encoding="utf-8", newline="\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "checks")
+        sha, tree = git(self.repo, "rev-parse", "HEAD"), git(self.repo, "rev-parse", "HEAD^{tree}")
+
+        def ran(name, jobs, of=tree):
+            folder = self.records / "workbench" / name
+            folder.mkdir(parents=True)
+            (folder / "summary.json").write_text(json.dumps({"trees": {"project": of}, "treesChanged": False, "jobs": {
+                check: {"status": status} for check, status in jobs.items()}}), encoding="utf-8")
+
+        ran("run-1", {"generated": "passed"})
+        ran("run-2", {"core": "passed", "modules": "failed"})
+        ran("run-3", {"modules": "passed"}, of="0" * 40)  # another tree's pass stands for nothing here
+        self.assertEqual(deploy.host_passes(self.config, self.repo, sha),
+                         {"checks": ["core", "modules"], "passed": ["core"], "runs": ["run-2"]})
+        suites = []
+
+        def suite(root, at, head, parts=None):
+            suites.append(parts)
+            return {"passed": True, "at": "now", "seconds": 1, **({"parts": parts} if parts else {})}
+
+        deployed = {"tree": tree, "sha": sha, "head": False}
+        passed = {"passed": True, "project": "workbench", "required": ["generated"], "runs": ["run-1"], "reason": None}
+        with (mock.patch.object(deploy, "host_suite", side_effect=suite),
+              mock.patch.object(deploy, "container_pass", return_value=passed)):
+            records = {"tested": {}, "releases": []}
+            self.assertTrue(deploy.gate(self.config, self.repo, deployed, records, None)[0])
+            self.assertEqual(suites, [["generated", "modules", "engine"]])  # core passed on the host already
+            ran("run-4", {"modules": "passed"})
+            records = {"tested": {}, "releases": []}
+            self.assertTrue(deploy.gate(self.config, self.repo, deployed, records, None)[0])
+            self.assertEqual(suites[-1], ["generated", "engine"])
+            self.assertEqual(records["tested"][tree]["host_runs"], ["run-2", "run-4"])
+
     def test_an_unregistered_checkout_has_no_records(self):
         from wb import deploy
         answer = deploy.container_pass(Config({}, self.base / "config"), self.repo, self.sha)
