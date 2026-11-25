@@ -44,6 +44,7 @@ timeout = "5m"
 params.folder = { type = "path.in", digest = "git", summary = "the product's worktree (clean: a launch describes a commit CI built)" }
 params.launch = { type = "string", default = "default", pattern = "^[A-Za-z0-9._-]+$", summary = "the launch's name, [launch.<name>] in project.toml" }
 params.out = { type = "string", default = "", summary = "where to write launch.json; empty: <worktree>/.local/launch/<name>.json" }
+params.stand_ins = { type = "object", default = {}, summary = "{project: commit}: these projects stand in for their lines, each member and base read at that commit and its artifacts taken from the Store by its tree (refused where CI has not built it); recorded in launch.json's stand_ins and its members' kind" }
 result.launch = { type = "string" }
 result.set = { type = "string" }
 result.commit = { type = "string" }
